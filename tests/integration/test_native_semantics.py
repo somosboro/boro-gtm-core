@@ -125,9 +125,10 @@ def test_unequal_coverage_does_not_penalise_missing_evidence(imported_session) -
     # Only coverage distinguishes them.
     assert by_key["AA"].coverage == pytest.approx(1.0)
     assert by_key["BB"].coverage == pytest.approx(0.8)
-    # And missing evidence must not push the market down the ranking.
-    assert by_key["AA"].rank != by_key["BB"].rank
-    assert {by_key["AA"].rank, by_key["BB"].rank} == {1, 2}
+    # Missing evidence must not push the market down the ranking. Identical
+    # scores mean identical standing, so they share a rank (ADR-020) rather
+    # than being separated by an arbitrary sequential position.
+    assert by_key["AA"].rank == by_key["BB"].rank == 1
 
 
 def test_low_coverage_keeps_score_but_loses_rank(imported_session) -> None:

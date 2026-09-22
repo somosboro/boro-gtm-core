@@ -27,6 +27,10 @@ from boro_gtm.market_intelligence.scoring.definitions import (
     CONTEXTUAL_MODEL_COMPONENTS,
     ContextualComponent,
 )
+from boro_gtm.market_intelligence.scoring.ranking import (
+    assign_competition_ranks,
+    sort_key,
+)
 
 
 @dataclass(slots=True)
@@ -250,16 +254,20 @@ def evaluate_market(
 def rank_results(
     results: list[ContextualMarketResult], allow_low_coverage: bool = False
 ) -> list[ContextualMarketResult]:
-    """Assign ranks over comparable markets only."""
+    """Assign ranks over comparable markets only.
+
+    Uses the same standard competition convention as base scoring: markets with
+    identical contextual scores share a rank (ADR-020). Markets below the
+    coverage threshold are excluded before ranking, so they neither receive nor
+    consume a rank.
+    """
     rankable = [
         r for r in results
         if r.score is not None and (r.comparable or allow_low_coverage)
     ]
-    rankable.sort(key=lambda r: (-(r.score or 0.0), r.market_key))
-    for position, result in enumerate(rankable, start=1):
-        result.rank = position
+    assign_competition_ranks(rankable)
     results.sort(
-        key=lambda r: (r.rank is None, r.rank or 0, -(r.score or 0.0), r.market_key)
+        key=lambda r: (r.rank is None, r.rank or 0, *sort_key(r))
     )
     return results
 

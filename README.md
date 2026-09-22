@@ -164,6 +164,11 @@ it keeps its score and coverage and is returned **unranked** with
 `unranked_reason = "coverage_below_minimum"`. Contextual callers may override
 per request with `allow_low_coverage`.
 
+**Equal scores share a rank.** Ranking follows the standard competition
+convention — `80, 80, 72, 65` → `1, 1, 3, 4` (ADR-020). A rank depends on score
+alone: input order, query order and ISO code cannot change it. Unranked markets
+consume no position, so rank sequences may legitimately contain gaps.
+
 ## API
 
 All endpoints under `/api/v1`. OpenAPI at `/api/v1/openapi.json`.
@@ -274,7 +279,8 @@ trigger rejects any rewrite (ADR-018).
   ADR-010 (native recalculation honesty), ADR-012 (home benchmarks),
   ADR-014 (`market_gtm_profiles` removed), ADR-015 (absence is not a fact type),
   ADR-016 (temporal provenance), ADR-017 (canonical snapshot identity),
-  ADR-018 (append-only evidence tables), ADR-019 (supplied schema preserved)
+  ADR-018 (append-only evidence tables), ADR-019 (supplied schema preserved),
+  ADR-020 (competition ranking for ties)
 * [Design note — market_gtm_profiles](docs/DESIGN_NOTE_market_gtm_profiles.md)
 * [Scoring model](docs/SCORING.md) — formulas, weights, both modes, confidence
 * Original implementation pack: `docs/00_*.md` … `docs/07_ADRS.md`

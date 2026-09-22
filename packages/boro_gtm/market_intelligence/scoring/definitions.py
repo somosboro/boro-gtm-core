@@ -12,6 +12,7 @@ from typing import Any
 
 from boro_gtm.core.enums import MetricKey
 from boro_gtm.market_intelligence.scoring import confidence as confidence_cfg
+from boro_gtm.market_intelligence.scoring.ranking import RANKING_CONVENTION
 
 ENGINE_VERSION = "0.2.0"
 
@@ -214,6 +215,7 @@ def base_model_definition(metadata: dict[str, Any] | None = None) -> dict[str, A
                 "below that it keeps score and coverage but stays unranked."
             ),
         },
+        "ranking_convention": RANKING_CONVENTION,
         "components": BASE_MODEL_COMPONENTS,
         "source_metadata": metadata or {},
     }
@@ -325,6 +327,7 @@ def contextual_model_definition() -> dict[str, Any]:
         "channel_access_weights": CHANNEL_ACCESS_WEIGHTS,
         "confidence": confidence_cfg.definition_block(),
         "minimum_rank_coverage": CONTEXTUAL_MINIMUM_RANK_COVERAGE,
+        "ranking_convention": RANKING_CONVENTION,
         "missing_data_policy": {
             "mode": "renormalize_to_covered_weight",
             "description": (

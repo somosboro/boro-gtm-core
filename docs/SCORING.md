@@ -144,6 +144,34 @@ keeps its score and coverage but is returned **unranked**, with
 them: it is a home-market benchmark, it has no comparable score, or its
 coverage is below the threshold.
 
+### Tie semantics — standard competition ranking
+
+Equal scores share a rank, and the next distinct score skips the positions the
+tie consumed (ADR-020):
+
+| score | rank |
+| --- | --- |
+| 80.0 | 1 |
+| 80.0 | 1 |
+| 72.0 | 3 |
+| 65.0 | 4 |
+
+* **A rank is a function of score alone.** Input order, query order and ISO
+  code cannot change it. Market key breaks ties only in the *listing order* of
+  results, so output is reproducible; it never affects the rank value.
+* **"Equal" means exact equality** of the score the engine has already rounded
+  (6dp base, 4dp contextual).
+* **Unranked markets consume nothing.** A market excluded for low coverage, or
+  a home-market benchmark, is filtered out before ranking, so the markets
+  around it are not pushed down.
+* One algorithm, in `scoring/ranking.py`, used by base and contextual scoring
+  alike, and published in each model's `definition.ranking_convention`.
+
+The real snapshot exercises this: in `native_recalculation`, Malaysia and
+Slovakia both score `35.100000` and both hold **rank 42**, with Romania at
+**rank 44**. Reference reproduction is unaffected — all 63 published scores are
+distinct, so competition ranking and sequential ranking coincide there.
+
 ## Score-run kinds
 
 | Kind | Meaning |

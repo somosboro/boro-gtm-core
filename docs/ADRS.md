@@ -378,3 +378,61 @@ The stale path inside *our own* code (`countries.py` naming a pre-rename
   artifact, deliberately and on the record.
 * If the schema is ever re-authored rather than received, it should adopt the
   final public identifier at that point.
+
+
+---
+
+## ADR-020 — Ranking uses standard competition ranking
+
+**Status:** Accepted · 2026-09-22 · release blocker from M0/M1 verification
+
+### Context
+Verification evidence showed three markets with identical scores receiving
+ranks 1, 2 and 3:
+
+```
+AA score=50.00 rank=1
+BB score=50.00 rank=2
+CC score=50.00 rank=3
+```
+
+The ranks came from enumerating a sorted list, so the ordering among equals was
+decided by the secondary sort key (market ISO code). That invents a distinction
+the evidence does not support — the same class of error as letting unknown data
+read as a low score, which ADR-004 already rejects.
+
+### Decision
+One ranking algorithm, `scoring/ranking.assign_competition_ranks`, used by base
+and contextual scoring alike. Standard competition ranking:
+
+```
+80.0 -> 1
+80.0 -> 1
+72.0 -> 3
+65.0 -> 4
+```
+
+Rules:
+
+* **A rank is a function of score alone.** Input order, query order and market
+  key cannot change a rank value.
+* Market key remains the tiebreak for the **listing order** of equal-scoring
+  results, so output stays reproducible. It is presentation, not standing.
+* Ties are exact equality of the engine-rounded score (6dp base, 4dp contextual).
+* Results that must stay unranked — home-market benchmarks, no comparable
+  score, coverage below `minimum_rank_coverage` — are filtered out *before*
+  ranking, so they neither receive nor consume a position.
+* The convention is published in `scoring_models.definition.ranking_convention`
+  so it travels with the model rather than living only in code.
+
+### Consequences
+* **Reference reproduction is unaffected.** All 63 published scores are
+  distinct, so competition ranking and sequential ranking produce identical
+  output. Golden parity remains max score delta `0.0`, rank mismatches `0`, and
+  a test asserts the published ranks stay contiguous 1..50.
+* **Native ranking changes, correctly.** The 2026 snapshot contains a genuine
+  tie: Malaysia and Slovakia both score `35.100000` after covered-weight
+  renormalization. They now share **rank 42** and Romania takes **rank 44**.
+  Previously one of the two was arbitrarily placed above the other.
+* Rank sequences may contain gaps by design. Consumers must not assume ranks
+  are contiguous, nor that `max(rank) == count(ranked)`.

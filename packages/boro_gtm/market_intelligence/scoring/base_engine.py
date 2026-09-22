@@ -51,6 +51,7 @@ from boro_gtm.market_intelligence.scoring.percentile import (
     get_method,
     log_transform,
 )
+from boro_gtm.market_intelligence.scoring.ranking import assign_competition_ranks
 
 _TRANSFORMS = {
     "log": log_transform,
@@ -493,6 +494,11 @@ def _assign_ranks(
 ) -> None:
     """Ordinal ranks over the international set, highest score first.
 
+    Ranks follow the standard competition convention (1, 1, 3, 4): markets the
+    model scores identically share a rank, because they have identical standing
+    (ADR-020). Excluded markets are filtered out *before* ranking, so an
+    unranked market never consumes a rank position.
+
     Three things leave a result unranked, and none of them is "a low score":
 
     * it is a home-market benchmark (``international_top50_excludes_home_market``);
@@ -519,9 +525,8 @@ def _assign_ranks(
         and not r.is_home_market
         and r.coverage >= minimum_rank_coverage
     ]
-    scored.sort(key=lambda r: (-r.score, r.market_key))
-    for position, result in enumerate(scored, start=1):
-        result.rank = position
+    # Standard competition ranking: equal scores share a rank (see ranking.py).
+    assign_competition_ranks(scored)
 
 
 __all__ = [
