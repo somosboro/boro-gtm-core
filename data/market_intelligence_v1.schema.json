@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opengtm.dev/schemas/market-intelligence-v1.schema.json",
+  "title": "OpenGTM Market Intelligence Import v1",
+  "type": "object",
+  "required": ["metadata", "source_catalog", "markets", "home_market_benchmark", "excluded_from_top50_but_in_normalization_universe"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": ["title", "generated_date", "universe_size", "normalization", "score_version", "score_formula"],
+      "properties": {
+        "title": {"type": "string"},
+        "generated_date": {"type": "string", "format": "date"},
+        "currency": {"type": "string"},
+        "universe_size": {"type": "integer", "minimum": 1},
+        "normalization": {"type": "string"},
+        "score_version": {"type": "string"},
+        "score_formula": {"type": "object"},
+        "important_method_notes": {"type": "array", "items": {"type": "string"}},
+        "fact_type_legend": {"type": "object"}
+      },
+      "additionalProperties": true
+    },
+    "source_catalog": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": {"type": "string"},
+          "url": {"type": ["string", "null"]},
+          "used_for": {"type": "array", "items": {"type": "string"}},
+          "note": {"type": ["string", "null"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "markets": {
+      "type": "array",
+      "minItems": 50,
+      "maxItems": 50,
+      "items": {"$ref": "#/$defs/market"}
+    },
+    "home_market_benchmark": {"$ref": "#/$defs/benchmarkMarket"},
+    "excluded_from_top50_but_in_normalization_universe": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["country", "market_score"],
+        "properties": {
+          "country": {"type": "string"},
+          "market_score": {"type": "number", "minimum": 0, "maximum": 100}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "$defs": {
+    "rawMetrics": {
+      "type": "object",
+      "properties": {
+        "gdp_nominal_2025_usd_bn": {"type": ["number", "null"]},
+        "gdp_per_capita_2026_usd": {"type": ["number", "null"]},
+        "real_gdp_growth_2026_pct": {"type": ["number", "null"]},
+        "innovation_digital_proxy_2025": {"type": ["number", "null"]},
+        "manufacturing_value_added_proxy_usd_bn": {"type": ["number", "null"]},
+        "software_spending_2024_pct_gdp": {"type": ["number", "null"]},
+        "language_access_0_1": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "timezone_overlap_0_1": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "b2b_email_legal_access_0_1": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": true
+    },
+    "subscores": {
+      "type": "object",
+      "properties": {
+        "economic_strength_20": {"type": "number", "minimum": 0, "maximum": 20},
+        "technology_investment_readiness_20": {"type": "number", "minimum": 0, "maximum": 20},
+        "digitalization_opportunity_15": {"type": "number", "minimum": 0, "maximum": 15},
+        "icp_density_proxy_20": {"type": "number", "minimum": 0, "maximum": 20},
+        "ability_to_pay_10": {"type": "number", "minimum": 0, "maximum": 10},
+        "gtm_ease_10": {"type": "number", "minimum": 0, "maximum": 10},
+        "outlook_5": {"type": "number", "minimum": 0, "maximum": 5}
+      },
+      "additionalProperties": true
+    },
+    "market": {
+      "type": "object",
+      "required": ["country", "region", "raw", "subscores", "market_score", "rank", "market_categories", "competition", "confidence_level", "sources"],
+      "properties": {
+        "country": {"type": "string"},
+        "region": {"type": "string"},
+        "raw": {"$ref": "#/$defs/rawMetrics"},
+        "subscores": {"$ref": "#/$defs/subscores"},
+        "market_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "rank": {"type": "integer", "minimum": 1, "maximum": 50},
+        "market_categories": {"type": "array", "items": {"type": "string"}},
+        "competition": {"type": "object"},
+        "why_it_matters": {"type": "string"},
+        "confidence_level": {"type": "string"},
+        "sources": {"type": "array", "items": {"type": "string"}},
+        "technology_spending_growth": {"type": "object"},
+        "tam_sam_som": {"type": ["object", "null"]},
+        "deep_dive": {"type": ["object", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "benchmarkMarket": {
+      "type": "object",
+      "required": ["country", "region", "raw", "subscores", "market_score", "market_categories", "competition", "confidence_level", "sources"],
+      "properties": {
+        "country": {"type": "string"},
+        "region": {"type": "string"},
+        "raw": {"$ref": "#/$defs/rawMetrics"},
+        "subscores": {"$ref": "#/$defs/subscores"},
+        "market_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "market_categories": {"type": "array", "items": {"type": "string"}},
+        "competition": {"type": "object"},
+        "confidence_level": {"type": "string"},
+        "sources": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

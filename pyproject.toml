@@ -1,0 +1,54 @@
+[project]
+name = "boro-gtm-core"
+version = "0.1.0"
+description = "BoRo GTM Core (working codename) — evidence-driven GTM Market Intelligence engine (M0 + M1)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",
+    "jsonschema>=4.23",
+    "typer>=0.15",
+    "python-json-logger>=2.0.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+    "ruff>=0.8",
+]
+
+[project.scripts]
+gtm = "boro_gtm.cli:app"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["packages"]
+include = ["boro_gtm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires a live PostgreSQL database"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["packages"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# B008: FastAPI's Depends()/Query() in argument defaults is the framework idiom.
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+# Alembic writes these; leave the generated formatting alone.
+"migrations/versions/*" = ["E501"]

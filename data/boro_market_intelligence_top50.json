@@ -1,0 +1,3566 @@
+{
+  "metadata": {
+    "title": "BoRo Studio International Market Intelligence — Top 50",
+    "generated_date": "2026-09-21",
+    "currency": "USD",
+    "universe_size": 63,
+    "international_top50_excludes_home_market": "Chile",
+    "normalization": "Percentile ranks within the 63-economy candidate universe; log transform before percentile for GDP, GDP per capita, population and manufacturing value-added.",
+    "score_version": "1.0",
+    "score_formula": {
+      "economic_strength_20": "12*P(log GDP nominal) + 8*P(log GDP per capita)",
+      "technology_investment_readiness_20": "20*P(WIPO GII 2025 score or documented equivalent proxy)",
+      "digitalization_opportunity_15": "15*P(P(log GDP per capita) * (1-P(digital/innovation maturity)))",
+      "icp_density_proxy_20": "9*P(log implied population) + 7*P(log manufacturing value added) + 4*P(log GDP nominal)",
+      "ability_to_pay_10": "10*P(log GDP per capita)",
+      "gtm_ease_10": "4*language access + 3*time-zone overlap with Santiago + 3*B2B-email legal access",
+      "outlook_5": "5*P(IMF real GDP growth 2026)"
+    },
+    "important_method_notes": [
+      "Technology spending is not fabricated when country-level public data are unavailable. WIPO/S&P software spending % GDP is stored where observed but not forced into the score because coverage/modeling is uneven.",
+      "The technology sub-score is therefore best read as technology investment/readiness, not literal total IT-spend dollars.",
+      "ICP density is a transparent cross-country proxy; national sector/business-register anchors are preferred for market deep dives.",
+      "Competition is reported as an inference and is deliberately not penalized in the score: high competition may be evidence of strong demand.",
+      "GTM legal-access values are simplified scoring inputs, not legal advice. Actual campaigns require country-specific compliance review.",
+      "Ireland GDP per capita is distorted upward by multinational accounting; GNI* sensitivity should be added before committing a large budget.",
+      "TAM/SAM/SOM are ranges intended for market-screening, not forecasts of bookings."
+    ],
+    "fact_type_legend": {
+      "FACT": "directly reported source datum",
+      "ESTIMATE": "derived range or modeled market count",
+      "PROXY": "observable surrogate for missing comparable measure",
+      "INFERENCE": "analytical interpretation",
+      "HYPOTHESIS": "requires commercial validation",
+      "N/D": "not available/not used"
+    }
+  },
+  "source_catalog": {
+    "IMF_WEO_2026_04": {
+      "title": "IMF World Economic Outlook Database — April 2026",
+      "url": "https://data.imf.org/Datasets/WEO",
+      "used_for": [
+        "GDP nominal",
+        "GDP per capita",
+        "2026 real GDP growth",
+        "5-year macro outlook"
+      ],
+      "note": "Cross-country macro vintage frozen to April 2026 for comparability; later July 2026 update is a sensitivity source."
+    },
+    "WIPO_GII_2025": {
+      "title": "WIPO Global Innovation Index 2025",
+      "url": "https://www.wipo.int/web-publications/global-innovation-index-2025/en/",
+      "used_for": [
+        "innovation/digital/technology-readiness proxy"
+      ],
+      "note": "139 economies; Taiwan is not covered and therefore uses a separate proxy."
+    },
+    "WIPO_SOFTWARE_2025": {
+      "title": "WIPO GII indicator 6.2.3 — Software spending, % GDP (underlying year 2024; S&P Global)",
+      "url": "https://www.wipo.int/gii-ranking/en/indicators/623",
+      "used_for": [
+        "reported software spending intensity where available"
+      ],
+      "note": "Indicator may be modeled when direct sales data are unavailable; not imputed for missing markets and not forced into score."
+    },
+    "EUROSTAT_DIGITAL_2026": {
+      "title": "Eurostat — Digitalisation in Europe, 2026 edition",
+      "url": "https://ec.europa.eu/eurostat/en/web/interactive-publications/digitalisation-2026",
+      "used_for": [
+        "EU SME digital intensity",
+        "cloud",
+        "AI adoption",
+        "digitalization-gap validation"
+      ]
+    },
+    "ITU_IDI_2026": {
+      "title": "ITU ICT Development Index 2026",
+      "url": "https://www.itu.int/itu-d/reports/statistics/idi2026/",
+      "used_for": [
+        "digital infrastructure validation"
+      ]
+    },
+    "GARTNER_IT_2026": {
+      "title": "Gartner worldwide IT spending forecast, 2026",
+      "url": "https://www.gartner.com/en/newsroom",
+      "used_for": [
+        "global/regional technology-spending growth sensitivity"
+      ],
+      "note": "Worldwide IT spending forecast about +14.2% in 2026 in the July 2026 update; European IT about +11% in 2026 in regional outlook."
+    },
+    "WORLD_BANK_MVA": {
+      "title": "World Bank WDI — Manufacturing, value added (current US$)",
+      "url": "https://data.worldbank.org/indicator/NV.IND.MANF.CD",
+      "used_for": [
+        "industrial-density proxy"
+      ],
+      "note": "Latest available year differs by country; therefore treated as a proxy rather than a same-year exact measurement."
+    },
+    "US_CENSUS_CBP_2023": {
+      "title": "U.S. Census County Business Patterns 2023 — NAICS 238220",
+      "url": "https://data.census.gov/table/CBP2023.CB2300CBP?codeset=naics~238220",
+      "used_for": [
+        "U.S. HVAC/mechanical establishment anchor"
+      ]
+    },
+    "US_BLS_HVAC_2026": {
+      "title": "U.S. BLS Occupational Outlook — HVACR mechanics/installers",
+      "url": "https://www.bls.gov/ooh/installation-maintenance-and-repair/heating-air-conditioning-and-refrigeration-mechanics-and-installers.htm",
+      "used_for": [
+        "labor demand / automation-pressure validation"
+      ]
+    },
+    "US_BLS_INDUSTRIAL_2026": {
+      "title": "U.S. BLS Occupational Outlook — industrial machinery mechanics/maintenance/millwrights",
+      "url": "https://www.bls.gov/ooh/installation-maintenance-and-repair/industrial-machinery-mechanics-and-maintenance-workers-and-millwrights.htm",
+      "used_for": [
+        "industrial-maintenance labor demand"
+      ]
+    },
+    "FTC_CAN_SPAM": {
+      "title": "U.S. FTC — CAN-SPAM compliance guide",
+      "url": "https://www.ftc.gov/business-guidance/resources/can-spam-act-compliance-guide-business",
+      "used_for": [
+        "U.S. B2B outbound compliance"
+      ]
+    },
+    "UK_ICO_B2B": {
+      "title": "UK ICO — Business-to-business marketing",
+      "url": "https://ico.org.uk/for-organisations/direct-marketing-and-privacy-and-electronic-communications/business-to-business-marketing/",
+      "used_for": [
+        "UK B2B email compliance"
+      ]
+    },
+    "CANADA_CASL": {
+      "title": "Government of Canada — Getting consent to send email under CASL",
+      "url": "https://ised-isde.canada.ca/site/canada-anti-spam-legislation/en/getting-consent-send-email",
+      "used_for": [
+        "Canada outbound compliance"
+      ]
+    },
+    "SAUDI_CST_2026": {
+      "title": "Saudi CST — ICT market / ITU IDI 2026",
+      "url": "https://www.cst.gov.sa/en/media-center/news/N2026070101",
+      "used_for": [
+        "Saudi ICT market size and growth"
+      ]
+    },
+    "TAIWAN_MOEA_2026": {
+      "title": "Taiwan Ministry of Economic Affairs — manufacturing investment statistics",
+      "url": "https://www.moea.gov.tw/",
+      "used_for": [
+        "Taiwan industrial investment validation"
+      ]
+    }
+  },
+  "markets": [
+    {
+      "country": "United States",
+      "region": "North America",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 30770,
+        "gdp_per_capita_2026_usd": 94430,
+        "real_gdp_growth_2026_pct": 2.3,
+        "innovation_digital_proxy_2025": 61.7,
+        "manufacturing_value_added_proxy_usd_bn": 2497.1,
+        "software_spending_2024_pct_gdp": 1.26,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.95,
+        "b2b_email_legal_access_0_1": 1.0
+      },
+      "subscores": {
+        "economic_strength_20": 19.355,
+        "technology_investment_readiness_20": 19.355,
+        "digitalization_opportunity_15": 1.694,
+        "icp_density_proxy_20": 19.597,
+        "ability_to_pay_10": 9.194,
+        "gtm_ease_10": 9.85,
+        "outlook_5": 2.863
+      },
+      "market_score": 81.908,
+      "rank": 1,
+      "market_categories": [
+        "GIANT_MARKET"
+      ],
+      "competition": {
+        "level": "VERY_HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Largest addressable field-service base, highest observed software-spend intensity in the dataset, high ticket capacity and workable B2B email rules; competition is intense.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "US_CENSUS_CBP_2023",
+        "US_BLS_HVAC_2026",
+        "US_BLS_INDUSTRIAL_2026",
+        "FTC_CAN_SPAM"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "HIGH_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 300000,
+          "max": 500000
+        },
+        "sam_boro_icp_firms": {
+          "min": 50000,
+          "max": 90000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 2500,
+          "max": 5000
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 60000
+        },
+        "sam_economic_value_usd": {
+          "min": 1000000000,
+          "max": 5400000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 50000000,
+          "max": 300000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "Commercial HVAC/mechanical; refrigeration; industrial equipment service; facilities; electrical",
+        "priority_geographies": "Texas/Florida/California; Southeast; Great Lakes; Northeast",
+        "recommended_channel": "Email + phone + LinkedIn + associations",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "United Kingdom",
+      "region": "UK/Ireland",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 4000,
+        "gdp_per_capita_2026_usd": 61056,
+        "real_gdp_growth_2026_pct": 0.8,
+        "innovation_digital_proxy_2025": 59.1,
+        "manufacturing_value_added_proxy_usd_bn": 294.3,
+        "software_spending_2024_pct_gdp": 0.56,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.65,
+        "b2b_email_legal_access_0_1": 1.0
+      },
+      "subscores": {
+        "economic_strength_20": 17.29,
+        "technology_investment_readiness_20": 18.387,
+        "digitalization_opportunity_15": 2.661,
+        "icp_density_proxy_20": 16.726,
+        "ability_to_pay_10": 7.581,
+        "gtm_ease_10": 8.95,
+        "outlook_5": 0.806
+      },
+      "market_score": 72.401,
+      "rank": 2,
+      "market_categories": [
+        "GIANT_MARKET"
+      ],
+      "competition": {
+        "level": "VERY_HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Large contractor/facilities base, English-language sales and unusually favorable corporate B2B email rules; strong fit for service-to-cash and integration.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "UK_ICO_B2B"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 180000,
+          "max": 300000
+        },
+        "sam_boro_icp_firms": {
+          "min": 25000,
+          "max": 45000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 1000,
+          "max": 2500
+        },
+        "ticket_usd": {
+          "min": 18000,
+          "max": 50000
+        },
+        "sam_economic_value_usd": {
+          "min": 450000000,
+          "max": 2250000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 18000000,
+          "max": 125000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "HVAC/MEP; facilities; lifts; electrical; fire/service",
+        "priority_geographies": "London/South East; Midlands; Manchester; Birmingham; Leeds",
+        "recommended_channel": "Corporate B2B email + phone + LinkedIn",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Germany",
+      "region": "DACH",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 5050,
+        "gdp_per_capita_2026_usd": 65303,
+        "real_gdp_growth_2026_pct": 0.7,
+        "innovation_digital_proxy_2025": 55.5,
+        "manufacturing_value_added_proxy_usd_bn": 843.7,
+        "software_spending_2024_pct_gdp": 0.5,
+        "language_access_0_1": 0.98,
+        "timezone_overlap_0_1": 0.6,
+        "b2b_email_legal_access_0_1": 0.0
+      },
+      "subscores": {
+        "economic_strength_20": 17.935,
+        "technology_investment_readiness_20": 16.452,
+        "digitalization_opportunity_15": 5.565,
+        "icp_density_proxy_20": 17.935,
+        "ability_to_pay_10": 7.903,
+        "gtm_ease_10": 5.72,
+        "outlook_5": 0.605
+      },
+      "market_score": 72.115,
+      "rank": 3,
+      "market_categories": [
+        "GIANT_MARKET"
+      ],
+      "competition": {
+        "level": "VERY_HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Exceptional industrial/MEP density and purchasing power; attractive economics but German-language trust and strict email-consent rules raise CAC.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 180000,
+          "max": 300000
+        },
+        "sam_boro_icp_firms": {
+          "min": 25000,
+          "max": 45000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 800,
+          "max": 2000
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 60000
+        },
+        "sam_economic_value_usd": {
+          "min": 500000000,
+          "max": 2700000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 16000000,
+          "max": 120000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "TGA/HVAC; mechanical; machinery service; industrial maintenance; facilities",
+        "priority_geographies": "NRW; Bavaria; Baden-Württemberg; Hesse; Hamburg",
+        "recommended_channel": "German LinkedIn/phone + associations + partners/events",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Australia",
+      "region": "Australia/NZ",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 1840,
+        "gdp_per_capita_2026_usd": 75648,
+        "real_gdp_growth_2026_pct": 2.0,
+        "innovation_digital_proxy_2025": 48.0,
+        "manufacturing_value_added_proxy_usd_bn": 94.5,
+        "software_spending_2024_pct_gdp": 0.24,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.05,
+        "b2b_email_legal_access_0_1": 0.0
+      },
+      "subscores": {
+        "economic_strength_20": 16.452,
+        "technology_investment_readiness_20": 13.065,
+        "digitalization_opportunity_15": 12.581,
+        "icp_density_proxy_20": 12.565,
+        "ability_to_pay_10": 8.71,
+        "gtm_ease_10": 4.15,
+        "outlook_5": 2.218
+      },
+      "market_score": 69.741,
+      "rank": 4,
+      "market_categories": [
+        "HIGH_VALUE_NICHE",
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "High labor costs, English, dense trade-service economy and strong ticket capacity; outbound must be consent-aware.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 80000,
+          "max": 130000
+        },
+        "sam_boro_icp_firms": {
+          "min": 10000,
+          "max": 20000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 600,
+          "max": 1500
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 55000
+        },
+        "sam_economic_value_usd": {
+          "min": 200000000,
+          "max": 1100000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 12000000,
+          "max": 82500000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "HVAC/refrigeration; electrical; facilities; mining/equipment service",
+        "priority_geographies": "Sydney; Melbourne; Brisbane; Perth; Adelaide",
+        "recommended_channel": "Phone + LinkedIn + trade bodies + partners",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "France",
+      "region": "Western Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 3370,
+        "gdp_per_capita_2026_usd": 52083,
+        "real_gdp_growth_2026_pct": 0.6,
+        "innovation_digital_proxy_2025": 53.4,
+        "manufacturing_value_added_proxy_usd_bn": 302.3,
+        "software_spending_2024_pct_gdp": 0.61,
+        "language_access_0_1": 0.85,
+        "timezone_overlap_0_1": 0.6,
+        "b2b_email_legal_access_0_1": 0.75
+      },
+      "subscores": {
+        "economic_strength_20": 16.387,
+        "technology_investment_readiness_20": 15.806,
+        "digitalization_opportunity_15": 6.048,
+        "icp_density_proxy_20": 16.677,
+        "ability_to_pay_10": 6.935,
+        "gtm_ease_10": 7.45,
+        "outlook_5": 0.323
+      },
+      "market_score": 69.626,
+      "rank": 5,
+      "market_categories": [
+        "GIANT_MARKET"
+      ],
+      "competition": {
+        "level": "VERY_HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Large industrial/building-services base and meaningful SME digitization headroom; French localization matters.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 180000,
+          "max": 300000
+        },
+        "sam_boro_icp_firms": {
+          "min": 20000,
+          "max": 40000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 800,
+          "max": 1800
+        },
+        "ticket_usd": {
+          "min": 18000,
+          "max": 50000
+        },
+        "sam_economic_value_usd": {
+          "min": 360000000,
+          "max": 2000000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 14400000,
+          "max": 90000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "CVC/HVAC; multitech facilities; industrial maintenance; elevators; energy services",
+        "priority_geographies": "Île-de-France; Lyon/Auvergne-Rhône-Alpes; PACA; Hauts-de-France",
+        "recommended_channel": "French email where role-relevant + LinkedIn/phone",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Ireland",
+      "region": "UK/Ireland",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 718,
+        "gdp_per_capita_2026_usd": 140186,
+        "real_gdp_growth_2026_pct": 2.0,
+        "innovation_digital_proxy_2025": 50.4,
+        "manufacturing_value_added_proxy_usd_bn": 180.1,
+        "software_spending_2024_pct_gdp": 0.68,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.65,
+        "b2b_email_legal_access_0_1": 0.0
+      },
+      "subscores": {
+        "economic_strength_20": 15.419,
+        "technology_investment_readiness_20": 14.516,
+        "digitalization_opportunity_15": 11.129,
+        "icp_density_proxy_20": 9.661,
+        "ability_to_pay_10": 9.839,
+        "gtm_ease_10": 5.95,
+        "outlook_5": 2.218
+      },
+      "market_score": 68.732,
+      "rank": 6,
+      "market_categories": [
+        "HIGH_VALUE_NICHE",
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Small but very rich B2B market with strong construction/data-center/service activity; best treated as a UK/Ireland cluster extension.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "LOW_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 20000,
+          "max": 35000
+        },
+        "sam_boro_icp_firms": {
+          "min": 2000,
+          "max": 4000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 150,
+          "max": 400
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 50000
+        },
+        "sam_economic_value_usd": {
+          "min": 40000000,
+          "max": 200000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 3000000,
+          "max": 20000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "MEP; facilities; data-center service; industrial technical service",
+        "priority_geographies": "Dublin; Cork; Limerick; Galway",
+        "recommended_channel": "English partner/LinkedIn/phone; cluster with UK",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Canada",
+      "region": "North America",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 2320,
+        "gdp_per_capita_2026_usd": 60305,
+        "real_gdp_growth_2026_pct": 1.5,
+        "innovation_digital_proxy_2025": 51.1,
+        "manufacturing_value_added_proxy_usd_bn": 187.2,
+        "software_spending_2024_pct_gdp": 0.63,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.95,
+        "b2b_email_legal_access_0_1": 0.0
+      },
+      "subscores": {
+        "economic_strength_20": 16.194,
+        "technology_investment_readiness_20": 15.0,
+        "digitalization_opportunity_15": 7.258,
+        "icp_density_proxy_20": 14.565,
+        "ability_to_pay_10": 7.419,
+        "gtm_ease_10": 6.85,
+        "outlook_5": 1.411
+      },
+      "market_score": 68.697,
+      "rank": 7,
+      "market_categories": [
+        "GIANT_MARKET"
+      ],
+      "competition": {
+        "level": "VERY_HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Large building-equipment/HVAC base and strong tickets; CASL materially changes the outbound motion.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "CANADA_CASL"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "HIGH_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 120000,
+          "max": 200000
+        },
+        "sam_boro_icp_firms": {
+          "min": 15000,
+          "max": 30000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 800,
+          "max": 2000
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 55000
+        },
+        "sam_economic_value_usd": {
+          "min": 300000000,
+          "max": 1650000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 16000000,
+          "max": 110000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "HVAC/building equipment; refrigeration; electrical; industrial service",
+        "priority_geographies": "GTA/Toronto; Montréal; Vancouver; Calgary/Edmonton",
+        "recommended_channel": "Phone + LinkedIn + partners; CASL-aware email",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Italy",
+      "region": "Southern Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 2550,
+        "gdp_per_capita_2026_usd": 46505,
+        "real_gdp_growth_2026_pct": 0.5,
+        "innovation_digital_proxy_2025": 44.9,
+        "manufacturing_value_added_proxy_usd_bn": 352.9,
+        "software_spending_2024_pct_gdp": 0.6,
+        "language_access_0_1": 0.75,
+        "timezone_overlap_0_1": 0.55,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 15.742,
+        "technology_investment_readiness_20": 12.258,
+        "digitalization_opportunity_15": 10.403,
+        "icp_density_proxy_20": 16.371,
+        "ability_to_pay_10": 6.613,
+        "gtm_ease_10": 6.0,
+        "outlook_5": 0.161
+      },
+      "market_score": 67.548,
+      "rank": 8,
+      "market_categories": [
+        "GIANT_MARKET",
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Dense industrial machinery, HVAC, elevator and specialty-trade base with fragmented SME workflows; strong digitalization-gap thesis.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 180000,
+          "max": 300000
+        },
+        "sam_boro_icp_firms": {
+          "min": 18000,
+          "max": 35000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 700,
+          "max": 1500
+        },
+        "ticket_usd": {
+          "min": 15000,
+          "max": 45000
+        },
+        "sam_economic_value_usd": {
+          "min": 270000000,
+          "max": 1575000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 10500000,
+          "max": 67500000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "HVAC; elevators; machinery service; industrial maintenance; refrigeration",
+        "priority_geographies": "Lombardia; Veneto; Emilia-Romagna; Piedmont; Tuscany",
+        "recommended_channel": "Italian LinkedIn/phone + local partners",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Spain",
+      "region": "Southern Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 1900,
+        "gdp_per_capita_2026_usd": 41563,
+        "real_gdp_growth_2026_pct": 2.1,
+        "innovation_digital_proxy_2025": 44.6,
+        "manufacturing_value_added_proxy_usd_bn": 187.1,
+        "software_spending_2024_pct_gdp": 0.71,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.58,
+        "b2b_email_legal_access_0_1": 0.0
+      },
+      "subscores": {
+        "economic_strength_20": 15.032,
+        "technology_investment_readiness_20": 11.935,
+        "digitalization_opportunity_15": 10.645,
+        "icp_density_proxy_20": 14.758,
+        "ability_to_pay_10": 6.452,
+        "gtm_ease_10": 5.74,
+        "outlook_5": 2.621
+      },
+      "market_score": 67.183,
+      "rank": 9,
+      "market_categories": [
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Unusually high software spending plus incomplete SME digitalization, large contractor base and Spanish-language advantage for BoRo.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 150000,
+          "max": 250000
+        },
+        "sam_boro_icp_firms": {
+          "min": 15000,
+          "max": 30000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 800,
+          "max": 1800
+        },
+        "ticket_usd": {
+          "min": 15000,
+          "max": 45000
+        },
+        "sam_economic_value_usd": {
+          "min": 225000000,
+          "max": 1350000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 12000000,
+          "max": 81000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "Climatización/HVAC; MEP; facilities; industrial maintenance; energy service",
+        "priority_geographies": "Madrid; Catalonia; Basque Country; Valencia; Andalusia",
+        "recommended_channel": "Spanish LinkedIn/phone + partners; consent-aware email",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Netherlands",
+      "region": "Benelux",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 1330,
+        "gdp_per_capita_2026_usd": 79918,
+        "real_gdp_growth_2026_pct": 1.2,
+        "innovation_digital_proxy_2025": 57.0,
+        "manufacturing_value_added_proxy_usd_bn": 122.3,
+        "software_spending_2024_pct_gdp": 0.54,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.6,
+        "b2b_email_legal_access_0_1": 0.0
+      },
+      "subscores": {
+        "economic_strength_20": 15.806,
+        "technology_investment_readiness_20": 17.419,
+        "digitalization_opportunity_15": 4.839,
+        "icp_density_proxy_20": 11.919,
+        "ability_to_pay_10": 8.871,
+        "gtm_ease_10": 5.8,
+        "outlook_5": 1.048
+      },
+      "market_score": 65.702,
+      "rank": 10,
+      "market_categories": [
+        "HIGH_VALUE_NICHE"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Rich, dense installation/facilities market; mature digitization means BoRo should sell integration/architecture rather than basic digitization.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 70000,
+          "max": 120000
+        },
+        "sam_boro_icp_firms": {
+          "min": 8000,
+          "max": 15000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 400,
+          "max": 900
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 55000
+        },
+        "sam_economic_value_usd": {
+          "min": 160000000,
+          "max": 825000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 8000000,
+          "max": 49500000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "Installation technology; HVAC; industrial service; facilities; refrigeration",
+        "priority_geographies": "Randstad; Brabant/Eindhoven; Rotterdam",
+        "recommended_channel": "LinkedIn/phone + associations/partners",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Singapore",
+      "region": "Southeast Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 604,
+        "gdp_per_capita_2026_usd": 107758,
+        "real_gdp_growth_2026_pct": 3.5,
+        "innovation_digital_proxy_2025": 59.9,
+        "manufacturing_value_added_proxy_usd_bn": 89.4,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.05,
+        "b2b_email_legal_access_0_1": 0.6
+      },
+      "subscores": {
+        "economic_strength_20": 14.581,
+        "technology_investment_readiness_20": 18.71,
+        "digitalization_opportunity_15": 2.903,
+        "icp_density_proxy_20": 9.145,
+        "ability_to_pay_10": 9.516,
+        "gtm_ease_10": 5.95,
+        "outlook_5": 4.032
+      },
+      "market_score": 64.837,
+      "rank": 11,
+      "market_categories": [
+        "HIGH_VALUE_NICHE"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "LOW_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 15000,
+          "max": 30000
+        },
+        "sam_boro_icp_firms": {
+          "min": 2000,
+          "max": 4000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 150,
+          "max": 400
+        },
+        "ticket_usd": {
+          "min": 25000,
+          "max": 60000
+        },
+        "sam_economic_value_usd": {
+          "min": 50000000,
+          "max": 240000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 3750000,
+          "max": 24000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "Facilities; HVAC/building services; industrial/equipment; data centers",
+        "priority_geographies": "Singapore metro/islandwide",
+        "recommended_channel": "LinkedIn + regional partners + industry groups",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Switzerland",
+      "region": "DACH",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 1040,
+        "gdp_per_capita_2026_usd": 126177,
+        "real_gdp_growth_2026_pct": 1.3,
+        "innovation_digital_proxy_2025": 66.0,
+        "manufacturing_value_added_proxy_usd_bn": 165.7,
+        "software_spending_2024_pct_gdp": 0.65,
+        "language_access_0_1": 0.9,
+        "timezone_overlap_0_1": 0.58,
+        "b2b_email_legal_access_0_1": 0.5
+      },
+      "subscores": {
+        "economic_strength_20": 15.968,
+        "technology_investment_readiness_20": 20.0,
+        "digitalization_opportunity_15": 0.121,
+        "icp_density_proxy_20": 10.645,
+        "ability_to_pay_10": 9.677,
+        "gtm_ease_10": 6.84,
+        "outlook_5": 1.129
+      },
+      "market_score": 64.38,
+      "rank": 12,
+      "market_categories": [
+        "HIGH_VALUE_NICHE"
+      ],
+      "competition": {
+        "level": "VERY_HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "LOW_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 35000,
+          "max": 60000
+        },
+        "sam_boro_icp_firms": {
+          "min": 4000,
+          "max": 8000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 250,
+          "max": 600
+        },
+        "ticket_usd": {
+          "min": 25000,
+          "max": 65000
+        },
+        "sam_economic_value_usd": {
+          "min": 100000000,
+          "max": 520000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 6250000,
+          "max": 39000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "Building technology; HVAC; facilities; industrial equipment",
+        "priority_geographies": "Zurich; Basel; Bern; Geneva; Lausanne",
+        "recommended_channel": "Local-language LinkedIn/phone + partners",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Israel",
+      "region": "Middle East",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 611,
+        "gdp_per_capita_2026_usd": 69804,
+        "real_gdp_growth_2026_pct": 3.5,
+        "innovation_digital_proxy_2025": 52.3,
+        "manufacturing_value_added_proxy_usd_bn": 60.1,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.8,
+        "timezone_overlap_0_1": 0.42,
+        "b2b_email_legal_access_0_1": 0.5
+      },
+      "subscores": {
+        "economic_strength_20": 13.871,
+        "technology_investment_readiness_20": 15.484,
+        "digitalization_opportunity_15": 7.5,
+        "icp_density_proxy_20": 9.145,
+        "ability_to_pay_10": 8.387,
+        "gtm_ease_10": 5.96,
+        "outlook_5": 4.032
+      },
+      "market_score": 64.379,
+      "rank": 13,
+      "market_categories": [
+        "HIGH_VALUE_NICHE"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "LOW_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 25000,
+          "max": 50000
+        },
+        "sam_boro_icp_firms": {
+          "min": 3000,
+          "max": 7000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 250,
+          "max": 600
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 55000
+        },
+        "sam_economic_value_usd": {
+          "min": 60000000,
+          "max": 385000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 5000000,
+          "max": 33000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "Industrial technical service; facilities; energy; equipment service",
+        "priority_geographies": "Tel Aviv/Central; Haifa; Beersheba",
+        "recommended_channel": "Founder/ops network + LinkedIn + partners",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Norway",
+      "region": "Nordics",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 531,
+        "gdp_per_capita_2026_usd": 105877,
+        "real_gdp_growth_2026_pct": 1.5,
+        "innovation_digital_proxy_2025": 49.2,
+        "manufacturing_value_added_proxy_usd_bn": 29.8,
+        "software_spending_2024_pct_gdp": 0.61,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.55,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 13.677,
+        "technology_investment_readiness_20": 13.871,
+        "digitalization_opportunity_15": 11.855,
+        "icp_density_proxy_20": 6.04,
+        "ability_to_pay_10": 9.355,
+        "gtm_ease_10": 7.0,
+        "outlook_5": 1.411
+      },
+      "market_score": 63.209,
+      "rank": 14,
+      "market_categories": [
+        "HIGH_VALUE_NICHE",
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "LOW_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 30000,
+          "max": 50000
+        },
+        "sam_boro_icp_firms": {
+          "min": 3000,
+          "max": 6000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 200,
+          "max": 500
+        },
+        "ticket_usd": {
+          "min": 25000,
+          "max": 60000
+        },
+        "sam_economic_value_usd": {
+          "min": 75000000,
+          "max": 360000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 5000000,
+          "max": 30000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "HVAC/building tech; facilities; energy; marine/industrial",
+        "priority_geographies": "Oslo; Stavanger; Bergen; Trondheim",
+        "recommended_channel": "English/Norwegian LinkedIn + industry networks",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Belgium",
+      "region": "Benelux",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 725,
+        "gdp_per_capita_2026_usd": 65112,
+        "real_gdp_growth_2026_pct": 0.7,
+        "innovation_digital_proxy_2025": 48.5,
+        "manufacturing_value_added_proxy_usd_bn": 76.8,
+        "software_spending_2024_pct_gdp": 0.54,
+        "language_access_0_1": 0.97,
+        "timezone_overlap_0_1": 0.6,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 13.935,
+        "technology_investment_readiness_20": 13.548,
+        "digitalization_opportunity_15": 9.677,
+        "icp_density_proxy_20": 10.661,
+        "ability_to_pay_10": 7.742,
+        "gtm_ease_10": 7.03,
+        "outlook_5": 0.605
+      },
+      "market_score": 63.198,
+      "rank": 15,
+      "market_categories": [
+        "HIGH_VALUE_NICHE",
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 50000,
+          "max": 90000
+        },
+        "sam_boro_icp_firms": {
+          "min": 5000,
+          "max": 10000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 300,
+          "max": 700
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 50000
+        },
+        "sam_economic_value_usd": {
+          "min": 100000000,
+          "max": 500000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 6000000,
+          "max": 35000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "HVAC; facilities; industrial/electrical service",
+        "priority_geographies": "Brussels; Antwerp; Ghent; Wallonia",
+        "recommended_channel": "NL/FR localized LinkedIn + partners",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "South Korea",
+      "region": "East Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 1870,
+        "gdp_per_capita_2026_usd": 37412,
+        "real_gdp_growth_2026_pct": 2.6,
+        "innovation_digital_proxy_2025": 60.0,
+        "manufacturing_value_added_proxy_usd_bn": 499.2,
+        "software_spending_2024_pct_gdp": 0.3,
+        "language_access_0_1": 0.55,
+        "timezone_overlap_0_1": 0.08,
+        "b2b_email_legal_access_0_1": 0.4
+      },
+      "subscores": {
+        "economic_strength_20": 14.065,
+        "technology_investment_readiness_20": 19.032,
+        "digitalization_opportunity_15": 1.452,
+        "icp_density_proxy_20": 16.306,
+        "ability_to_pay_10": 5.484,
+        "gtm_ease_10": 3.64,
+        "outlook_5": 3.145
+      },
+      "market_score": 63.124,
+      "rank": 16,
+      "market_categories": [
+        "BALANCED_REGIONAL"
+      ],
+      "competition": {
+        "level": "VERY_HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Regional opportunity with usable ICP signals, but weaker aggregate economics or GTM conditions than the leading markets.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "LOW_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 120000,
+          "max": 220000
+        },
+        "sam_boro_icp_firms": {
+          "min": 12000,
+          "max": 25000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 400,
+          "max": 1000
+        },
+        "ticket_usd": {
+          "min": 18000,
+          "max": 50000
+        },
+        "sam_economic_value_usd": {
+          "min": 216000000,
+          "max": 1250000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 7200000,
+          "max": 50000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "Industrial/equipment service; HVAC; facilities",
+        "priority_geographies": "Seoul/Incheon; Busan/Ulsan; Daegu; Daejeon",
+        "recommended_channel": "Local partner/channel + Korean assets",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "United Arab Emirates",
+      "region": "GCC",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 572,
+        "gdp_per_capita_2026_usd": 54214,
+        "real_gdp_growth_2026_pct": 3.1,
+        "innovation_digital_proxy_2025": 44.2,
+        "manufacturing_value_added_proxy_usd_bn": 51.8,
+        "software_spending_2024_pct_gdp": 0.3,
+        "language_access_0_1": 0.9,
+        "timezone_overlap_0_1": 0.42,
+        "b2b_email_legal_access_0_1": 0.65
+      },
+      "subscores": {
+        "economic_strength_20": 12.065,
+        "technology_investment_readiness_20": 11.613,
+        "digitalization_opportunity_15": 12.339,
+        "icp_density_proxy_20": 9.5,
+        "ability_to_pay_10": 7.097,
+        "gtm_ease_10": 6.81,
+        "outlook_5": 3.669
+      },
+      "market_score": 63.093,
+      "rank": 17,
+      "market_categories": [
+        "DIGITALIZATION_GAP",
+        "EMERGING_SCALE"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Fast-growing construction/non-oil economy, facilities/MEP density and high ticket capacity; relationship/partner selling is important.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; MEA regional benchmarks available but not treated as country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "LOW_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 35000,
+          "max": 70000
+        },
+        "sam_boro_icp_firms": {
+          "min": 4000,
+          "max": 9000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 300,
+          "max": 900
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 60000
+        },
+        "sam_economic_value_usd": {
+          "min": 80000000,
+          "max": 540000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 6000000,
+          "max": 54000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "Facilities; MEP/HVAC; elevators; energy/equipment service",
+        "priority_geographies": "Dubai; Abu Dhabi; Sharjah",
+        "recommended_channel": "Partner/network/event-led + targeted LinkedIn",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Japan",
+      "region": "East Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 4440,
+        "gdp_per_capita_2026_usd": 35703,
+        "real_gdp_growth_2026_pct": 0.6,
+        "innovation_digital_proxy_2025": 53.6,
+        "manufacturing_value_added_proxy_usd_bn": 867.1,
+        "software_spending_2024_pct_gdp": 0.3,
+        "language_access_0_1": 0.45,
+        "timezone_overlap_0_1": 0.1,
+        "b2b_email_legal_access_0_1": 0.25
+      },
+      "subscores": {
+        "economic_strength_20": 15.548,
+        "technology_investment_readiness_20": 16.129,
+        "digitalization_opportunity_15": 4.113,
+        "icp_density_proxy_20": 18.71,
+        "ability_to_pay_10": 5.161,
+        "gtm_ease_10": 2.85,
+        "outlook_5": 0.323
+      },
+      "market_score": 62.834,
+      "rank": 18,
+      "market_categories": [
+        "GIANT_MARKET"
+      ],
+      "competition": {
+        "level": "VERY_HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Large economic and industrial base creates substantial ICP volume, but channel/ticket fit needs vertical validation.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "LOW_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 250000,
+          "max": 400000
+        },
+        "sam_boro_icp_firms": {
+          "min": 25000,
+          "max": 50000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 500,
+          "max": 1200
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 60000
+        },
+        "sam_economic_value_usd": {
+          "min": 500000000,
+          "max": 3000000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 10000000,
+          "max": 72000000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "Industrial maintenance; equipment; facilities; HVAC",
+        "priority_geographies": "Tokyo; Osaka; Nagoya; Yokohama",
+        "recommended_channel": "Local partner/channel + Japanese assets",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Sweden",
+      "region": "Nordics",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 669,
+        "gdp_per_capita_2026_usd": 70676,
+        "real_gdp_growth_2026_pct": 2.0,
+        "innovation_digital_proxy_2025": 62.6,
+        "manufacturing_value_added_proxy_usd_bn": 78.5,
+        "software_spending_2024_pct_gdp": 0.68,
+        "language_access_0_1": 0.98,
+        "timezone_overlap_0_1": 0.55,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 14.194,
+        "technology_investment_readiness_20": 19.677,
+        "digitalization_opportunity_15": 0.484,
+        "icp_density_proxy_20": 10.065,
+        "ability_to_pay_10": 8.548,
+        "gtm_ease_10": 6.92,
+        "outlook_5": 2.218
+      },
+      "market_score": 62.106,
+      "rank": 19,
+      "market_categories": [
+        "HIGH_VALUE_NICHE"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 40000,
+          "max": 70000
+        },
+        "sam_boro_icp_firms": {
+          "min": 4000,
+          "max": 8000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 250,
+          "max": 650
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 55000
+        },
+        "sam_economic_value_usd": {
+          "min": 80000000,
+          "max": 440000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 5000000,
+          "max": 35750000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "HVAC/building tech; facilities; industrial/energy",
+        "priority_geographies": "Stockholm; Gothenburg; Malmö",
+        "recommended_channel": "English/Swedish LinkedIn + partner/network",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Saudi Arabia",
+      "region": "GCC",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 1280,
+        "gdp_per_capita_2026_usd": 37811,
+        "real_gdp_growth_2026_pct": 3.1,
+        "innovation_digital_proxy_2025": 36.0,
+        "manufacturing_value_added_proxy_usd_bn": 194.9,
+        "software_spending_2024_pct_gdp": 0.3,
+        "language_access_0_1": 0.4,
+        "timezone_overlap_0_1": 0.42,
+        "b2b_email_legal_access_0_1": 0.35
+      },
+      "subscores": {
+        "economic_strength_20": 13.161,
+        "technology_investment_readiness_20": 6.774,
+        "digitalization_opportunity_15": 14.516,
+        "icp_density_proxy_20": 13.952,
+        "ability_to_pay_10": 5.806,
+        "gtm_ease_10": 3.91,
+        "outlook_5": 3.669
+      },
+      "market_score": 61.788,
+      "rank": 20,
+      "market_categories": [
+        "DIGITALIZATION_GAP",
+        "EMERGING_SCALE"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Large and fast-growing ICT market plus facilities, industrial and energy-service demand; local channel/procurement complexity is the main barrier.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "SAUDI_CST_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 8.0,
+        "period": "5-year CAGR through 2025",
+        "scope": "Saudi ICT market",
+        "source": "SAUDI_CST_2026",
+        "fact_type": "FACT"
+      },
+      "tam_sam_som": {
+        "fact_type": "ESTIMATE",
+        "confidence_level": "LOW_MEDIUM",
+        "tam_relevant_employer_firms": {
+          "min": 40000,
+          "max": 90000
+        },
+        "sam_boro_icp_firms": {
+          "min": 5000,
+          "max": 12000
+        },
+        "som_addressable_accounts_12_24m": {
+          "min": 300,
+          "max": 900
+        },
+        "ticket_usd": {
+          "min": 20000,
+          "max": 65000
+        },
+        "sam_economic_value_usd": {
+          "min": 100000000,
+          "max": 780000000
+        },
+        "som_account_pool_value_usd": {
+          "min": 6000000,
+          "max": 58500000
+        },
+        "warning": "SOM is prospectable account pool, not expected closed revenue."
+      },
+      "deep_dive": {
+        "priority_verticals": "Facilities; MEP/HVAC; energy; industrial/equipment service",
+        "priority_geographies": "Riyadh; Jeddah; Eastern Province/Jubail",
+        "recommended_channel": "Local partner + events/network + targeted LinkedIn",
+        "common_buyers": [
+          "Owner/President",
+          "CEO/General Manager",
+          "COO/VP Operations",
+          "VP Service/Service Manager",
+          "Operations Manager",
+          "Maintenance Manager"
+        ],
+        "common_problem_pattern": "request → planning → work order → dispatch → technician → parts → evidence → approval → close → invoice → asset history; often fragmented across ERP, spreadsheets, email, messaging, paper and FSM tools."
+      }
+    },
+    {
+      "country": "Taiwan",
+      "region": "East Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 920,
+        "gdp_per_capita_2026_usd": 39500,
+        "real_gdp_growth_2026_pct": 5.2,
+        "innovation_digital_proxy_2025": 59.0,
+        "manufacturing_value_added_proxy_usd_bn": 300.0,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.6,
+        "timezone_overlap_0_1": 0.08,
+        "b2b_email_legal_access_0_1": 0.4
+      },
+      "subscores": {
+        "economic_strength_20": 12.71,
+        "technology_investment_readiness_20": 18.065,
+        "digitalization_opportunity_15": 2.419,
+        "icp_density_proxy_20": 13.71,
+        "ability_to_pay_10": 5.968,
+        "gtm_ease_10": 3.84,
+        "outlook_5": 4.839
+      },
+      "market_score": 61.551,
+      "rank": 21,
+      "market_categories": [
+        "EMERGING_SCALE"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "High industrial density, manufacturing investment and B2B digitization; language/time-zone and local trust are the constraints.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "TAIWAN_MOEA_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "China",
+      "region": "East Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 19630,
+        "gdp_per_capita_2026_usd": 14874,
+        "real_gdp_growth_2026_pct": 4.4,
+        "innovation_digital_proxy_2025": 56.6,
+        "manufacturing_value_added_proxy_usd_bn": 4661.4,
+        "software_spending_2024_pct_gdp": 0.3,
+        "language_access_0_1": 0.45,
+        "timezone_overlap_0_1": 0.15,
+        "b2b_email_legal_access_0_1": 0.35
+      },
+      "subscores": {
+        "economic_strength_20": 13.097,
+        "technology_investment_readiness_20": 16.774,
+        "digitalization_opportunity_15": 1.21,
+        "icp_density_proxy_20": 19.79,
+        "ability_to_pay_10": 1.613,
+        "gtm_ease_10": 3.3,
+        "outlook_5": 4.435
+      },
+      "market_score": 60.219,
+      "rank": 22,
+      "market_categories": [
+        "GIANT_MARKET",
+        "EMERGING_SCALE"
+      ],
+      "competition": {
+        "level": "VERY_HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Large economic and industrial base creates substantial ICP volume, but channel/ticket fit needs vertical validation.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Poland",
+      "region": "Central Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 1040,
+        "gdp_per_capita_2026_usd": 31336,
+        "real_gdp_growth_2026_pct": 3.3,
+        "innovation_digital_proxy_2025": 37.7,
+        "manufacturing_value_added_proxy_usd_bn": 147.5,
+        "software_spending_2024_pct_gdp": 0.3,
+        "language_access_0_1": 0.95,
+        "timezone_overlap_0_1": 0.55,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 11.968,
+        "technology_investment_readiness_20": 8.871,
+        "digitalization_opportunity_15": 10.887,
+        "icp_density_proxy_20": 13.145,
+        "ability_to_pay_10": 4.677,
+        "gtm_ease_10": 6.8,
+        "outlook_5": 3.79
+      },
+      "market_score": 60.138,
+      "rank": 23,
+      "market_categories": [
+        "DIGITALIZATION_GAP",
+        "EMERGING_SCALE"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "EU-scale industrial/construction base, solid growth and visible SME digitization gap; compelling cost-adjusted experiment.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Austria",
+      "region": "DACH",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 580,
+        "gdp_per_capita_2026_usd": 67761,
+        "real_gdp_growth_2026_pct": 0.7,
+        "innovation_digital_proxy_2025": 50.1,
+        "manufacturing_value_added_proxy_usd_bn": 80.9,
+        "software_spending_2024_pct_gdp": 0.57,
+        "language_access_0_1": 0.98,
+        "timezone_overlap_0_1": 0.58,
+        "b2b_email_legal_access_0_1": 0.0
+      },
+      "subscores": {
+        "economic_strength_20": 13.226,
+        "technology_investment_readiness_20": 14.194,
+        "digitalization_opportunity_15": 8.952,
+        "icp_density_proxy_20": 9.403,
+        "ability_to_pay_10": 8.065,
+        "gtm_ease_10": 5.66,
+        "outlook_5": 0.605
+      },
+      "market_score": 60.105,
+      "rank": 24,
+      "market_categories": [
+        "HIGH_VALUE_NICHE"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Denmark",
+      "region": "Nordics",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 462,
+        "gdp_per_capita_2026_usd": 83445,
+        "real_gdp_growth_2026_pct": 2.0,
+        "innovation_digital_proxy_2025": 56.9,
+        "manufacturing_value_added_proxy_usd_bn": 75.8,
+        "software_spending_2024_pct_gdp": 0.62,
+        "language_access_0_1": 0.98,
+        "timezone_overlap_0_1": 0.58,
+        "b2b_email_legal_access_0_1": 0.0
+      },
+      "subscores": {
+        "economic_strength_20": 12.645,
+        "technology_investment_readiness_20": 17.097,
+        "digitalization_opportunity_15": 5.323,
+        "icp_density_proxy_20": 8.032,
+        "ability_to_pay_10": 9.032,
+        "gtm_ease_10": 5.66,
+        "outlook_5": 2.218
+      },
+      "market_score": 60.007,
+      "rank": 25,
+      "market_categories": [
+        "HIGH_VALUE_NICHE"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Czechia",
+      "region": "Central Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 389,
+        "gdp_per_capita_2026_usd": 39795,
+        "real_gdp_growth_2026_pct": 2.2,
+        "innovation_digital_proxy_2025": 42.0,
+        "manufacturing_value_added_proxy_usd_bn": 69.0,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.93,
+        "timezone_overlap_0_1": 0.55,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 9.548,
+        "technology_investment_readiness_20": 10.968,
+        "digitalization_opportunity_15": 11.613,
+        "icp_density_proxy_20": 9.0,
+        "ability_to_pay_10": 6.129,
+        "gtm_ease_10": 6.72,
+        "outlook_5": 2.742
+      },
+      "market_score": 56.72,
+      "rank": 26,
+      "market_categories": [
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Purchasing power and incomplete operational digitization coexist, creating a plausible modernization wedge.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Luxembourg",
+      "region": "Benelux",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 101,
+        "gdp_per_capita_2026_usd": 158733,
+        "real_gdp_growth_2026_pct": 2.0,
+        "innovation_digital_proxy_2025": 47.3,
+        "manufacturing_value_added_proxy_usd_bn": 6.0,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.95,
+        "timezone_overlap_0_1": 0.6,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 9.355,
+        "technology_investment_readiness_20": 12.581,
+        "digitalization_opportunity_15": 14.274,
+        "icp_density_proxy_20": 0.565,
+        "ability_to_pay_10": 10.0,
+        "gtm_ease_10": 6.95,
+        "outlook_5": 2.218
+      },
+      "market_score": 55.943,
+      "rank": 27,
+      "market_categories": [
+        "HIGH_VALUE_NICHE",
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Finland",
+      "region": "Nordics",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 317,
+        "gdp_per_capita_2026_usd": 60130,
+        "real_gdp_growth_2026_pct": 2.0,
+        "innovation_digital_proxy_2025": 57.7,
+        "manufacturing_value_added_proxy_usd_bn": 42.5,
+        "software_spending_2024_pct_gdp": 0.59,
+        "language_access_0_1": 0.98,
+        "timezone_overlap_0_1": 0.52,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 9.677,
+        "technology_investment_readiness_20": 17.742,
+        "digitalization_opportunity_15": 3.629,
+        "icp_density_proxy_20": 6.435,
+        "ability_to_pay_10": 7.258,
+        "gtm_ease_10": 6.83,
+        "outlook_5": 2.218
+      },
+      "market_score": 53.789,
+      "rank": 28,
+      "market_categories": [
+        "HIGH_VALUE_NICHE"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "HIGH",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Turkey",
+      "region": "Europe/West Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 1600,
+        "gdp_per_capita_2026_usd": 19018,
+        "real_gdp_growth_2026_pct": 3.4,
+        "innovation_digital_proxy_2025": 37.2,
+        "manufacturing_value_added_proxy_usd_bn": 228.9,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.55,
+        "timezone_overlap_0_1": 0.5,
+        "b2b_email_legal_access_0_1": 0.35
+      },
+      "subscores": {
+        "economic_strength_20": 11.161,
+        "technology_investment_readiness_20": 7.742,
+        "digitalization_opportunity_15": 6.29,
+        "icp_density_proxy_20": 16.0,
+        "ability_to_pay_10": 2.581,
+        "gtm_ease_10": 4.75,
+        "outlook_5": 3.871
+      },
+      "market_score": 52.395,
+      "rank": 29,
+      "market_categories": [
+        "EMERGING_SCALE"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Growing private-sector and industrial base creates expanding demand, with lower near-term ticket certainty than mature markets.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "New Zealand",
+      "region": "Australia/NZ",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 259,
+        "gdp_per_capita_2026_usd": 52023,
+        "real_gdp_growth_2026_pct": 2.1,
+        "innovation_digital_proxy_2025": 48.0,
+        "manufacturing_value_added_proxy_usd_bn": 22.2,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.02,
+        "b2b_email_legal_access_0_1": 0.5
+      },
+      "subscores": {
+        "economic_strength_20": 8.71,
+        "technology_investment_readiness_20": 13.065,
+        "digitalization_opportunity_15": 9.194,
+        "icp_density_proxy_20": 4.419,
+        "ability_to_pay_10": 6.774,
+        "gtm_ease_10": 5.56,
+        "outlook_5": 2.621
+      },
+      "market_score": 50.343,
+      "rank": 30,
+      "market_categories": [
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Purchasing power and incomplete operational digitization coexist, creating a plausible modernization wedge.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Mexico",
+      "region": "Latin America",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 1830,
+        "gdp_per_capita_2026_usd": 15779,
+        "real_gdp_growth_2026_pct": 1.6,
+        "innovation_digital_proxy_2025": 30.5,
+        "manufacturing_value_added_proxy_usd_bn": 367.6,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.95,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 10.839,
+        "technology_investment_readiness_20": 3.548,
+        "digitalization_opportunity_15": 6.532,
+        "icp_density_proxy_20": 17.403,
+        "ability_to_pay_10": 1.935,
+        "gtm_ease_10": 8.2,
+        "outlook_5": 1.613
+      },
+      "market_score": 50.07,
+      "rank": 31,
+      "market_categories": [
+        "BALANCED_REGIONAL"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Regional opportunity with usable ICP signals, but weaker aggregate economics or GTM conditions than the leading markets.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "India",
+      "region": "South Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 3920,
+        "gdp_per_capita_2026_usd": 2800,
+        "real_gdp_growth_2026_pct": 6.4,
+        "innovation_digital_proxy_2025": 38.2,
+        "manufacturing_value_added_proxy_usd_bn": 493.0,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.78,
+        "timezone_overlap_0_1": 0.35,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 11.032,
+        "technology_investment_readiness_20": 9.355,
+        "digitalization_opportunity_15": 0.121,
+        "icp_density_proxy_20": 19.113,
+        "ability_to_pay_10": 0.0,
+        "gtm_ease_10": 5.52,
+        "outlook_5": 4.919
+      },
+      "market_score": 50.06,
+      "rank": 32,
+      "market_categories": [
+        "GIANT_MARKET",
+        "EMERGING_SCALE"
+      ],
+      "competition": {
+        "level": "HIGH",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Large economic and industrial base creates substantial ICP volume, but channel/ticket fit needs vertical validation.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Portugal",
+      "region": "Southern Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 346,
+        "gdp_per_capita_2026_usd": 35434,
+        "real_gdp_growth_2026_pct": 1.9,
+        "innovation_digital_proxy_2025": 43.9,
+        "manufacturing_value_added_proxy_usd_bn": 36.8,
+        "software_spending_2024_pct_gdp": 0.61,
+        "language_access_0_1": 0.98,
+        "timezone_overlap_0_1": 0.62,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 8.258,
+        "technology_investment_readiness_20": 11.29,
+        "digitalization_opportunity_15": 8.468,
+        "icp_density_proxy_20": 7.935,
+        "ability_to_pay_10": 5.0,
+        "gtm_ease_10": 7.13,
+        "outlook_5": 1.815
+      },
+      "market_score": 49.896,
+      "rank": 33,
+      "market_categories": [
+        "BALANCED_REGIONAL"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Regional opportunity with usable ICP signals, but weaker aggregate economics or GTM conditions than the leading markets.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Qatar",
+      "region": "GCC",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 221,
+        "gdp_per_capita_2026_usd": 68138,
+        "real_gdp_growth_2026_pct": -8.6,
+        "innovation_digital_proxy_2025": 34.6,
+        "manufacturing_value_added_proxy_usd_bn": 17.7,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.85,
+        "timezone_overlap_0_1": 0.42,
+        "b2b_email_legal_access_0_1": 0.5
+      },
+      "subscores": {
+        "economic_strength_20": 9.484,
+        "technology_investment_readiness_20": 6.129,
+        "digitalization_opportunity_15": 15.0,
+        "icp_density_proxy_20": 3.194,
+        "ability_to_pay_10": 8.226,
+        "gtm_ease_10": 6.16,
+        "outlook_5": 0.0
+      },
+      "market_score": 48.193,
+      "rank": 34,
+      "market_categories": [
+        "HIGH_VALUE_NICHE",
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "LOW_TO_MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Smaller market but high purchasing power; attractive when BoRo can reuse a regional case study and keep CAC controlled.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; MEA regional benchmarks available but not treated as country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Russia",
+      "region": "Europe/Eurasia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 2590,
+        "gdp_per_capita_2026_usd": 18525,
+        "real_gdp_growth_2026_pct": 1.1,
+        "innovation_digital_proxy_2025": 30.3,
+        "manufacturing_value_added_proxy_usd_bn": 288.1,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.45,
+        "timezone_overlap_0_1": 0.45,
+        "b2b_email_legal_access_0_1": 0.0
+      },
+      "subscores": {
+        "economic_strength_20": 12.581,
+        "technology_investment_readiness_20": 3.226,
+        "digitalization_opportunity_15": 7.984,
+        "icp_density_proxy_20": 17.581,
+        "ability_to_pay_10": 2.419,
+        "gtm_ease_10": 3.15,
+        "outlook_5": 0.968
+      },
+      "market_score": 47.909,
+      "rank": 35,
+      "market_categories": [
+        "GIANT_MARKET"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Large economic and industrial base creates substantial ICP volume, but channel/ticket fit needs vertical validation.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Brazil",
+      "region": "Latin America",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 2280,
+        "gdp_per_capita_2026_usd": 12313,
+        "real_gdp_growth_2026_pct": 1.9,
+        "innovation_digital_proxy_2025": 32.9,
+        "manufacturing_value_added_proxy_usd_bn": 264.7,
+        "software_spending_2024_pct_gdp": 0.38,
+        "language_access_0_1": 0.55,
+        "timezone_overlap_0_1": 0.95,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 11.226,
+        "technology_investment_readiness_20": 4.839,
+        "digitalization_opportunity_15": 4.597,
+        "icp_density_proxy_20": 17.306,
+        "ability_to_pay_10": 1.452,
+        "gtm_ease_10": 6.4,
+        "outlook_5": 1.815
+      },
+      "market_score": 47.635,
+      "rank": 36,
+      "market_categories": [
+        "GIANT_MARKET"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Large economic and industrial base creates substantial ICP volume, but channel/ticket fit needs vertical validation.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Slovenia",
+      "region": "Central Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 80,
+        "gdp_per_capita_2026_usd": 40630,
+        "real_gdp_growth_2026_pct": 2.0,
+        "innovation_digital_proxy_2025": 40.1,
+        "manufacturing_value_added_proxy_usd_bn": 14.1,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.97,
+        "timezone_overlap_0_1": 0.55,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 5.419,
+        "technology_investment_readiness_20": 10.323,
+        "digitalization_opportunity_15": 12.823,
+        "icp_density_proxy_20": 1.806,
+        "ability_to_pay_10": 6.29,
+        "gtm_ease_10": 6.88,
+        "outlook_5": 2.218
+      },
+      "market_score": 45.759,
+      "rank": 37,
+      "market_categories": [
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "LOW_TO_MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Purchasing power and incomplete operational digitization coexist, creating a plausible modernization wedge.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Malaysia",
+      "region": "Southeast Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 472,
+        "gdp_per_capita_2026_usd": 15085,
+        "real_gdp_growth_2026_pct": 4.7,
+        "innovation_digital_proxy_2025": 40.6,
+        "manufacturing_value_added_proxy_usd_bn": 95.0,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.95,
+        "timezone_overlap_0_1": 0.05,
+        "b2b_email_legal_access_0_1": 0.55
+      },
+      "subscores": {
+        "economic_strength_20": 7.032,
+        "technology_investment_readiness_20": 10.645,
+        "digitalization_opportunity_15": 3.871,
+        "icp_density_proxy_20": 11.677,
+        "ability_to_pay_10": 1.774,
+        "gtm_ease_10": 5.6,
+        "outlook_5": 4.597
+      },
+      "market_score": 45.196,
+      "rank": 38,
+      "market_categories": [
+        "EMERGING_SCALE"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Growing private-sector and industrial base creates expanding demand, with lower near-term ticket certainty than mature markets.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Lithuania",
+      "region": "Baltics",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 95,
+        "gdp_per_capita_2026_usd": 36545,
+        "real_gdp_growth_2026_pct": 2.8,
+        "innovation_digital_proxy_2025": 37.5,
+        "manufacturing_value_added_proxy_usd_bn": 11.9,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.96,
+        "timezone_overlap_0_1": 0.52,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 5.226,
+        "technology_investment_readiness_20": 8.387,
+        "digitalization_opportunity_15": 13.548,
+        "icp_density_proxy_20": 1.806,
+        "ability_to_pay_10": 5.323,
+        "gtm_ease_10": 6.75,
+        "outlook_5": 3.427
+      },
+      "market_score": 44.467,
+      "rank": 39,
+      "market_categories": [
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "LOW_TO_MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Purchasing power and incomplete operational digitization coexist, creating a plausible modernization wedge.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Romania",
+      "region": "Central Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 428,
+        "gdp_per_capita_2026_usd": 25693,
+        "real_gdp_growth_2026_pct": 0.7,
+        "innovation_digital_proxy_2025": 34.3,
+        "manufacturing_value_added_proxy_usd_bn": 50.5,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.96,
+        "timezone_overlap_0_1": 0.52,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 7.871,
+        "technology_investment_readiness_20": 5.806,
+        "digitalization_opportunity_15": 10.161,
+        "icp_density_proxy_20": 9.258,
+        "ability_to_pay_10": 3.548,
+        "gtm_ease_10": 6.75,
+        "outlook_5": 0.605
+      },
+      "market_score": 43.999,
+      "rank": 40,
+      "market_categories": [
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Purchasing power and incomplete operational digitization coexist, creating a plausible modernization wedge.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Greece",
+      "region": "Southern Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 280,
+        "gdp_per_capita_2026_usd": 29696,
+        "real_gdp_growth_2026_pct": 1.5,
+        "innovation_digital_proxy_2025": 37.4,
+        "manufacturing_value_added_proxy_usd_bn": 23.2,
+        "software_spending_2024_pct_gdp": 0.59,
+        "language_access_0_1": 0.92,
+        "timezone_overlap_0_1": 0.52,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 6.839,
+        "technology_investment_readiness_20": 8.065,
+        "digitalization_opportunity_15": 9.919,
+        "icp_density_proxy_20": 6.597,
+        "ability_to_pay_10": 4.194,
+        "gtm_ease_10": 6.59,
+        "outlook_5": 1.411
+      },
+      "market_score": 43.615,
+      "rank": 41,
+      "market_categories": [
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "LOW_TO_MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Purchasing power and incomplete operational digitization coexist, creating a plausible modernization wedge.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Hungary",
+      "region": "Central Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 247,
+        "gdp_per_capita_2026_usd": 28430,
+        "real_gdp_growth_2026_pct": 2.0,
+        "innovation_digital_proxy_2025": 40.0,
+        "manufacturing_value_added_proxy_usd_bn": 35.2,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.95,
+        "timezone_overlap_0_1": 0.52,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 6.194,
+        "technology_investment_readiness_20": 10.0,
+        "digitalization_opportunity_15": 7.742,
+        "icp_density_proxy_20": 6.742,
+        "ability_to_pay_10": 3.871,
+        "gtm_ease_10": 6.71,
+        "outlook_5": 2.218
+      },
+      "market_score": 43.477,
+      "rank": 42,
+      "market_categories": [
+        "BALANCED_REGIONAL"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Regional opportunity with usable ICP signals, but weaker aggregate economics or GTM conditions than the leading markets.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Indonesia",
+      "region": "Southeast Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 1450,
+        "gdp_per_capita_2026_usd": 5200,
+        "real_gdp_growth_2026_pct": 5.0,
+        "innovation_digital_proxy_2025": 31.3,
+        "manufacturing_value_added_proxy_usd_bn": 265.1,
+        "software_spending_2024_pct_gdp": 0.54,
+        "language_access_0_1": 0.55,
+        "timezone_overlap_0_1": 0.05,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 9.419,
+        "technology_investment_readiness_20": 4.194,
+        "digitalization_opportunity_15": 2.177,
+        "icp_density_proxy_20": 17.177,
+        "ability_to_pay_10": 0.645,
+        "gtm_ease_10": 3.7,
+        "outlook_5": 4.758
+      },
+      "market_score": 42.07,
+      "rank": 43,
+      "market_categories": [
+        "EMERGING_SCALE"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Growing private-sector and industrial base creates expanding demand, with lower near-term ticket certainty than mature markets.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Slovakia",
+      "region": "Central Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 154,
+        "gdp_per_capita_2026_usd": 31242,
+        "real_gdp_growth_2026_pct": 0.6,
+        "innovation_digital_proxy_2025": 35.5,
+        "manufacturing_value_added_proxy_usd_bn": 23.0,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.97,
+        "timezone_overlap_0_1": 0.55,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 5.935,
+        "technology_investment_readiness_20": 6.452,
+        "digitalization_opportunity_15": 13.065,
+        "icp_density_proxy_20": 4.065,
+        "ability_to_pay_10": 4.516,
+        "gtm_ease_10": 6.88,
+        "outlook_5": 0.323
+      },
+      "market_score": 41.236,
+      "rank": 44,
+      "market_categories": [
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "LOW_TO_MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Purchasing power and incomplete operational digitization coexist, creating a plausible modernization wedge.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Croatia",
+      "region": "Southern Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 106,
+        "gdp_per_capita_2026_usd": 30030,
+        "real_gdp_growth_2026_pct": 2.6,
+        "innovation_digital_proxy_2025": 37.7,
+        "manufacturing_value_added_proxy_usd_bn": 9.7,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 1.0,
+        "timezone_overlap_0_1": 0.55,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 5.323,
+        "technology_investment_readiness_20": 8.871,
+        "digitalization_opportunity_15": 9.435,
+        "icp_density_proxy_20": 2.081,
+        "ability_to_pay_10": 4.355,
+        "gtm_ease_10": 7.0,
+        "outlook_5": 3.145
+      },
+      "market_score": 40.21,
+      "rank": 45,
+      "market_categories": [
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "LOW_TO_MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Purchasing power and incomplete operational digitization coexist, creating a plausible modernization wedge.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Bulgaria",
+      "region": "Central Europe",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 131,
+        "gdp_per_capita_2026_usd": 23848,
+        "real_gdp_growth_2026_pct": 2.8,
+        "innovation_digital_proxy_2025": 39.1,
+        "manufacturing_value_added_proxy_usd_bn": 18.0,
+        "software_spending_2024_pct_gdp": 0.19,
+        "language_access_0_1": 0.95,
+        "timezone_overlap_0_1": 0.52,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 4.839,
+        "technology_investment_readiness_20": 9.677,
+        "digitalization_opportunity_15": 7.016,
+        "icp_density_proxy_20": 4.645,
+        "ability_to_pay_10": 3.387,
+        "gtm_ease_10": 6.71,
+        "outlook_5": 3.427
+      },
+      "market_score": 39.701,
+      "rank": 46,
+      "market_categories": [
+        "BALANCED_REGIONAL"
+      ],
+      "competition": {
+        "level": "LOW_TO_MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Regional opportunity with usable ICP signals, but weaker aggregate economics or GTM conditions than the leading markets.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Estonia",
+      "region": "Baltics",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 49,
+        "gdp_per_capita_2026_usd": 37718,
+        "real_gdp_growth_2026_pct": 1.4,
+        "innovation_digital_proxy_2025": 51.1,
+        "manufacturing_value_added_proxy_usd_bn": 5.0,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.95,
+        "timezone_overlap_0_1": 0.52,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 4.613,
+        "technology_investment_readiness_20": 15.0,
+        "digitalization_opportunity_15": 5.806,
+        "icp_density_proxy_20": 0.177,
+        "ability_to_pay_10": 5.645,
+        "gtm_ease_10": 6.71,
+        "outlook_5": 1.21
+      },
+      "market_score": 39.161,
+      "rank": 47,
+      "market_categories": [
+        "BALANCED_REGIONAL"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Regional opportunity with usable ICP signals, but weaker aggregate economics or GTM conditions than the leading markets.",
+      "confidence_level": "MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "EUROSTAT_DIGITAL_2026"
+      ],
+      "technology_spending_growth": {
+        "value_pct": 11.0,
+        "year": 2026,
+        "scope": "Europe IT spending regional benchmark",
+        "source": "GARTNER_IT_2026",
+        "fact_type": "PROXY"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Kuwait",
+      "region": "GCC",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 158,
+        "gdp_per_capita_2026_usd": 33164,
+        "real_gdp_growth_2026_pct": 2.6,
+        "innovation_digital_proxy_2025": 28.2,
+        "manufacturing_value_added_proxy_usd_bn": 12.8,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.65,
+        "timezone_overlap_0_1": 0.42,
+        "b2b_email_legal_access_0_1": 0.45
+      },
+      "subscores": {
+        "economic_strength_20": 6.387,
+        "technology_investment_readiness_20": 0.968,
+        "digitalization_opportunity_15": 14.758,
+        "icp_density_proxy_20": 3.274,
+        "ability_to_pay_10": 4.839,
+        "gtm_ease_10": 5.21,
+        "outlook_5": 3.145
+      },
+      "market_score": 38.581,
+      "rank": 48,
+      "market_categories": [
+        "DIGITALIZATION_GAP"
+      ],
+      "competition": {
+        "level": "LOW_TO_MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Purchasing power and incomplete operational digitization coexist, creating a plausible modernization wedge.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; MEA regional benchmarks available but not treated as country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Vietnam",
+      "region": "Southeast Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 494,
+        "gdp_per_capita_2026_usd": 4800,
+        "real_gdp_growth_2026_pct": 7.1,
+        "innovation_digital_proxy_2025": 37.1,
+        "manufacturing_value_added_proxy_usd_bn": 116.4,
+        "software_spending_2024_pct_gdp": 0.2,
+        "language_access_0_1": 0.5,
+        "timezone_overlap_0_1": 0.05,
+        "b2b_email_legal_access_0_1": 0.35
+      },
+      "subscores": {
+        "economic_strength_20": 6.387,
+        "technology_investment_readiness_20": 7.419,
+        "digitalization_opportunity_15": 1.935,
+        "icp_density_proxy_20": 14.097,
+        "ability_to_pay_10": 0.484,
+        "gtm_ease_10": 3.2,
+        "outlook_5": 5.0
+      },
+      "market_score": 38.522,
+      "rank": 49,
+      "market_categories": [
+        "EMERGING_SCALE"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Growing private-sector and industrial base creates expanding demand, with lower near-term ticket certainty than mature markets.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA",
+        "WIPO_SOFTWARE_2025"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    },
+    {
+      "country": "Thailand",
+      "region": "Southeast Asia",
+      "raw": {
+        "gdp_nominal_2025_usd_bn": 577,
+        "gdp_per_capita_2026_usd": 8105,
+        "real_gdp_growth_2026_pct": 1.5,
+        "innovation_digital_proxy_2025": 36.7,
+        "manufacturing_value_added_proxy_usd_bn": 128.1,
+        "software_spending_2024_pct_gdp": null,
+        "language_access_0_1": 0.55,
+        "timezone_overlap_0_1": 0.05,
+        "b2b_email_legal_access_0_1": 0.4
+      },
+      "subscores": {
+        "economic_strength_20": 7.355,
+        "technology_investment_readiness_20": 7.097,
+        "digitalization_opportunity_15": 3.145,
+        "icp_density_proxy_20": 14.081,
+        "ability_to_pay_10": 0.968,
+        "gtm_ease_10": 3.55,
+        "outlook_5": 1.411
+      },
+      "market_score": 37.607,
+      "rank": 50,
+      "market_categories": [
+        "BALANCED_REGIONAL"
+      ],
+      "competition": {
+        "level": "MEDIUM",
+        "fact_type": "INFERENCE",
+        "included_in_score": false
+      },
+      "why_it_matters": "Regional opportunity with usable ICP signals, but weaker aggregate economics or GTM conditions than the leading markets.",
+      "confidence_level": "LOW_TO_MEDIUM",
+      "sources": [
+        "IMF_WEO_2026_04",
+        "WIPO_GII_2025",
+        "WORLD_BANK_MVA"
+      ],
+      "technology_spending_growth": {
+        "value_pct": null,
+        "scope": "N/D; global IT growth benchmark is not treated as a country value",
+        "fact_type": "N/D"
+      },
+      "tam_sam_som": null
+    }
+  ],
+  "home_market_benchmark": {
+    "country": "Chile",
+    "region": "Latin America",
+    "raw": {
+      "gdp_nominal_2025_usd_bn": 355,
+      "gdp_per_capita_2026_usd": 20240,
+      "real_gdp_growth_2026_pct": 2.4,
+      "innovation_digital_proxy_2025": 33.1,
+      "manufacturing_value_added_proxy_usd_bn": 29.8,
+      "software_spending_2024_pct_gdp": 0.6,
+      "language_access_0_1": 1.0,
+      "timezone_overlap_0_1": 1.0,
+      "b2b_email_legal_access_0_1": 0.45
+    },
+    "subscores": {
+      "economic_strength_20": 6.645,
+      "technology_investment_readiness_20": 5.161,
+      "digitalization_opportunity_15": 8.226,
+      "icp_density_proxy_20": 8.508,
+      "ability_to_pay_10": 2.742,
+      "gtm_ease_10": 8.35,
+      "outlook_5": 2.984
+    },
+    "market_score": 42.616,
+    "market_categories": [
+      "BALANCED_REGIONAL"
+    ],
+    "competition": {
+      "level": "LOW_TO_MEDIUM",
+      "fact_type": "INFERENCE",
+      "included_in_score": false
+    },
+    "confidence_level": "MEDIUM",
+    "sources": [
+      "IMF_WEO_2026_04",
+      "WIPO_GII_2025",
+      "WORLD_BANK_MVA",
+      "WIPO_SOFTWARE_2025"
+    ]
+  },
+  "excluded_from_top50_but_in_normalization_universe": [
+    {
+      "country": "Costa Rica",
+      "market_score": 35.244
+    },
+    {
+      "country": "Colombia",
+      "market_score": 34.983
+    },
+    {
+      "country": "Philippines",
+      "market_score": 34.891
+    },
+    {
+      "country": "Uruguay",
+      "market_score": 34.435
+    },
+    {
+      "country": "Oman",
+      "market_score": 34.061
+    },
+    {
+      "country": "Panama",
+      "market_score": 33.965
+    },
+    {
+      "country": "Kazakhstan",
+      "market_score": 33.691
+    },
+    {
+      "country": "Peru",
+      "market_score": 32.814
+    },
+    {
+      "country": "South Africa",
+      "market_score": 31.491
+    },
+    {
+      "country": "Bahrain",
+      "market_score": 30.87
+    },
+    {
+      "country": "Serbia",
+      "market_score": 30.244
+    },
+    {
+      "country": "Morocco",
+      "market_score": 27.37
+    }
+  ]
+}
