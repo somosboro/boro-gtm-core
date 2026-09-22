@@ -31,6 +31,8 @@ class SourceOut(BaseModel):
     publisher: str | None = None
     used_for: list[str] | None = None
     note: str | None = None
+    #: Only when the catalog states one; never parsed from a free-text title.
+    published_at: date | None = None
 
 
 class ScoreRunSummary(BaseModel):
@@ -53,7 +55,10 @@ class SnapshotOut(BaseModel):
     score_version: str | None = None
     universe_size: int | None = None
     source_filename: str | None = None
+    #: Canonical semantic identity of the document.
     sha256: str
+    #: Digest of the literal bytes imported, when a file was used.
+    source_file_sha256: str | None = None
     created_at: datetime
 
 
@@ -95,14 +100,26 @@ class MarketDetail(MarketOut):
 
 
 class ObservationOut(BaseModel):
+    """A normalized observation, with its evidence and temporal provenance.
+
+    ``fact_type`` is null exactly when ``availability`` is ``NOT_AVAILABLE``:
+    the absence of evidence is reported as absence, not as a kind of evidence.
+    """
+
     model_config = ORM
     id: uuid.UUID
     metric_key: str
     value_numeric: float | None = None
     value_text: str | None = None
     unit: str | None = None
+    #: OBSERVED | NOT_AVAILABLE
+    availability: str
     period_label: str
-    fact_type: str
+    #: DATE | YEAR | SNAPSHOT | UNDATED
+    period_granularity: str
+    #: An exact as-of date, present only when the source states one.
+    observed_at: date | None = None
+    fact_type: str | None = None
     confidence: str | None = None
     methodology: str | None = None
     metadata: dict[str, Any] | None = Field(
@@ -163,6 +180,8 @@ class ScoringModelOut(BaseModel):
     name: str
     description: str | None = None
     normalization_method: str | None = None
+    #: Coverage a result must reach to be rank-comparable under this model.
+    minimum_rank_coverage: float
     active: bool
     components: list[ScoringComponentOut] = Field(default_factory=list)
 
@@ -176,9 +195,17 @@ class ScoreRunOut(ScoreRunSummary):
     snapshot_id: uuid.UUID
     scoring_model_id: uuid.UUID
     universe_definition: dict[str, Any] | None = None
+    #: First-class contextual dimensions (ADR-014); null for base runs.
+    vertical_id: uuid.UUID | None = None
+    icp_id: uuid.UUID | None = None
+    offer_id: uuid.UUID | None = None
+    channel_id: uuid.UUID | None = None
+    ticket_usd: float | None = None
 
 
 class RankingEntry(BaseModel):
+    #: Null when the result is not rank-comparable (home benchmark, no score,
+    #: or coverage below the model's minimum_rank_coverage).
     rank: int | None = None
     market: dict[str, Any]
     score: float | None = None

@@ -142,7 +142,8 @@ def resolve_country(name: str) -> CountryIdentity:
     if canonical is None:
         raise CountryResolutionError(
             f"Unresolved market identity: {name!r}. "
-            "Add an explicit entry to app/market_intelligence/importers/countries.py.",
+            "Add an explicit entry to "
+            "packages/boro_gtm/market_intelligence/importers/countries.py.",
             details={"country": name},
         )
 

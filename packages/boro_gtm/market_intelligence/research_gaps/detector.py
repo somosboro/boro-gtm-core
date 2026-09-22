@@ -18,11 +18,20 @@ import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from boro_gtm.core.db import utcnow
 from boro_gtm.core.enums import ResearchGapPriority, ResearchGapStatus
+from boro_gtm.core.errors import GtmError
 from boro_gtm.strategy.domain.models import ResearchGap
+
+
+class GapWriteConflictError(GtmError):
+    """Raised when a concurrent, uncommitted writer owns the same gap."""
+
+    code = "GAP_WRITE_CONFLICT"
+    http_status = 409
 
 logger = logging.getLogger(__name__)
 
@@ -120,37 +129,61 @@ def priority_for(metric_key: str) -> str:
 def record_gap(session: Session, context: GapContext, reason: str) -> tuple[ResearchGap, bool]:
     """Create the gap, or return the existing row untouched.
 
+    Concurrency-safe (A-12): the write is a single ``INSERT ... ON CONFLICT DO
+    NOTHING`` against the ``context_fingerprint`` unique index. Two processes
+    racing on the same gap both succeed; the loser simply reads the winner's
+    row back. A caller never sees an ``IntegrityError``.
+
     Returns:
         ``(gap, created)``. An existing gap in any status is returned as-is:
         a resolved gap is never resurrected by a later run over the same
         context.
     """
     fingerprint = context.fingerprint()
-    existing = session.scalar(
-        select(ResearchGap).where(ResearchGap.context_fingerprint == fingerprint)
-    )
-    if existing is not None:
-        return existing, False
 
     # Persist only the dimensions that are part of this gap's identity, so a
     # market-level gap never appears to be scoped to whichever vertical or
     # offer happened to surface it first.
     scope = _scope_for(context.metric_key)
-    gap = ResearchGap(
-        market_id=context.market_id if "market" in scope else None,
-        vertical_id=context.vertical_id if "vertical" in scope else None,
-        icp_id=context.icp_id if "icp" in scope else None,
-        offer_id=context.offer_id if "offer" in scope else None,
-        channel_id=context.channel_id if "channel" in scope else None,
-        snapshot_id=context.snapshot_id if "snapshot" in scope else None,
-        metric_key=context.metric_key,
-        priority=priority_for(context.metric_key),
-        reason=reason,
-        status=ResearchGapStatus.OPEN.value,
-        context_fingerprint=fingerprint,
+    values = {
+        "id": uuid.uuid4(),
+        "market_id": context.market_id if "market" in scope else None,
+        "vertical_id": context.vertical_id if "vertical" in scope else None,
+        "icp_id": context.icp_id if "icp" in scope else None,
+        "offer_id": context.offer_id if "offer" in scope else None,
+        "channel_id": context.channel_id if "channel" in scope else None,
+        "snapshot_id": context.snapshot_id if "snapshot" in scope else None,
+        "metric_key": context.metric_key,
+        "priority": priority_for(context.metric_key),
+        "reason": reason,
+        "status": ResearchGapStatus.OPEN.value,
+        "context_fingerprint": fingerprint,
+        "created_at": utcnow(),
+    }
+
+    stmt = (
+        pg_insert(ResearchGap)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["context_fingerprint"])
+        .returning(ResearchGap.id)
     )
-    session.add(gap)
-    session.flush()
+    inserted_id = session.execute(stmt).scalar_one_or_none()
+
+    if inserted_id is None:
+        # Someone already owns this fingerprint — this run, or another process.
+        existing = session.scalar(
+            select(ResearchGap).where(ResearchGap.context_fingerprint == fingerprint)
+        )
+        if existing is not None:
+            return existing, False
+        # Extremely narrow window: the winning transaction has not committed
+        # yet. Re-raise as a domain-level miss rather than an IntegrityError.
+        raise GapWriteConflictError(
+            "A concurrent writer holds this research gap but has not committed.",
+            details={"metric_key": context.metric_key, "fingerprint": fingerprint},
+        )
+
+    gap = session.get(ResearchGap, inserted_id)
     return gap, True
 
 

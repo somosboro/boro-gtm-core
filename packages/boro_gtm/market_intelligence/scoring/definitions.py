@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from boro_gtm.core.enums import FactType, MetricKey
+from boro_gtm.core.enums import MetricKey
+from boro_gtm.market_intelligence.scoring import confidence as confidence_cfg
 
-ENGINE_VERSION = "0.1.0"
+ENGINE_VERSION = "0.2.0"
 
 BASE_MODEL_KEY = "market-attractiveness"
 BASE_MODEL_VERSION = "1.0"
@@ -20,30 +21,16 @@ BASE_MODEL_VERSION = "1.0"
 CONTEXTUAL_MODEL_KEY = "contextual-market-fit"
 CONTEXTUAL_MODEL_VERSION = "1.0"
 
-#: Fact type -> default confidence contribution (04 — Confidence).
-#: Engine defaults, explicitly not scientific truths; versioned in the model.
-FACT_TYPE_CONFIDENCE: dict[str, float] = {
-    FactType.FACT.value: 1.00,
-    FactType.PROXY.value: 0.75,
-    FactType.ESTIMATE.value: 0.65,
-    FactType.INFERENCE.value: 0.50,
-    FactType.HYPOTHESIS.value: 0.30,
-    FactType.ND.value: 0.00,
-    FactType.UNKNOWN.value: 0.00,
-}
+#: Minimum coverage a result must reach before it is rank-comparable.
+#: Explicit per model (A-8). A result below this keeps its score and coverage
+#: but is returned unranked, so missing evidence never reads as "bad market".
+BASE_MINIMUM_RANK_COVERAGE = 0.5
+CONTEXTUAL_MINIMUM_RANK_COVERAGE = 0.5
 
-#: Source HIGH/MEDIUM/LOW labels -> numeric confidence. Documented, never
-#: applied invisibly: the mapping is stored in the model definition JSON.
-CONFIDENCE_LABEL_SCALE: dict[str, float] = {
-    "HIGH": 0.90,
-    "HIGH_MEDIUM": 0.80,
-    "MEDIUM_HIGH": 0.80,
-    "MEDIUM": 0.65,
-    "LOW_MEDIUM": 0.50,
-    "MEDIUM_LOW": 0.50,
-    "LOW_TO_MEDIUM": 0.50,
-    "LOW": 0.35,
-}
+#: Re-exported from the single confidence algorithm so that model definitions
+#: and the engines cannot drift apart (A-10).
+FACT_TYPE_CONFIDENCE = confidence_cfg.FACT_TYPE_CONFIDENCE
+CONFIDENCE_LABEL_SCALE = confidence_cfg.CONFIDENCE_LABEL_SCALE
 
 
 class BaseComponent:
@@ -210,8 +197,23 @@ def base_model_definition(metadata: dict[str, Any] | None = None) -> dict[str, A
             "transform named in the published formula; the transform is kept "
             "for fidelity and affects recorded raw values only."
         ),
-        "fact_type_confidence": FACT_TYPE_CONFIDENCE,
-        "confidence_label_scale": CONFIDENCE_LABEL_SCALE,
+        "confidence": confidence_cfg.definition_block(),
+        "minimum_rank_coverage": BASE_MINIMUM_RANK_COVERAGE,
+        "scoring_semantics": {
+            "reference_reproduction": (
+                "score = sum of imported component values. Exact reproduction "
+                "of the published artifact; no renormalization."
+            ),
+            "native_recalculation": (
+                "score = earned / covered_weight * 100. Uncovered components "
+                "are excluded from both numerator and denominator."
+            ),
+            "coverage": "covered_weight / total_model_weight",
+            "ranking": (
+                "a result is ranked only when coverage >= minimum_rank_coverage; "
+                "below that it keeps score and coverage but stays unranked."
+            ),
+        },
         "components": BASE_MODEL_COMPONENTS,
         "source_metadata": metadata or {},
     }
@@ -321,8 +323,8 @@ def contextual_model_definition() -> dict[str, Any]:
         "total_weight": sum(c["weight"] for c in CONTEXTUAL_MODEL_COMPONENTS),
         "components": CONTEXTUAL_MODEL_COMPONENTS,
         "channel_access_weights": CHANNEL_ACCESS_WEIGHTS,
-        "fact_type_confidence": FACT_TYPE_CONFIDENCE,
-        "confidence_label_scale": CONFIDENCE_LABEL_SCALE,
+        "confidence": confidence_cfg.definition_block(),
+        "minimum_rank_coverage": CONTEXTUAL_MINIMUM_RANK_COVERAGE,
         "missing_data_policy": {
             "mode": "renormalize_to_covered_weight",
             "description": (
@@ -330,6 +332,6 @@ def contextual_model_definition() -> dict[str, Any]:
                 "denominator; the displayed score is renormalized over covered "
                 "weight only. Unknown never contributes zero."
             ),
-            "min_comparable_coverage": 0.5,
+            "min_comparable_coverage": CONTEXTUAL_MINIMUM_RANK_COVERAGE,
         },
     }

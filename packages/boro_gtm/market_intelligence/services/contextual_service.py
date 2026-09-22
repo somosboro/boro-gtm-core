@@ -162,6 +162,13 @@ def run_contextual_ranking(
             scoring_model_id=model.id,
             snapshot_id=snapshot.id,
             kind=ScoreRunKind.CONTEXTUAL.value,
+            # First-class, queryable context (ADR-014). The JSONB below keeps
+            # the full request; these columns make the context joinable.
+            vertical_id=vertical.id if vertical else None,
+            icp_id=icp.id if icp else None,
+            offer_id=offer.id if offer else None,
+            channel_id=channel.id if channel else None,
+            ticket_usd=ticket_usd,
             context={
                 "kind": "contextual",
                 "snapshot_key": snapshot.key,

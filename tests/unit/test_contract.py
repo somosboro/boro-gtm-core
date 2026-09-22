@@ -109,3 +109,72 @@ def test_subscores_sum_to_market_score(source_payload: dict) -> None:
         assert sum(entry.subscores.as_dict().values()) == pytest.approx(
             entry.market_score, abs=0.005
         )
+
+
+# ---------------------------------------------------------------------------
+# A-7 — the declared home-market benchmark must match the document
+# ---------------------------------------------------------------------------
+
+
+def test_home_benchmark_metadata_must_match_the_document(source_payload: dict) -> None:
+    payload = copy.deepcopy(source_payload)
+    payload["metadata"]["international_top50_excludes_home_market"] = "Peru"
+    report = validate_semantics(parse_document(payload))
+    assert not report.ok
+    assert any(
+        "international_top50_excludes_home_market" in e for e in report.errors
+    ), report.errors
+
+
+def test_home_benchmark_mismatch_detected_when_benchmark_changes(
+    source_payload: dict,
+) -> None:
+    """The check is symmetric: changing the benchmark also trips it."""
+    payload = copy.deepcopy(source_payload)
+    payload["home_market_benchmark"]["country"] = "Uruguay"
+    report = validate_semantics(parse_document(payload))
+    assert any("international_top50_excludes_home_market" in e for e in report.errors)
+
+
+def test_home_benchmark_accepts_a_spelling_variant(source_payload: dict) -> None:
+    """ISO identity, not string equality — and no hardcoded country."""
+    payload = copy.deepcopy(source_payload)
+    payload["metadata"]["international_top50_excludes_home_market"] = "  chile  "
+    report = validate_semantics(parse_document(payload))
+    assert report.ok, report.errors
+
+
+def test_home_benchmark_check_is_skipped_when_metadata_is_silent(
+    source_payload: dict,
+) -> None:
+    payload = copy.deepcopy(source_payload)
+    payload["metadata"].pop("international_top50_excludes_home_market", None)
+    report = validate_semantics(parse_document(payload))
+    assert report.ok, report.errors
+
+
+def test_benchmark_validation_names_no_country_in_code() -> None:
+    """The rule must be structural: no country literal in the validator."""
+    from pathlib import Path
+
+    source = Path(
+        "packages/boro_gtm/market_intelligence/importers/contract.py"
+    ).read_text(encoding="utf-8")
+    for country in ("Chile", "CHL", '"CL"', "'CL'"):
+        assert country not in source
+
+
+def test_nd_is_accepted_on_input_but_is_not_a_fact_type(source_payload: dict) -> None:
+    """The source token stays legal; the stored vocabulary does not include it."""
+    from boro_gtm.core.enums import FactType
+
+    report = validate_semantics(parse_document(source_payload))
+    assert report.ok
+    assert "N/D" not in {f.value for f in FactType}
+
+
+def test_unknown_is_not_a_fact_type_token(source_payload: dict) -> None:
+    payload = copy.deepcopy(source_payload)
+    payload["markets"][0]["competition"]["fact_type"] = "UNKNOWN"
+    report = validate_semantics(parse_document(payload))
+    assert any("invalid fact_type" in e for e in report.errors)

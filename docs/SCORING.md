@@ -50,9 +50,25 @@ and queryable but never affects a score.
 | `timezone_overlap_0_1` | `timezone_overlap` | snapshot | INFERENCE |
 | `b2b_email_legal_access_0_1` | `b2b_email_legal_access` | snapshot | INFERENCE |
 
-A source `null` produces a row with `value_numeric = NULL` and fact type `N/D`.
-The row still exists so provenance and the fact that we *know* it is unknown
-both survive.
+A source `null` produces a row with `value_numeric = NULL`,
+`availability = NOT_AVAILABLE` and `fact_type = NULL`. The row still exists so
+provenance — and the fact that we *know* it is unknown — both survive.
+`N/D` is never stored as a fact type (ADR-015).
+
+### Temporal provenance
+
+| Column | Meaning |
+| --- | --- |
+| `observed_at` | An exact date, only when the source states one |
+| `period_label` | What the value describes: "2025", "latest", "snapshot" |
+| `period_granularity` | DATE / YEAR / SNAPSHOT / UNDATED |
+| `sources.published_at` | Source publication date, when stated |
+| `created_at` | Ingest time |
+
+A CHECK constraint makes `observed_at` present if and only if granularity is
+`DATE`, so a year can never be widened into an invented exact date (ADR-016).
+In the 2026 snapshot no metric is day-precise, so `observed_at` is NULL
+throughout.
 
 ## `contextual-market-fit:1.0`
 
@@ -70,13 +86,20 @@ These weights are an implementation seed, not a research claim. They live in
 
 ### Missing-data policy
 
-`renormalize_to_covered_weight`:
+`renormalize_to_covered_weight` — identical in the contextual engine and in
+base **native** scoring:
 
 ```
-score      = (sum of earned weight) / (sum of covered weight) * 100
-coverage   = (sum of covered weight) / (total weight)
-confidence = weighted mean component confidence * coverage
+covered_weight = sum(weight of scoreable components)
+score          = earned_points / covered_weight * 100
+coverage       = covered_weight / total_model_weight
+confidence     = weighted mean component confidence over covered * coverage
 ```
+
+Base **reference reproduction** is the one exception and is deliberately *not*
+renormalized: the published total is the sum of the published components, and
+reproducing it exactly is the purpose of that mode. Coverage is still recorded,
+and ranking is still coverage-gated.
 
 An unknown component leaves both sums. It never contributes 0 to the numerator
 while still occupying the denominator, which is what would make "unknown" read
@@ -86,21 +109,40 @@ A component can also be **partially** covered — a channel whose legal input is
 observed but whose timezone input is not. It is renormalized over its observed
 inputs, scored, and its unobserved inputs are still reported as research gaps.
 
-### Confidence inputs
+### Confidence — one algorithm
 
-Fact-type defaults, stored in the model definition:
+Defined once in `boro_gtm.market_intelligence.scoring.confidence` and used by
+both engines. Every factor materially participates; there are no decorative
+parameters (ADR-010 remediation).
 
-| Fact type | Confidence |
-| --- | --- |
-| FACT | 1.00 |
-| PROXY | 0.75 |
-| ESTIMATE | 0.65 |
-| INFERENCE | 0.50 |
-| HYPOTHESIS | 0.30 |
-| N/D, UNKNOWN | 0.00 |
+```
+evidence_confidence = fact_type_factor x recency_factor x label_factor
+market_confidence   = weighted mean over covered components x coverage
+```
 
-The source's HIGH/MEDIUM/LOW labels map through a separate documented scale
-(`confidence_label_scale`) rather than being converted invisibly.
+| Fact type | factor | | Granularity | factor | | Label | factor |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| FACT | 1.00 | | DATE | 1.00 | | HIGH | 1.00 |
+| PROXY | 0.75 | | YEAR | 0.90 | | HIGH_MEDIUM | 0.92 |
+| ESTIMATE | 0.65 | | SNAPSHOT | 0.85 | | MEDIUM | 0.85 |
+| INFERENCE | 0.50 | | UNDATED | 0.70 | | LOW_MEDIUM | 0.75 |
+| HYPOTHESIS | 0.30 | | (absent) | 0.70 | | LOW | 0.60 |
+
+`fact_type = NULL` (no value) scores 0.00. An absent or unrecognised label is
+**neutral** (1.00), so a source that declines to self-assess is not punished.
+
+An observation with no usable date is therefore less confident than a dated
+one — the mechanism by which missing temporal provenance degrades confidence
+rather than being silently treated as current (ADR-016).
+
+### Ranking eligibility
+
+Every model carries an explicit `minimum_rank_coverage`. A result below it
+keeps its score and coverage but is returned **unranked**, with
+`metadata.unranked_reason = "coverage_below_minimum"`. Both seeded models use
+`0.5`. Three things leave a result unranked, and a low score is not one of
+them: it is a home-market benchmark, it has no comparable score, or its
+coverage is below the threshold.
 
 ## Score-run kinds
 

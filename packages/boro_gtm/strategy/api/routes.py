@@ -183,11 +183,17 @@ def get_market_vertical(
 def create_contextual_ranking(
     payload: s.ContextualRankingRequest, db: Session = Depends(get_db)
 ) -> Any:
-    settings = get_settings()
+    # Precedence: explicit request > the model's own minimum_rank_coverage >
+    # the deployment default. The model owns the threshold (A-8); settings are
+    # only a fallback for a model that predates the column.
+    model = scoring_service.get_model(db, payload.model_key, payload.model_version)
+    model_threshold = (
+        float(model.minimum_rank_coverage)
+        if model.minimum_rank_coverage is not None
+        else get_settings().min_contextual_coverage
+    )
     min_coverage = (
-        payload.min_coverage
-        if payload.min_coverage is not None
-        else settings.min_contextual_coverage
+        payload.min_coverage if payload.min_coverage is not None else model_threshold
     )
     if not 0.0 <= min_coverage <= 1.0:
         raise ValidationError(

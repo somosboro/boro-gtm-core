@@ -23,10 +23,28 @@ import jsonschema
 from pydantic import BaseModel, ConfigDict, Field
 
 from boro_gtm.core.config import REPO_ROOT
-from boro_gtm.core.enums import FactType
+from boro_gtm.core.enums import SOURCE_FACT_TYPE_TOKENS, SOURCE_NOT_AVAILABLE_TOKEN
 from boro_gtm.core.errors import ValidationError
 
 SCHEMA_PATH = REPO_ROOT / "data" / "market_intelligence_v1.schema.json"
+
+
+def canonical_bytes(payload: dict[str, Any]) -> bytes:
+    """Serialize a source document to its canonical byte form.
+
+    Snapshot identity is derived from this, never from the literal file bytes,
+    so that reindenting a file or reordering its keys does not manufacture a
+    new snapshot (A-5). Sorted keys and separator-tight output make the
+    representation stable; ``ensure_ascii=False`` keeps it stable across
+    producers that differ only in unicode escaping.
+    """
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
 
 #: Component key -> maximum attainable weight, from metadata.score_formula.
 COMPONENT_WEIGHTS: dict[str, float] = {
@@ -40,7 +58,10 @@ COMPONENT_WEIGHTS: dict[str, float] = {
 }
 
 _WEIGHT_TOLERANCE = 1e-6
-_VALID_FACT_TYPES = {f.value for f in FactType}
+#: Tokens a *source document* may carry. ``N/D`` is accepted on input and
+#: translated to an availability flag on import; it is never stored as a
+#: ``fact_type`` (see boro_gtm.core.enums).
+_VALID_SOURCE_FACT_TOKENS = {str(t) for t in SOURCE_FACT_TYPE_TOKENS}
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +104,7 @@ class Competition(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     level: str
-    fact_type: str = FactType.UNKNOWN.value
+    fact_type: str = SOURCE_NOT_AVAILABLE_TOKEN
     included_in_score: bool = False
 
 
@@ -95,7 +116,7 @@ class TechnologySpendingGrowth(BaseModel):
     period: str | None = None
     scope: str | None = None
     source: str | None = None
-    fact_type: str = FactType.UNKNOWN.value
+    fact_type: str = SOURCE_NOT_AVAILABLE_TOKEN
 
 
 class Range(BaseModel):
@@ -107,7 +128,7 @@ class Range(BaseModel):
 class TamSamSom(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    fact_type: str = FactType.UNKNOWN.value
+    fact_type: str = SOURCE_NOT_AVAILABLE_TOKEN
     confidence_level: str | None = None
     tam_relevant_employer_firms: Range | None = None
     sam_boro_icp_firms: Range | None = None
@@ -301,10 +322,26 @@ def validate_semantics(doc: MarketIntelligenceDocument) -> ValidationReport:
         if entry.tam_sam_som is not None:
             candidates.append(("tam_sam_som", entry.tam_sam_som.fact_type))
         for where, value in candidates:
-            if value not in _VALID_FACT_TYPES:
+            if value not in _VALID_SOURCE_FACT_TOKENS:
                 report.errors.append(
-                    f"{entry.country}: invalid fact_type {value!r} in {where}"
+                    f"{entry.country}: invalid fact_type {value!r} in {where}; "
+                    f"allowed: {sorted(_VALID_SOURCE_FACT_TOKENS)}"
                 )
+
+    # --- home-market benchmark consistency (A-7) --------------------------
+    # metadata names the market excluded from the international ranking; it
+    # must agree with the document's own benchmark entry. Compared through ISO
+    # resolution so that a spelling variant is not a false positive, and with
+    # no hardcoded country anywhere.
+    declared = doc.metadata.international_top50_excludes_home_market
+    if declared:
+        benchmark = doc.home_market_benchmark.country
+        if not _same_market(declared, benchmark):
+            report.errors.append(
+                "metadata.international_top50_excludes_home_market="
+                f"{declared!r} does not match home_market_benchmark.country="
+                f"{benchmark!r}"
+            )
 
     # --- source referential integrity -------------------------------------
     catalog = set(doc.source_catalog)
@@ -340,6 +377,19 @@ def validate_semantics(doc: MarketIntelligenceDocument) -> ValidationReport:
         report.warnings.append(f"Source catalog entry {key!r} is not referenced by any market")
 
     return report
+
+
+def _same_market(left: str, right: str) -> bool:
+    """Compare two market names, preferring ISO identity over spelling."""
+    from boro_gtm.core.errors import CountryResolutionError
+    from boro_gtm.market_intelligence.importers.countries import resolve_country
+
+    try:
+        return resolve_country(left).iso2 == resolve_country(right).iso2
+    except CountryResolutionError:
+        # An unresolved name is reported separately by the importer; fall back
+        # to a normalized string comparison rather than passing silently.
+        return " ".join(left.split()).casefold() == " ".join(right.split()).casefold()
 
 
 def parse_document(payload: dict[str, Any]) -> MarketIntelligenceDocument:

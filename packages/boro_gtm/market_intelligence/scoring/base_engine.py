@@ -10,8 +10,19 @@ Two modes, per ADR-007:
 ``native_recalculation``
     Recompute components from raw observations, and only where every required
     raw metric is present. Nothing is reverse-engineered. Components that
-    cannot be rebuilt are reported with ``coverage = 0`` and excluded from the
-    total, which lowers the run's coverage and emits research gaps.
+    cannot be rebuilt are excluded from *both* the numerator and the
+    denominator::
+
+        covered_weight = sum(weight of scoreable components)
+        score          = earned_points / covered_weight * 100
+        coverage       = covered_weight / total_model_weight
+
+    Missing evidence therefore lowers coverage without depressing the score,
+    so an under-evidenced market is never ranked below a measured-poor one
+    merely for being under-evidenced (A-8).
+
+Ranking in both modes is gated on ``minimum_rank_coverage``: a result below the
+model's threshold keeps its score and coverage but is returned unranked.
 
 Known, deliberate limitation of the native mode against this snapshot: the
 published percentiles were taken over a 63-economy universe, but raw metrics
@@ -26,10 +37,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from boro_gtm.core.enums import FactType
+from boro_gtm.market_intelligence.scoring.confidence import (
+    aggregate_confidence,
+    evidence_confidence,
+)
 from boro_gtm.market_intelligence.scoring.definitions import (
+    BASE_MINIMUM_RANK_COVERAGE,
     BASE_MODEL_COMPONENTS,
-    FACT_TYPE_CONFIDENCE,
     BaseComponent,
 )
 from boro_gtm.market_intelligence.scoring.percentile import (
@@ -56,8 +70,11 @@ class MarketInputs:
     imported_components: dict[str, float] = field(default_factory=dict)
     imported_total: float | None = None
     imported_rank: int | None = None
-    #: metric_key -> fact type, used for confidence
-    fact_types: dict[str, str] = field(default_factory=dict)
+    #: metric_key -> fact type (None when the metric is unavailable)
+    fact_types: dict[str, str | None] = field(default_factory=dict)
+    #: metric_key -> period granularity, feeding the recency factor
+    period_granularity: dict[str, str | None] = field(default_factory=dict)
+    #: The source's own HIGH/MEDIUM/LOW assessment for this market
     confidence_label: str | None = None
     #: Home-market benchmarks contribute to the normalization universe but are
     #: excluded from the international ranking (``metadata
@@ -103,14 +120,20 @@ class ScoreRunResult:
 
 
 def _confidence_for(inputs: MarketInputs, metrics: list[str]) -> float:
-    """Average fact-type confidence across the metrics a component consumes."""
+    """Mean evidence confidence across the metrics a component consumes.
+
+    Delegates to the single confidence algorithm, so fact type, temporal
+    precision and the source's own label all participate (A-10).
+    """
     if not metrics:
         return 0.0
     values = [
-        FACT_TYPE_CONFIDENCE.get(
-            inputs.fact_types.get(m, FactType.UNKNOWN.value), 0.0
+        evidence_confidence(
+            inputs.fact_types.get(metric),
+            inputs.period_granularity.get(metric),
+            inputs.confidence_label,
         )
-        for m in metrics
+        for metric in metrics
     ]
     return sum(values) / len(values)
 
@@ -123,8 +146,15 @@ def _confidence_for(inputs: MarketInputs, metrics: list[str]) -> float:
 def run_reference_reproduction(
     markets: list[MarketInputs],
     components: list[dict[str, Any]] | None = None,
+    minimum_rank_coverage: float = BASE_MINIMUM_RANK_COVERAGE,
 ) -> ScoreRunResult:
-    """Sum the imported component values into a total, deterministically."""
+    """Sum the imported component values into a total, deterministically.
+
+    Reference reproduction is **not** renormalized: the published total is the
+    sum of the published components, and reproducing it exactly is the whole
+    point of this mode. Coverage is still reported, and ranking is still gated
+    on it.
+    """
     specs = components or BASE_MODEL_COMPONENTS
     results: list[MarketResult] = []
 
@@ -176,7 +206,7 @@ def run_reference_reproduction(
             )
 
         coverage = covered_weight / total_weight if total_weight else 0.0
-        confidence = _aggregate_confidence(comp_results, market.confidence_label)
+        confidence = aggregate_confidence(comp_results)
         results.append(
             MarketResult(
                 market_key=market.market_key,
@@ -185,11 +215,17 @@ def run_reference_reproduction(
                 coverage=coverage,
                 components=comp_results,
                 is_home_market=market.is_home_market,
-                metadata={"mode": "reference_reproduction"},
+                metadata={
+                    "mode": "reference_reproduction",
+                    "covered_weight": covered_weight,
+                    "total_weight": total_weight,
+                    "renormalized": False,
+                    "score_definition": "sum of imported component values",
+                },
             )
         )
 
-    _assign_ranks(results)
+    _assign_ranks(results, minimum_rank_coverage)
     return ScoreRunResult(
         mode="reference_reproduction",
         results=results,
@@ -215,6 +251,7 @@ def run_native_recalculation(
     components: list[dict[str, Any]] | None = None,
     percentile_method_key: str = DEFAULT_METHOD_KEY,
     universe_size: int | None = None,
+    minimum_rank_coverage: float = BASE_MINIMUM_RANK_COVERAGE,
 ) -> ScoreRunResult:
     """Recompute components from raw metrics only.
 
@@ -352,12 +389,14 @@ def run_native_recalculation(
             )
 
         coverage = covered_weight / total_weight if total_weight else 0.0
+        # Renormalize over covered weight: an uncovered component leaves both
+        # the numerator and the denominator, so unknown never reads as zero.
+        score = round(total / covered_weight * 100.0, 6) if covered_weight else None
         results.append(
             MarketResult(
                 market_key=market.market_key,
-                # Reported on the covered weight only: unknown is not zero.
-                score=round(total, 6) if covered_weight else None,
-                confidence=_aggregate_confidence(comp_results, market.confidence_label),
+                score=score,
+                confidence=aggregate_confidence(comp_results),
                 coverage=coverage,
                 components=comp_results,
                 is_home_market=market.is_home_market,
@@ -365,14 +404,14 @@ def run_native_recalculation(
                     "mode": "native_recalculation",
                     "covered_weight": covered_weight,
                     "total_weight": total_weight,
-                    "score_renormalized_to_100": (
-                        round(total / covered_weight * 100.0, 6) if covered_weight else None
-                    ),
+                    "renormalized": True,
+                    "earned_points": round(total, 6),
+                    "score_definition": "earned_points / covered_weight * 100",
                 },
             )
         )
 
-    _assign_ranks(results)
+    _assign_ranks(results, minimum_rank_coverage)
     observed_counts = {metric: len(vals) for metric, vals in series.items()}
     return ScoreRunResult(
         mode="native_recalculation",
@@ -449,33 +488,37 @@ def _evaluate_component(
     return total, total / weight, f"{key} = " + " + ".join(parts)
 
 
-def _aggregate_confidence(
-    components: list[ComponentResult], confidence_label: str | None
-) -> float:
-    """Weight component confidence by component weight, over covered weight."""
-    covered = [c for c in components if c.coverage > 0]
-    if not covered:
-        return 0.0
-    weight_sum = sum(c.weight for c in covered)
-    if weight_sum == 0:
-        return 0.0
-    weighted = sum(c.confidence * c.weight for c in covered) / weight_sum
-    # Scale by the share of total weight that is actually covered, so a
-    # confidently-computed 30% of the model never reads as fully confident.
-    total_weight = sum(c.weight for c in components)
-    coverage_factor = weight_sum / total_weight if total_weight else 0.0
-    return round(weighted * coverage_factor, 4)
-
-
-def _assign_ranks(results: list[MarketResult]) -> None:
+def _assign_ranks(
+    results: list[MarketResult], minimum_rank_coverage: float = BASE_MINIMUM_RANK_COVERAGE
+) -> None:
     """Ordinal ranks over the international set, highest score first.
 
-    Home-market benchmarks stay in the normalization universe but are left
-    unranked, matching the source artifact's
-    ``international_top50_excludes_home_market``. Markets without a comparable
-    score are also unranked.
+    Three things leave a result unranked, and none of them is "a low score":
+
+    * it is a home-market benchmark (``international_top50_excludes_home_market``);
+    * it has no comparable score at all;
+    * its coverage is below the model's ``minimum_rank_coverage``, in which
+      case it keeps score and coverage but is not rank-comparable (A-8).
     """
-    scored = [r for r in results if r.score is not None and not r.is_home_market]
+    for result in results:
+        if (
+            result.score is not None
+            and not result.is_home_market
+            and result.coverage < minimum_rank_coverage
+        ):
+            result.metadata = {
+                **result.metadata,
+                "unranked_reason": "coverage_below_minimum",
+                "minimum_rank_coverage": minimum_rank_coverage,
+            }
+
+    scored = [
+        r
+        for r in results
+        if r.score is not None
+        and not r.is_home_market
+        and r.coverage >= minimum_rank_coverage
+    ]
     scored.sort(key=lambda r: (-r.score, r.market_key))
     for position, result in enumerate(scored, start=1):
         result.rank = position

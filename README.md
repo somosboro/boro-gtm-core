@@ -128,25 +128,41 @@ assert that it *differs* rather than pretending otherwise. See
 
 Every market in a native run reports `coverage = 0.80`, because
 `icp_density_proxy_20` (20 of 100 weight) requires a population figure the
-snapshot never supplies.
+snapshot never supplies — and emits a persisted `population` research gap for
+each of the 51 markets with raw data.
 
 ## Score, confidence and coverage
 
 Three independent numbers, never collapsed:
 
 * **score** — estimated attractiveness or fit, 0–100.
-* **confidence** — how much the underlying evidence can be trusted, 0–1,
-  derived from fact types and scaled by how much of the model was covered.
+* **confidence** — how much the underlying evidence can be trusted, 0–1.
 * **coverage** — the share of required evidence that is actually present, 0–1.
 
-**Unknown is not zero.** A missing contextual component is removed from both
-the numerator and the denominator; the score is renormalized over covered
-weight, coverage drops, and a research gap is recorded. A market with unknown
-vertical density scores *higher* than one measured to have poor density — and
-the test suite asserts exactly that.
+**Unknown is not zero.** A missing component is removed from *both* the
+numerator and the denominator:
 
-Markets below `GTM_MIN_CONTEXTUAL_COVERAGE` (default 0.5) are returned with a
-score but are **not ranked**, unless the caller passes `allow_low_coverage`.
+```
+covered_weight = sum(weight of scoreable components)
+score          = earned_points / covered_weight * 100
+coverage       = covered_weight / total_model_weight
+```
+
+Coverage drops, a research gap is recorded, and the score stays a statement
+about what is actually known. A market with unknown vertical density scores
+*higher* than one measured to have poor density — the test suite asserts
+exactly that, including a case where two markets with deliberately unequal
+coverage earn identical scores.
+
+Base **reference reproduction** is the documented exception: it sums the
+published components verbatim, because reproducing the artifact exactly is the
+point of that mode.
+
+**Ranking is coverage-gated, never score-gated.** Each model carries an
+explicit `minimum_rank_coverage` (0.5 for both seeded models). A result below
+it keeps its score and coverage and is returned **unranked** with
+`unranked_reason = "coverage_below_minimum"`. Contextual callers may override
+per request with `allow_low_coverage`.
 
 ## API
 
@@ -201,6 +217,24 @@ tests/                      unit, integration, golden fixtures
 docs/                       specs and ADRs
 ```
 
+## Evidence model
+
+Observations separate *what is known* from *how good it is* from *when it was
+true*:
+
+| Column | Meaning |
+| --- | --- |
+| `availability` | `OBSERVED` or `NOT_AVAILABLE` |
+| `fact_type` | FACT / PROXY / ESTIMATE / INFERENCE / HYPOTHESIS — NULL when unavailable |
+| `value_numeric` | NULL when unavailable, never 0 |
+| `observed_at` | An exact date, only when the source states one |
+| `period_label` + `period_granularity` | "2025" + YEAR; never widened into a date |
+| `created_at` | Ingest time |
+
+Database CHECK constraints enforce the pairing in both directions, and
+`market_snapshots` and `market_observations` are append-only: a `BEFORE UPDATE`
+trigger rejects any rewrite (ADR-018).
+
 ## Known data gaps and limitations
 
 1. **Population is absent.** `icp_density_proxy_20` cannot be natively
@@ -213,7 +247,8 @@ docs/                       specs and ADRs
    input to the score, per the source's own method notes.
 4. **Country technology-spending growth is mostly a regional proxy** (Gartner's
    Europe benchmark at 11%) rather than a country figure. It is stored as
-   `PROXY`/`N/D` and excluded from scoring.
+   `PROXY` where a value exists and as `NOT_AVAILABLE` where it does not, and
+   is excluded from scoring either way.
 5. **Vertical-level firm counts do not exist in this snapshot.** Market x
    vertical profiles record that the research named a vertical a priority; they
    carry no invented `fit_score`, TAM or SAM. This is the single largest driver
@@ -235,9 +270,13 @@ docs/                       specs and ADRs
 
 ## Documentation
 
-* [ADRs](docs/ADRS.md) — including ADR-008 (naming), ADR-009 (the percentile
-  convention), ADR-010 (native recalculation honesty), ADR-012 (home benchmarks)
-* [Scoring model](docs/SCORING.md) — formulas, weights, both modes
+* [ADRs](docs/ADRS.md) — ADR-008 (naming), ADR-009 (percentile convention),
+  ADR-010 (native recalculation honesty), ADR-012 (home benchmarks),
+  ADR-014 (`market_gtm_profiles` removed), ADR-015 (absence is not a fact type),
+  ADR-016 (temporal provenance), ADR-017 (canonical snapshot identity),
+  ADR-018 (append-only evidence tables), ADR-019 (supplied schema preserved)
+* [Design note — market_gtm_profiles](docs/DESIGN_NOTE_market_gtm_profiles.md)
+* [Scoring model](docs/SCORING.md) — formulas, weights, both modes, confidence
 * Original implementation pack: `docs/00_*.md` … `docs/07_ADRS.md`
 
 ## Scope boundary

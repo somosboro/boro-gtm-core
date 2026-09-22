@@ -24,8 +24,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from boro_gtm.core.enums import (
-    FactType,
+    SOURCE_NOT_AVAILABLE_TOKEN,
+    Availability,
     MetricKey,
+    ObservationAttribution,
+    PeriodGranularity,
     ScoreRunKind,
     ScoreRunStatus,
 )
@@ -50,6 +53,7 @@ from boro_gtm.market_intelligence.domain.models import (
 from boro_gtm.market_intelligence.importers.contract import (
     MarketEntry,
     MarketIntelligenceDocument,
+    canonical_bytes,
     parse_document,
     validate_semantics,
 )
@@ -61,6 +65,7 @@ from boro_gtm.market_intelligence.importers.mappings import (
     split_semicolon_list,
 )
 from boro_gtm.market_intelligence.scoring.definitions import (
+    BASE_MINIMUM_RANK_COVERAGE,
     BASE_MODEL_COMPONENTS,
     BASE_MODEL_KEY,
     BASE_MODEL_VERSION,
@@ -114,7 +119,18 @@ class ImportSummary:
 
 
 def compute_sha256(payload: bytes) -> str:
+    """SHA-256 of raw bytes."""
     return hashlib.sha256(payload).hexdigest()
+
+
+def snapshot_identity(payload: dict[str, Any]) -> str:
+    """The canonical identity of a source document (A-5).
+
+    Both entry points derive identity from this single function, so a document
+    imported as a file and the same document handed over as a parsed dict
+    resolve to the same snapshot.
+    """
+    return compute_sha256(canonical_bytes(payload))
 
 
 def build_snapshot_key(doc: MarketIntelligenceDocument) -> str:
@@ -135,20 +151,27 @@ class SnapshotImporter:
     # -- entry points ----------------------------------------------------
 
     def import_file(self, path: Path) -> ImportSummary:
+        """Import from disk.
+
+        Identity comes from the canonical form of the parsed document, not
+        from the file bytes; the byte digest is retained separately as
+        ``source_file_sha256`` for literal-fidelity auditing.
+        """
         raw_bytes = path.read_bytes()
         payload = json.loads(raw_bytes.decode("utf-8"))
-        return self.import_payload(payload, sha256=compute_sha256(raw_bytes),
-                                   source_filename=path.name)
+        return self.import_payload(
+            payload,
+            source_filename=path.name,
+            source_file_sha256=compute_sha256(raw_bytes),
+        )
 
     def import_payload(
         self,
         payload: dict[str, Any],
-        sha256: str | None = None,
         source_filename: str | None = None,
+        source_file_sha256: str | None = None,
     ) -> ImportSummary:
-        digest = sha256 or compute_sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        )
+        digest = snapshot_identity(payload)
 
         doc = parse_document(payload)
         report = validate_semantics(doc)
@@ -186,8 +209,15 @@ class SnapshotImporter:
                 },
             )
 
-        return self._do_import(doc, payload, digest, snapshot_key, source_filename,
-                               report.warnings)
+        return self._do_import(
+            doc,
+            payload,
+            digest,
+            snapshot_key,
+            source_filename,
+            source_file_sha256,
+            report.warnings,
+        )
 
     # -- import steps ----------------------------------------------------
 
@@ -198,6 +228,7 @@ class SnapshotImporter:
         digest: str,
         snapshot_key: str,
         source_filename: str | None,
+        source_file_sha256: str | None,
         warnings: list[str],
     ) -> ImportSummary:
         snapshot = MarketSnapshot(
@@ -208,6 +239,7 @@ class SnapshotImporter:
             universe_size=doc.metadata.universe_size,
             source_filename=source_filename,
             sha256=digest,
+            source_file_sha256=source_file_sha256,
             raw_payload=payload,
             snapshot_metadata=doc.metadata.model_dump(),
         )
@@ -331,6 +363,7 @@ class SnapshotImporter:
             if field_name not in raw_values:
                 continue
             value = raw_values[field_name]
+            available = value is not None
             observation = MarketObservation(
                 market_id=market.id,
                 snapshot_id=snapshot.id,
@@ -339,13 +372,24 @@ class SnapshotImporter:
                 value_numeric=value,
                 unit=spec.unit,
                 period_label=spec.period_label,
-                fact_type=spec.default_fact_type if value is not None else FactType.ND.value,
+                period_granularity=spec.period_granularity,
+                # No metric in this snapshot is dated to the day, so no row
+                # claims an exact as-of date (ADR-015).
+                observed_at=None,
+                availability=(
+                    Availability.OBSERVED.value
+                    if available
+                    else Availability.NOT_AVAILABLE.value
+                ),
+                # Absence of a value is an availability fact, not a kind of
+                # evidence: fact_type stays NULL rather than becoming "N/D".
+                fact_type=spec.default_fact_type if available else None,
                 confidence=entry.confidence_level,
                 methodology=spec.methodology,
                 observation_metadata={
                     "source_field": field_name,
                     "market_confidence_level": entry.confidence_level,
-                    "value_supplied": value is not None,
+                    "value_supplied": available,
                 },
             )
             self.session.add(observation)
@@ -356,6 +400,20 @@ class SnapshotImporter:
         # --- technology spending growth --------------------------------
         tsg = entry.technology_spending_growth
         if tsg is not None:
+            available = tsg.value_pct is not None
+            declared = (tsg.fact_type or "").strip()
+            # "N/D" in the source is an availability statement, not evidence.
+            fact_type = (
+                declared
+                if available and declared and declared != SOURCE_NOT_AVAILABLE_TOKEN
+                else None
+            )
+            if tsg.year is not None:
+                period_label, granularity = str(tsg.year), PeriodGranularity.YEAR.value
+            elif tsg.period:
+                period_label, granularity = tsg.period, PeriodGranularity.UNDATED.value
+            else:
+                period_label, granularity = "snapshot", PeriodGranularity.SNAPSHOT.value
             observation = MarketObservation(
                 market_id=market.id,
                 snapshot_id=snapshot.id,
@@ -363,14 +421,22 @@ class SnapshotImporter:
                 value_numeric=tsg.value_pct,
                 value_text=tsg.scope,
                 unit="PCT",
-                period_label=str(tsg.year or tsg.period or "snapshot"),
-                fact_type=tsg.fact_type,
+                period_label=period_label,
+                period_granularity=granularity,
+                observed_at=None,
+                availability=(
+                    Availability.OBSERVED.value
+                    if fact_type is not None
+                    else Availability.NOT_AVAILABLE.value
+                ),
+                fact_type=fact_type,
                 confidence=entry.confidence_level,
                 methodology=tsg.scope,
                 observation_metadata={
                     "scope": tsg.scope,
                     "declared_source": tsg.source,
-                    "value_supplied": tsg.value_pct is not None,
+                    "declared_fact_type": declared or None,
+                    "value_supplied": available,
                 },
             )
             self.session.add(observation)
@@ -382,7 +448,7 @@ class SnapshotImporter:
                     ObservationSource(
                         observation_id=observation.id,
                         source_id=self._source_cache[tsg.source].id,
-                        attribution="EXPLICIT",
+                        attribution=ObservationAttribution.EXPLICIT.value,
                     )
                 )
 
@@ -406,7 +472,7 @@ class SnapshotImporter:
                 market_id=market.id,
                 snapshot_id=snapshot.id,
                 level=entry.competition.level,
-                fact_type=entry.competition.fact_type,
+                fact_type=_fact_type_or_none(entry.competition.fact_type),
                 included_in_score=entry.competition.included_in_score,
             )
         )
@@ -419,7 +485,7 @@ class SnapshotImporter:
                 MarketSizeEstimate(
                     market_id=market.id,
                     snapshot_id=snapshot.id,
-                    fact_type=t.fact_type,
+                    fact_type=_fact_type_or_none(t.fact_type),
                     confidence_level=t.confidence_level,
                     tam_min=_rmin(t.tam_relevant_employer_firms),
                     tam_max=_rmax(t.tam_relevant_employer_firms),
@@ -466,7 +532,11 @@ class SnapshotImporter:
         """
         hints = METRIC_SOURCE_HINTS.get(metric_key, ())
         for source in market_sources:
-            attribution = "METRIC_HINT" if source.source_key in hints else "MARKET_LEVEL"
+            attribution = (
+                ObservationAttribution.METRIC_HINT.value
+                if source.source_key in hints
+                else ObservationAttribution.MARKET_LEVEL.value
+            )
             self.session.add(
                 ObservationSource(
                     observation_id=observation.id,
@@ -496,6 +566,7 @@ class SnapshotImporter:
                 "BoRo Studio International Market Intelligence 2026 artifact."
             ),
             normalization_method=doc.metadata.normalization,
+            minimum_rank_coverage=BASE_MINIMUM_RANK_COVERAGE,
             definition=base_model_definition(doc.metadata.model_dump()),
             active=True,
         )
@@ -689,6 +760,18 @@ class SnapshotImporter:
             reference_score_run_id=str(reference_run.id) if reference_run else None,
             max_score_delta=0.0,
         )
+
+
+def _fact_type_or_none(value: str | None) -> str | None:
+    """Translate a source fact-type token into a stored fact type.
+
+    ``N/D`` and empty values become NULL: the absence of evidence is never
+    stored as a kind of evidence.
+    """
+    token = (value or "").strip()
+    if not token or token == SOURCE_NOT_AVAILABLE_TOKEN:
+        return None
+    return token
 
 
 def _parse_date(value: str) -> date | None:

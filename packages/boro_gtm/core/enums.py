@@ -1,8 +1,15 @@
 """Shared vocabularies.
 
-These are stored as plain text columns with CHECK-free validation at the
-application boundary: the source taxonomy may grow between snapshots and a
-database enum would require a migration for every new value.
+Two classes of vocabulary live here:
+
+**Closed** vocabularies describe a domain that cannot grow without a code
+change (fact types, run kinds, lifecycle states). These are mirrored by
+database CHECK constraints — see :data:`CLOSED_VOCABULARIES` and migration
+``0002``.
+
+**Open** vocabularies (metric keys, component keys, market regions,
+competition levels) stay unconstrained text: the research taxonomy may grow
+between snapshots and a database enum would force a migration for each value.
 """
 
 from __future__ import annotations
@@ -11,16 +18,63 @@ from enum import StrEnum
 
 
 class FactType(StrEnum):
-    """Source-supplied evidence taxonomy (``metadata.fact_type_legend``)."""
+    """Evidence taxonomy for a value that *exists*.
+
+    ``N/D`` is deliberately absent. "No data" is not a kind of evidence: it is
+    the absence of evidence, recorded as :class:`Availability.NOT_AVAILABLE`
+    with a NULL ``fact_type`` and a NULL value.
+    """
 
     FACT = "FACT"
     ESTIMATE = "ESTIMATE"
     PROXY = "PROXY"
     INFERENCE = "INFERENCE"
     HYPOTHESIS = "HYPOTHESIS"
-    ND = "N/D"
-    #: Used when the source omits an explicit fact type. Never upgraded to FACT.
-    UNKNOWN = "UNKNOWN"
+
+
+#: The token the source artifact uses for "not available / not used".
+#: Accepted on input, never stored as a ``fact_type``.
+SOURCE_NOT_AVAILABLE_TOKEN = "N/D"
+
+#: Fact-type tokens a source document may legally carry.
+SOURCE_FACT_TYPE_TOKENS = frozenset({*FactType, SOURCE_NOT_AVAILABLE_TOKEN})
+
+
+class Availability(StrEnum):
+    """Whether an observation carries a value at all."""
+
+    #: A value was supplied; ``fact_type`` states what kind of evidence it is.
+    OBSERVED = "OBSERVED"
+    #: No value was supplied. ``value_numeric`` and ``fact_type`` are both NULL.
+    NOT_AVAILABLE = "NOT_AVAILABLE"
+
+
+class PeriodGranularity(StrEnum):
+    """How precisely an observation is located in time.
+
+    Recorded explicitly so that a year-only period is never mistaken for — or
+    silently widened into — an exact date.
+    """
+
+    #: ``observed_at`` holds a real, source-stated calendar date.
+    DATE = "DATE"
+    #: ``period_label`` is a calendar year such as "2025".
+    YEAR = "YEAR"
+    #: The value is a property of the snapshot, not of a dated period.
+    SNAPSHOT = "SNAPSHOT"
+    #: The source says only "latest" or similar; no usable date exists.
+    UNDATED = "UNDATED"
+
+
+class ObservationAttribution(StrEnum):
+    """How an observation-to-source link was established."""
+
+    #: The source file names this source for this exact metric.
+    EXPLICIT = "EXPLICIT"
+    #: Catalogued as supporting this metric type, and listed by this market.
+    METRIC_HINT = "METRIC_HINT"
+    #: Listed by this market, with no per-metric attribution in the source.
+    MARKET_LEVEL = "MARKET_LEVEL"
 
 
 class MarketCategory(StrEnum):
@@ -64,6 +118,7 @@ class ResearchGapPriority(StrEnum):
 
 
 #: Normalized metric vocabulary (see 03_IMPORTER_AND_DATA_CONTRACT.md).
+#: Open by design: new snapshots may introduce new metrics.
 class MetricKey(StrEnum):
     GDP_NOMINAL_USD_BN = "gdp_nominal_usd_bn"
     GDP_PER_CAPITA_USD = "gdp_per_capita_usd"
@@ -77,3 +132,40 @@ class MetricKey(StrEnum):
     TECHNOLOGY_SPENDING_GROWTH_PCT = "technology_spending_growth_pct"
     #: Required by the icp_density_proxy formula but absent from the dataset.
     POPULATION = "population"
+
+
+def _values(enum_cls: type[StrEnum]) -> tuple[str, ...]:
+    return tuple(member.value for member in enum_cls)
+
+
+#: Closed vocabularies mirrored by database CHECK constraints (A-2).
+#: ``table.column -> allowed values``. Consumed by migration 0002 and asserted
+#: by ``tests/integration/test_constraints.py`` so code and schema cannot drift.
+CLOSED_VOCABULARIES: dict[str, tuple[str, ...]] = {
+    "market_observations.fact_type": _values(FactType),
+    "market_observations.availability": _values(Availability),
+    "market_observations.period_granularity": _values(PeriodGranularity),
+    "market_competition_assessments.fact_type": _values(FactType),
+    "market_size_estimates.fact_type": _values(FactType),
+    "observation_sources.attribution": _values(ObservationAttribution),
+    "score_runs.kind": _values(ScoreRunKind),
+    "score_runs.status": _values(ScoreRunStatus),
+    "research_gaps.status": _values(ResearchGapStatus),
+    "research_gaps.priority": _values(ResearchGapPriority),
+    "market_snapshot_categories.category_key": _values(MarketCategory),
+}
+
+#: Deliberately left as open text (documented for the audit trail).
+OPEN_VOCABULARIES: tuple[str, ...] = (
+    "market_observations.metric_key",
+    "market_observations.unit",
+    "market_observations.period_label",
+    "market_observations.confidence",
+    "market_score_components.component_key",
+    "scoring_model_components.component_key",
+    "scoring_models.key",
+    "scoring_models.version",
+    "markets.region",
+    "market_competition_assessments.level",
+    "market_size_estimates.confidence_level",
+)

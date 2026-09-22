@@ -178,3 +178,203 @@ gap never appears to belong to whichever vertical or offer first surfaced it.
   `boro_gtm.market_intelligence.research_gaps.detector` and is expected to grow
   as new metrics arrive; unrecognised metrics safely default to the full
   context.
+
+---
+
+## ADR-014 — `market_gtm_profiles` is removed; context belongs on the score run
+
+**Status:** Accepted · 2026-09-22 · supersedes the table's place in the M1 architecture
+
+### Context
+The authoritative M1 architecture named a `market_gtm_profiles` table. The
+implementation pack never defined it, and an audit confirmed it existed nowhere
+in code, schema or specification. The full analysis is in
+[DESIGN_NOTE_market_gtm_profiles.md](DESIGN_NOTE_market_gtm_profiles.md).
+
+### Decision
+The table is removed from the M1 architecture. Every responsibility its name
+implies is already represented, and better:
+
+* recommended channel, buyer titles, priority geographies → `market_deep_dives`
+* channel legal posture, language, timezone → `market_observations`, with
+  `fact_type`, `availability`, `period_granularity` and source provenance
+* channel suitability weighting → `scoring_models.definition.channel_access_weights`
+  (versioned configuration, not per-market evidence)
+
+Re-homing any of these into a profile table would strip provenance, which
+ADR-004 forbids.
+
+The audit's instinct was still right about *something*: before this pass the
+contextual dimensions of a run existed only inside `score_runs.context` JSONB.
+The missing durable object was a first-class context on the run, not a profile.
+`score_runs` therefore gained `vertical_id`, `icp_id`, `offer_id`, `channel_id`
+and `ticket_usd`, indexed as `ix_score_runs_context`.
+
+### Consequences
+* `US x commercial_hvac x ICP x email x $20k` and
+  `DE x industrial_maintenance x ICP x email x $20k` are distinct, durable,
+  join-queryable contexts — asserted in `tests/integration/test_gtm_context.py`.
+* No table was invented to satisfy a name.
+* If per-market, per-channel evidence later arrives that is genuinely *not* a
+  dated observation (a negotiated partner agreement, say), that is the moment
+  to revisit — as new evidence, with its own provenance.
+
+---
+
+## ADR-015 — Absence of evidence is an availability fact, not a fact type
+
+**Status:** Accepted · 2026-09-22
+
+### Context
+`N/D` was being stored in `market_observations.fact_type`, putting "we have no
+data" inside the same vocabulary as FACT and PROXY. Any consumer reading fact
+types had to know that one member of the enum meant the opposite of the others.
+
+### Decision
+`FactType` contains exactly five members: FACT, PROXY, ESTIMATE, INFERENCE,
+HYPOTHESIS. Absence is modelled separately:
+
+* `availability` — `OBSERVED` | `NOT_AVAILABLE`, NOT NULL
+* `fact_type` — NULL exactly when `availability = NOT_AVAILABLE`
+* `value_numeric` — NULL, never 0
+
+A CHECK constraint enforces the pairing in both directions, and a second CHECK
+restricts `fact_type` to the five-member vocabulary. `N/D` remains legal in a
+*source document* and is translated at import; the original token is kept in
+observation metadata for fidelity.
+
+### Consequences
+* "Is this known?" and "how good is this evidence?" are separate queries.
+* The confidence algorithm scores a missing value as 0.0 evidence, while the
+  scoring engines exclude the whole component from numerator and denominator —
+  so unknown still never reads as zero.
+
+---
+
+## ADR-016 — Temporal provenance records what is known, and nothing more
+
+**Status:** Accepted · 2026-09-22
+
+### Context
+The engine had no representation of *when* an observation was true. ADR/04
+listed "age of observation" as a confidence input that did not exist. The risk
+in adding one is inventing precision: turning "2025" into `2025-01-01`.
+
+### Decision
+Four distinct temporal facts, none derived from another:
+
+| Field | Meaning |
+|---|---|
+| `market_observations.observed_at` | An exact date, **only** when the source states one |
+| `market_observations.period_label` | What the value describes: "2025", "latest", "snapshot" |
+| `market_observations.period_granularity` | DATE / YEAR / SNAPSHOT / UNDATED |
+| `sources.published_at` | Source publication date, when the catalog states one |
+| `market_observations.created_at` | Ingest time |
+
+A CHECK constraint enforces that `observed_at` is present if and only if
+granularity is `DATE`, which makes invented precision unrepresentable.
+
+Recency participates in confidence through `RECENCY_FACTOR`: DATE 1.00,
+YEAR 0.90, SNAPSHOT 0.85, UNDATED 0.70. An observation with no usable date is
+therefore *less* confident, satisfying the requirement that missing dates
+degrade confidence rather than being silently treated as current.
+
+### Consequences
+* In the 2026 snapshot no metric is dated to the day, so `observed_at` is NULL
+  everywhere and `period_granularity = DATE` appears zero times. That is the
+  correct, honest result, and a test asserts it.
+* `sources.published_at` is likewise NULL for all 15 catalog entries: the
+  catalog states publication dates only inside free-text titles
+  ("IMF World Economic Outlook Database — April 2026"), and parsing those would
+  be exactly the invented precision this ADR exists to prevent.
+
+---
+
+## ADR-017 — Snapshot identity is canonical, not byte-literal
+
+**Status:** Accepted · 2026-09-22
+
+### Context
+`import_file` hashed raw file bytes while `import_payload` hashed a canonical
+JSON serialization. The same document through different entry points produced
+different identities, so an unchanged document could be rejected as a conflict.
+
+### Decision
+One identity function, `snapshot_identity(payload)`, hashes the canonical form
+(`sort_keys`, tight separators, `ensure_ascii=False`, `allow_nan=False`). Both
+entry points use it. The literal byte digest is retained separately as
+`market_snapshots.source_file_sha256` for fidelity auditing — it is evidence,
+not identity.
+
+### Consequences
+* Reindenting or reordering a source file is a no-op import.
+* A semantic change under the same snapshot key remains an `IMPORT_CONFLICT`.
+* **Migration note:** snapshots imported before this change carry a byte digest
+  in `sha256`. Migration `0002` does not rewrite them, because recomputing an
+  identity requires re-canonicalising the stored payload and would silently
+  rewrite an immutable row. Pre-existing snapshots should be re-imported into a
+  fresh database. Given the project is pre-release with a single snapshot, this
+  is cheaper and more honest than a backfill.
+
+---
+
+## ADR-018 — Evidence tables are append-only at the database level
+
+**Status:** Accepted · 2026-09-22 · resolves audit finding A-6
+
+### Context
+Snapshot immutability was enforced only in application code. Any direct SQL
+could rewrite `raw_payload` or an observation without tripping anything. The
+brief was to evaluate a *small* invariant and not build infrastructure.
+
+### Decision
+A single `plpgsql` function, `gtm_reject_update()`, is attached as a
+`BEFORE UPDATE ... FOR EACH ROW` trigger to `market_snapshots` and
+`market_observations`. Any UPDATE raises `restrict_violation`.
+
+Deliberately narrow:
+
+* **INSERT is untouched** — imports work unchanged.
+* **DELETE is untouched** — `ON DELETE CASCADE` from a snapshot still works,
+  and `alembic downgrade` still drops tables.
+* **TRUNCATE does not fire row triggers** — test teardown is unaffected.
+
+One ORM change was required: `MarketSnapshot.observations` and `.score_runs`
+now use `passive_deletes=True`, so SQLAlchemy lets the database perform the
+cascade instead of first nulling child foreign keys (which the trigger, quite
+correctly, refuses).
+
+### Consequences
+* Rewriting stored evidence now requires deliberately dropping the trigger,
+  which is auditable, rather than being a plain `UPDATE`.
+* Mutable registry tables (`markets`, `scoring_models`, strategy registries)
+  keep normal semantics; they are not evidence.
+* Cost was two triggers and one function, so the "disproportionate cost"
+  escape hatch was not needed.
+
+---
+
+## ADR-019 — The supplied JSON Schema is preserved verbatim
+
+**Status:** Accepted · 2026-09-22 · resolves the second half of audit finding A-13
+
+### Context
+`data/market_intelligence_v1.schema.json` carries
+`$id: https://opengtm.dev/schemas/market-intelligence-v1.schema.json` and the
+title "OpenGTM Market Intelligence Import v1" — the pre-ADR-008 product name.
+
+### Decision
+Leave it **unchanged**. It is a supplied input artifact that travels with the
+dataset it validates, and `data/` holds inputs, not project source. Editing a
+received artifact to match our internal naming would break byte-fidelity with
+the sender's copy for a purely cosmetic gain, and `$id` is an identifier rather
+than a URL that is fetched — nothing resolves it at runtime.
+
+The stale path inside *our own* code (`countries.py` naming a pre-rename
+`app/...` path in a user-facing error) was a genuine defect and is fixed.
+
+### Consequences
+* The one remaining `opengtm` reference outside documentation is in a supplied
+  artifact, deliberately and on the record.
+* If the schema is ever re-authored rather than received, it should adopt the
+  final public identifier at that point.

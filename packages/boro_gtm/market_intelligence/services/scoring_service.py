@@ -5,11 +5,16 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from boro_gtm.core.enums import ScoreRunKind, ScoreRunStatus
-from boro_gtm.core.errors import ModelNotFoundError, SnapshotNotFoundError, ValidationError
+from boro_gtm.core.errors import (
+    ModelNotFoundError,
+    ScoreReproductionFailedError,
+    SnapshotNotFoundError,
+    ValidationError,
+)
 from boro_gtm.market_intelligence.domain.models import (
     Market,
     MarketObservation,
@@ -19,6 +24,7 @@ from boro_gtm.market_intelligence.domain.models import (
     ScoreRun,
     ScoringModel,
 )
+from boro_gtm.market_intelligence.research_gaps.detector import GapContext, record_gaps
 from boro_gtm.market_intelligence.scoring.base_engine import (
     MarketInputs,
     ScoreRunResult,
@@ -26,6 +32,7 @@ from boro_gtm.market_intelligence.scoring.base_engine import (
     run_reference_reproduction,
 )
 from boro_gtm.market_intelligence.scoring.definitions import (
+    BASE_MINIMUM_RANK_COVERAGE,
     BASE_MODEL_KEY,
     BASE_MODEL_VERSION,
     ENGINE_VERSION,
@@ -101,7 +108,8 @@ def build_market_inputs(session: Session, snapshot: MarketSnapshot) -> list[Mark
     ).all()
 
     metrics: dict[str, dict[str, float | None]] = {}
-    fact_types: dict[str, dict[str, str]] = {}
+    fact_types: dict[str, dict[str, str | None]] = {}
+    granularity: dict[str, dict[str, str | None]] = {}
     confidence_labels: dict[str, str | None] = {}
     for obs in observations:
         iso = obs.market.iso2
@@ -109,6 +117,7 @@ def build_market_inputs(session: Session, snapshot: MarketSnapshot) -> list[Mark
             float(obs.value_numeric) if obs.value_numeric is not None else None
         )
         fact_types.setdefault(iso, {})[obs.metric_key] = obs.fact_type
+        granularity.setdefault(iso, {})[obs.metric_key] = obs.period_granularity
         confidence_labels.setdefault(iso, obs.confidence)
 
     markets = session.scalars(select(Market)).all()
@@ -124,6 +133,7 @@ def build_market_inputs(session: Session, snapshot: MarketSnapshot) -> list[Mark
                 imported_total=imported_totals.get(iso),
                 imported_rank=imported_ranks.get(iso),
                 fact_types=fact_types.get(iso, {}),
+                period_granularity=granularity.get(iso, {}),
                 confidence_label=confidence_labels.get(iso),
                 is_home_market=market.is_home_market,
             )
@@ -150,16 +160,35 @@ def create_base_score_run(
     inputs = build_market_inputs(session, snapshot)
 
     component_specs = model.definition.get("components")
+    minimum_rank_coverage = float(
+        model.minimum_rank_coverage
+        if model.minimum_rank_coverage is not None
+        else BASE_MINIMUM_RANK_COVERAGE
+    )
     started = datetime.now(UTC)
 
     if mode == ScoreRunKind.REFERENCE_REPRODUCTION.value:
+        # A-11: reference reproduction is meaningless without the imported
+        # reference components. Fail closed *before* any run row is created,
+        # so the transaction leaves no COMPLETED zero-result run behind.
+        _require_reference_components(session, snapshot)
         result = run_reference_reproduction(
-            [i for i in inputs if i.imported_components], component_specs
+            [i for i in inputs if i.imported_components],
+            component_specs,
+            minimum_rank_coverage=minimum_rank_coverage,
         )
     else:
         # The universe is every market holding at least one raw observation.
         universe = [i for i in inputs if any(v is not None for v in i.metrics.values())]
-        result = run_native_recalculation(universe, component_specs)
+        if not universe:
+            raise ScoreReproductionFailedError(
+                "Native recalculation needs at least one market with an observed "
+                "raw metric, and this snapshot projection has none.",
+                details={"snapshot_key": snapshot.key, "mode": mode},
+            )
+        result = run_native_recalculation(
+            universe, component_specs, minimum_rank_coverage=minimum_rank_coverage
+        )
 
     run = ScoreRun(
         scoring_model_id=model.id,
@@ -177,13 +206,88 @@ def create_base_score_run(
 
     market_by_iso = {m.iso2: m for m in session.scalars(select(Market)).all()}
     _persist_results(session, run, result, market_by_iso)
+
+    # A-9: gaps produced by the engine are persisted through the same
+    # deterministic, de-duplicated machinery the contextual path uses.
+    gap_summary = _persist_engine_gaps(session, result, market_by_iso, snapshot, model)
     session.flush()
 
     logger.info(
         "Base score run completed",
-        extra={"score_run_id": str(run.id), "mode": mode, "markets": len(result.results)},
+        extra={
+            "score_run_id": str(run.id),
+            "mode": mode,
+            "markets": len(result.results),
+            "research_gaps_created": gap_summary["created"],
+        },
     )
     return run
+
+
+def _require_reference_components(session: Session, snapshot: MarketSnapshot) -> None:
+    """Refuse to reproduce a reference that does not exist (A-11).
+
+    Both checks query the database rather than the in-memory projection, so a
+    stale identity-map relationship cannot mask a missing reference.
+    """
+    reference_run = session.scalar(
+        select(ScoreRun).where(
+            ScoreRun.snapshot_id == snapshot.id,
+            ScoreRun.kind == ScoreRunKind.IMPORTED_REFERENCE.value,
+        )
+    )
+    if reference_run is None:
+        raise ScoreReproductionFailedError(
+            "Cannot run reference reproduction: snapshot "
+            f"{snapshot.key!r} has no imported_reference score run to reproduce.",
+            details={"snapshot_key": snapshot.key, "missing": "imported_reference run"},
+        )
+    component_count = session.scalar(
+        select(func.count())
+        .select_from(MarketScoreComponent)
+        .join(MarketScore, MarketScore.id == MarketScoreComponent.market_score_id)
+        .where(MarketScore.score_run_id == reference_run.id)
+    )
+    if not component_count:
+        raise ScoreReproductionFailedError(
+            "Cannot run reference reproduction: the imported_reference run for "
+            f"{snapshot.key!r} carries no component values.",
+            details={
+                "snapshot_key": snapshot.key,
+                "score_run_id": str(reference_run.id),
+                "missing": "market_score_components",
+            },
+        )
+
+
+def _persist_engine_gaps(
+    session: Session,
+    result: ScoreRunResult,
+    market_by_iso: dict[str, Market],
+    snapshot: MarketSnapshot,
+    model: ScoringModel,
+) -> dict[str, int]:
+    """Write engine-emitted research gaps through the gap detector."""
+    if not result.gaps:
+        return {"created": 0, "already_known": 0, "total": 0}
+
+    items: list[tuple[GapContext, str]] = []
+    for market_key, metric_key, reason in result.gaps:
+        market = market_by_iso.get(market_key)
+        if market is None:  # pragma: no cover - registry is authoritative
+            continue
+        items.append(
+            (
+                GapContext(
+                    metric_key=metric_key,
+                    market_id=market.id,
+                    snapshot_id=snapshot.id,
+                    model=f"{model.key}:{model.version}",
+                ),
+                reason,
+            )
+        )
+    return record_gaps(session, items)
 
 
 def _persist_results(

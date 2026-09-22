@@ -147,9 +147,15 @@ def test_market_detail_and_observations(loaded_client) -> None:
     observations = loaded_client.get(f"{PREFIX}/markets/US/observations").json()
     assert observations
     by_metric = {o["metric_key"]: o for o in observations}
-    assert by_metric["gdp_nominal_usd_bn"]["value_numeric"] == pytest.approx(30770)
-    assert by_metric["gdp_nominal_usd_bn"]["period_label"] == "2025"
-    assert by_metric["gdp_nominal_usd_bn"]["sources"]
+    gdp = by_metric["gdp_nominal_usd_bn"]
+    assert gdp["value_numeric"] == pytest.approx(30770)
+    assert gdp["period_label"] == "2025"
+    assert gdp["period_granularity"] == "YEAR"
+    assert gdp["availability"] == "OBSERVED"
+    assert gdp["fact_type"] == "FACT"
+    # A year is not a date: no invented precision is served.
+    assert gdp["observed_at"] is None
+    assert gdp["sources"]
 
 
 def test_null_observation_is_served_as_null(loaded_client) -> None:
@@ -160,7 +166,9 @@ def test_null_observation_is_served_as_null(loaded_client) -> None:
     ).json()
     assert len(observations) == 1
     assert observations[0]["value_numeric"] is None
-    assert observations[0]["fact_type"] == "N/D"
+    # Absence is reported as absence, not as a fact type.
+    assert observations[0]["fact_type"] is None
+    assert observations[0]["availability"] == "NOT_AVAILABLE"
 
 
 def test_observation_filters(loaded_client) -> None:

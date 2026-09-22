@@ -20,8 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from boro_gtm.market_intelligence.scoring.confidence import aggregate_confidence
 from boro_gtm.market_intelligence.scoring.definitions import (
     CHANNEL_ACCESS_WEIGHTS,
+    CONTEXTUAL_MINIMUM_RANK_COVERAGE,
     CONTEXTUAL_MODEL_COMPONENTS,
     ContextualComponent,
 )
@@ -37,7 +39,8 @@ class ContextualRequest:
     channel_key: str | None = None
     ticket_usd: float | None = None
     allow_low_coverage: bool = False
-    min_coverage: float = 0.5
+    #: The model's ``minimum_rank_coverage``; callers may tighten it per request.
+    min_coverage: float = CONTEXTUAL_MINIMUM_RANK_COVERAGE
 
 
 @dataclass(slots=True)
@@ -209,16 +212,12 @@ def evaluate_market(
     if covered_weight > 0:
         earned = sum(c.weighted_score or 0.0 for c in results)
         # Renormalize over covered weight: unknown is excluded, not zeroed.
+        # Identical semantics to native base scoring (A-8).
         score = round(earned / covered_weight * 100.0, 4)
-        confidence = round(
-            sum(c.confidence * c.weight for c in results if c.coverage > 0)
-            / covered_weight
-            * coverage,
-            4,
-        )
     else:
         score = None
-        confidence = 0.0
+    # One confidence algorithm, shared with the base engine (A-10).
+    confidence = aggregate_confidence(results, total_weight)
 
     comparable = coverage >= request.min_coverage or request.allow_low_coverage
     notes: list[str] = []

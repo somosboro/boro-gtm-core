@@ -7,7 +7,7 @@ import copy
 import pytest
 from sqlalchemy import func, select
 
-from boro_gtm.core.enums import ScoreRunKind
+from boro_gtm.core.enums import Availability, FactType, ScoreRunKind
 from boro_gtm.core.errors import ImportConflictError, ValidationError
 from boro_gtm.market_intelligence.domain.models import (
     Market,
@@ -25,6 +25,7 @@ from boro_gtm.market_intelligence.domain.models import (
 from boro_gtm.market_intelligence.importers.snapshot_importer import (
     SnapshotImporter,
     compute_sha256,
+    snapshot_identity,
 )
 from tests.conftest import SOURCE_JSON
 from tests.fixtures.golden import (
@@ -53,12 +54,16 @@ def test_every_market_has_iso_codes(imported_session) -> None:
         assert market.iso3 and len(market.iso3) == 3
 
 
-def test_snapshot_is_hashed_and_retains_raw_payload(session, source_bytes) -> None:
+def test_snapshot_is_hashed_and_retains_raw_payload(
+    session, source_bytes, source_payload
+) -> None:
+    """Identity is the canonical digest; the byte digest is kept separately."""
     summary = SnapshotImporter(session).import_file(SOURCE_JSON)
     snapshot = session.scalar(
         select(MarketSnapshot).where(MarketSnapshot.key == summary.snapshot_key)
     )
-    assert snapshot.sha256 == compute_sha256(source_bytes)
+    assert snapshot.sha256 == snapshot_identity(source_payload)
+    assert snapshot.source_file_sha256 == compute_sha256(source_bytes)
     assert snapshot.raw_payload["metadata"]["universe_size"] == EXPECTED_UNIVERSE_SIZE
     assert snapshot.source_filename == SOURCE_JSON.name
 
@@ -135,7 +140,7 @@ def test_summary_counts_match_the_source(session) -> None:
 
 
 def test_nulls_remain_null(imported_session) -> None:
-    """ADR-004: unknown is never coerced to zero."""
+    """ADR-004: unknown is never coerced to zero, and is not a fact type."""
     rows = imported_session.scalars(
         select(MarketObservation).where(
             MarketObservation.metric_key == "software_spending_pct_gdp"
@@ -145,7 +150,9 @@ def test_nulls_remain_null(imported_session) -> None:
     assert unknown, "expected unknown software spending in the dataset"
     for row in unknown:
         assert row.value_numeric is None
-        assert row.fact_type == "N/D"
+        # Absence is an availability statement, never an evidence kind.
+        assert row.availability == Availability.NOT_AVAILABLE.value
+        assert row.fact_type is None
         assert row.observation_metadata["value_supplied"] is False
 
 
@@ -164,7 +171,43 @@ def test_fact_types_are_preserved(imported_session) -> None:
             MarketObservation.metric_key == "technology_spending_growth_pct"
         )
     ).all()
-    assert {r.fact_type for r in growth} <= {"N/D", "PROXY", "FACT"}
+    assert growth
+    for row in growth:
+        assert row.fact_type in {None, "PROXY", "FACT"}
+        if row.fact_type is None:
+            assert row.availability == Availability.NOT_AVAILABLE.value
+            # The source's own "N/D" token is retained for fidelity, but as
+            # metadata about the source, not as a stored fact type.
+            assert row.observation_metadata["declared_fact_type"] in {None, "N/D"}
+
+
+def test_nd_is_never_stored_as_a_fact_type(imported_session) -> None:
+    """Regression: "N/D" must not survive anywhere as an evidence kind."""
+    allowed = {f.value for f in FactType}
+    for row in imported_session.scalars(select(MarketObservation)).all():
+        assert row.fact_type is None or row.fact_type in allowed
+    for row in imported_session.scalars(select(MarketCompetitionAssessment)).all():
+        assert row.fact_type is None or row.fact_type in allowed
+    for row in imported_session.scalars(select(MarketSizeEstimate)).all():
+        assert row.fact_type is None or row.fact_type in allowed
+
+
+def test_temporal_provenance_is_recorded_without_inventing_precision(
+    imported_session,
+) -> None:
+    """A year-only period must never become an exact date."""
+    rows = imported_session.scalars(select(MarketObservation)).all()
+    by_metric = {r.metric_key: r for r in rows}
+
+    assert by_metric["gdp_nominal_usd_bn"].period_granularity == "YEAR"
+    assert by_metric["gdp_nominal_usd_bn"].period_label == "2025"
+    assert by_metric["language_access"].period_granularity == "SNAPSHOT"
+    # The source says only "latest" for manufacturing value added.
+    assert by_metric["manufacturing_value_added_usd_bn"].period_granularity == "UNDATED"
+
+    # No row in this snapshot claims a day-precise observation date.
+    assert all(r.observed_at is None for r in rows)
+    assert all(r.period_granularity != "DATE" for r in rows)
 
 
 def test_market_size_only_where_supplied(imported_session, source_payload) -> None:

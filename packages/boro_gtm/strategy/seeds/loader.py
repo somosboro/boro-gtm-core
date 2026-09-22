@@ -24,6 +24,7 @@ from boro_gtm.market_intelligence.domain.models import (
     ScoringModelComponent,
 )
 from boro_gtm.market_intelligence.scoring.definitions import (
+    CONTEXTUAL_MINIMUM_RANK_COVERAGE,
     CONTEXTUAL_MODEL_COMPONENTS,
     CONTEXTUAL_MODEL_KEY,
     CONTEXTUAL_MODEL_VERSION,
@@ -129,6 +130,7 @@ def _seed_contextual_model(session: Session) -> bool:
             "commercial evidence accumulates."
         ),
         normalization_method="weighted components renormalized over covered weight",
+        minimum_rank_coverage=CONTEXTUAL_MINIMUM_RANK_COVERAGE,
         definition=contextual_model_definition(),
         active=True,
     )
