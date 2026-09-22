@@ -366,6 +366,7 @@ calibration. See [the M2 design](docs/M2_COMPANY_DISCOVERY_DESIGN.md).
   and ranking ties
 * [Scoring reference](docs/SCORING.md)
 * [M2 design](docs/M2_COMPANY_DISCOVERY_DESIGN.md) ·
+  [M2 schema graph](docs/M2_SCHEMA_GRAPH.md) ·
   [M2 acceptance criteria](docs/M2_ACCEPTANCE_CRITERIA.md) ·
   [M2 ADRs](docs/M2_ADRS.md)
 * [Documentation index](docs/README.md)
