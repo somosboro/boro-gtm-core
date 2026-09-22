@@ -14,16 +14,24 @@ These describe the system **as built**.
 
 | Document | What it covers |
 | --- | --- |
-| [M2_COMPANY_DISCOVERY_DESIGN.md](M2_COMPANY_DISCOVERY_DESIGN.md) | Canonical identity, provider versioning, claims, entity resolution, run lifecycle, domain policy |
+| [M2_COMPANY_DISCOVERY_DESIGN.md](M2_COMPANY_DISCOVERY_DESIGN.md) | Identity anchors vs projections, provider versioning and capability, the attribute registry, entity resolution, run lifecycle, domain policy, temporal relationships |
 | [M2_SCHEMA_GRAPH.md](M2_SCHEMA_GRAPH.md) | Proposed table graph, ownership, cardinality and indexes |
 | [M2_ACCEPTANCE_CRITERIA.md](M2_ACCEPTANCE_CRITERIA.md) | Scenarios M2 must satisfy before it is considered done |
 | [M2_ADRS.md](M2_ADRS.md) | Decisions taken during M2 design, including revision-2 corrections |
 
-The design is at **revision 2**. Revision 1 contained internal contradictions —
-an impossible provider-record constraint, append-only tables that required
-updates, evidence that recorded sources but not values, and an undefined notion
-of "company". Those are corrected in place, with the superseded reasoning
-retained in the ADRs rather than deleted.
+The design is at **revision 3**.
+
+* **Revision 1 → 2** corrected internal contradictions: an impossible
+  provider-record constraint, append-only tables that required updates,
+  evidence that recorded sources but not values, and an undefined notion of
+  "company".
+* **Revision 2 → 3** resolved six structural invariants: identity anchors
+  versus truncatable projections, concurrent resolution-chain roots, raw-payload
+  fidelity, providers without stable external ids, temporal relationships, and
+  a typed attribute registry in place of untyped EAV.
+
+Superseded reasoning is retained in the ADRs rather than deleted, so the trail
+from each contradiction to its resolution stays readable.
 
 No M2 code, migrations or tables exist in this repository.
 

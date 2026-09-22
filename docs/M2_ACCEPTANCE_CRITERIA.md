@@ -1,14 +1,14 @@
 # M2 — Acceptance Criteria
 
-**Status:** design only, revision 2. These scenarios are specified *before*
+**Status:** design only, revision 3. These scenarios are specified *before*
 implementation, as M0/M1 were. None is implemented as a test yet.
 
 Each states a **Given / When / Then** and the invariant it protects. An
 implementation is not done until every scenario passes against live PostgreSQL
 from an empty schema.
 
-Scenarios marked **[r2]** are new or rewritten in revision 2, covering the
-contradictions corrected in the design.
+Scenarios marked **[r2]** were added in revision 2; **[r3]** in revision 3,
+covering the design invariants resolved there.
 
 ---
 
@@ -37,6 +37,62 @@ history.
 **Then** the database rejects it, exactly as for `market_observations`.
 *Protects:* append-only raw evidence.
 
+### A5 [r3] — Identity is the canonical digest, not the raw bytes
+**Given** a provider that returns the same object with different whitespace and
+key ordering on two calls
+**When** both responses are ingested
+**Then** exactly **one** `provider_record_versions` row exists (same
+`canonical_payload_hash`), **two** `provider_record_bodies` rows exist with
+different `raw_body_sha256`, and a sighting records the second observation.
+*Protects:* a provider reformatting its JSON must not manufacture a version —
+the same rule that makes a reindented source file a no-op import in M0.
+
+### A6 [r3] — Raw bytes are preserved, and JSONB is not called verbatim
+**Given** any ingested record
+**Then** `provider_record_bodies.raw_body` equals the literal response bytes,
+`raw_body_sha256` matches them, and `parsed_payload` is documented as a parsed
+representation rather than a verbatim one.
+
+### A7 [r3] — Pruning bodies preserves the evidence chain
+**Given** a retention policy that prunes `provider_record_bodies`
+**When** bodies are pruned
+**Then** `provider_record_versions` is untouched — both digests, the parsed
+payload, sightings, decisions and claims all survive and remain queryable.
+
+### A8 [r3] — A NATIVE external id is used as-is
+**Given** a provider declaring `identity_capability = NATIVE_EXTERNAL_ID`
+**Then** its entities carry `external_id_kind = 'NATIVE'` and the provider's own
+id verbatim.
+
+### A9 [r3] — A DERIVED key is never presented as provider-issued
+**Given** a provider declaring `DERIVED_STABLE_KEY` with
+`key_fields = [registrable_domain]`
+**When** entities are created
+**Then** each carries `external_id_kind = 'DERIVED'` and the
+`key_algorithm_version` in force, and no API response describes the key as a
+provider identifier.
+
+### A10 [r3] — A derived-key collision blocks auto-matching
+**Given** two genuinely different organizations producing the same derived key
+**When** their versions land under one provider entity with materially
+disagreeing non-key identity fields
+**Then** the entity is flagged `identity_collision = true` and resolution routes
+it to `AMBIGUOUS` — it may never auto-match.
+*Protects:* a colliding derived key is weaker evidence than no key at all.
+
+### A11 [r3] — Changed key fields create a new entity, not a mutated one
+**Given** a `DERIVED_STABLE_KEY` entity whose participating fields change
+**When** the record is re-ingested
+**Then** a **new** provider entity is created, the old one is untouched, and the
+two are linked only by both resolving to the same company — no mutable pointer
+is invented.
+
+### A12 [r3] — A CONTENT_ONLY provider cannot express object change
+**Given** a provider declaring `CONTENT_ONLY`
+**When** its payload for the same real object changes
+**Then** a new entity is created (`external_id_kind = 'CONTENT'`), and the
+design records that such providers cannot track change over time.
+
 ### A4 — A re-run is a new, diffable run
 **Given** run `R1` returned 200 records
 **When** the identical query runs again as `R2`
@@ -64,12 +120,58 @@ who said it.
 rows are unchanged**.
 *Protects:* projections are derived; evidence is not.
 
-### B3 [r2] — Full rebuild is byte-identical
+### B3 [r3] — Derived projections rebuild byte-identically; anchors survive
 **Given** a populated registry
-**When** every projection table is truncated and recomputed from claims,
-decisions and the identity policy version
-**Then** the projections are byte-identical to before.
-*Protects:* the integrity invariant that makes projections safe to mutate.
+**When** every **derived projection** table is truncated — `company_profiles`,
+`company_names`, `company_domains`, `company_locations`,
+`company_market_presences`, `company_verticals`, `company_relationships`,
+`entity_resolution_heads` — and recomputed from evidence, the
+`attribute_registry_version` and the `identity_policy_version`
+**Then** the projections are byte-identical to before, **and every
+`companies.id` is unchanged**.
+*Protects:* the revised rebuild invariant — projections are derived, identity
+anchors are minted.
+
+### B3a [r3] — Identity anchors are not truncatable
+**Given** a populated registry
+**When** truncating `companies` is attempted
+**Then** it fails on foreign keys from evidence tables, and no rebuild path
+exists that would regenerate the same UUIDs.
+*Protects:* the boundary between minted identity and computed projection.
+
+### B3b [r3] — `companies` holds no business attributes
+**When** the schema is inspected
+**Then** `companies` has no `canonical_name`, `primary_domain`,
+`employee_count_*`, `legal_form`, `founded_year`, `market_id` or `vertical_id`
+column; all appear on `company_profiles` or another projection.
+
+### B3c [r3] — Anchor lifecycle reconciles against decisions
+**Given** a registry containing merged companies
+**When** the reconciliation query in design §3.2 is run
+**Then** it returns zero rows — every `lifecycle_status` agrees with the
+effective `MERGED` / `SPLIT` decision.
+*Protects:* the one cached identity-level fact stays truthful.
+
+### B8 [r3] — `value_jsonb` and typed shadows never disagree
+**Given** every claim in the database
+**When** each shadow is recomputed from `value_jsonb` using its registry
+definition's extractor
+**Then** the recomputed value equals the stored shadow for every row.
+
+### B9 [r3] — A claim outside the registry is rejected
+**Given** the active `attribute_registry_version`
+**When** a claim is written with an `attribute_key` absent from it, or a
+`value_jsonb` failing that version's `value_schema`, or a `unit` or `fact_type`
+outside the declared sets
+**Then** the write is rejected with `ATTRIBUTE_NOT_IN_REGISTRY`.
+*Protects:* the contract that stops claims becoming untyped EAV.
+
+### B10 [r3] — Registry strategy drives projection behaviour
+**Given** `employee_count` declared `ENVELOPE` and `legal_name` declared
+`HIGHEST_PRECEDENCE`
+**When** two equally-ranked providers disagree on both
+**Then** `employee_count` projects a min/max envelope while `legal_name`
+projects a single winner with `projection_conflict` set if unresolvable.
 
 ### B4 [r2] — Equally-ranked disagreement projects an envelope, not a winner
 **Given** two providers of equal trust tier and equal fact type claiming
@@ -122,6 +224,50 @@ projection; the original row still exists.
 `resolution_decision_id` column, and re-resolving requires no write to any
 provider table.
 *Protects:* immutable evidence never needs mutation to correct a decision.
+
+### C9 [r3] — Exactly one head after two concurrent *initial* decisions
+**Given** provider entity `P` with no decisions
+**When** two workers concurrently write a root decision for `P`
+**Then** exactly one commits; the other fails on `uq_resolution_root`, re-reads
+the head, and either writes nothing or supersedes it. Exactly one effective
+head exists, and no `IntegrityError` reaches the caller.
+*Protects:* the revision-2 gap — `UNIQUE (supersedes_decision_id)` did not stop
+two concurrent roots, because NULLs do not collide.
+
+### C10 [r3] — Exactly one head after two concurrent *superseding* decisions
+**Given** entity `P` with head `D1`
+**When** two workers concurrently write decisions superseding `D1`
+**Then** exactly one commits; the other fails on `uq_resolution_supersedes`,
+re-reads the new head and re-evaluates against it. Exactly one effective head
+exists.
+
+### C11 [r3] — The decision graph is a linear chain
+**Given** any provider entity with decisions
+**Then** exactly one decision has `supersedes_decision_id IS NULL`, no decision
+is superseded twice, and the anti-join for the head returns exactly one row
+without needing `ORDER BY ... LIMIT 1`.
+
+### C12 [r3] — The heads table is a cache, not the invariant
+**Given** a populated registry
+**When** `entity_resolution_heads` is truncated and rebuilt from decisions
+**Then** it is byte-identical, and resolution correctness was never dependent
+on it.
+
+### C13 [r3] — Corrected resolution moves claim history without rewriting it
+**Given** provider entity `P` resolved to company `A` by decision `D1`, with
+claims written under `D1`
+**When** `D2` supersedes `D1`, resolving `P` to company `B`
+**Then** every claim row is **byte-identical** to before; `B`'s rebuilt
+projection includes those claims; `A`'s rebuilt projection excludes them; and
+the claims remain queryable as history via `resolution_decision_id = D1`.
+*Protects:* the revision-2 contradiction — claims carrying `company_id` would
+have had to be rewritten.
+
+### C14 [r3] — Superseded-decision claims never contaminate a current projection
+**Given** the state above
+**When** `A`'s projection is rebuilt
+**Then** no value in it derives from a claim whose provider entity resolves
+elsewhere under the effective decision.
 
 ### C5 — Same company from two providers resolves to one company
 **Given** provider A and provider B both returning `schmidt-kaelte.de` as an
@@ -323,6 +469,52 @@ mismatches, and all pre-existing tests pass unchanged.
 
 ---
 
+## J. Temporal relationships
+
+### J1 [r3] — A relationship that ended is representable without UPDATE
+**Given** company `A` was a franchisee of `F` until 2027-06-30
+**Then** one `ASSERTED` `FRANCHISE_OF` claim exists with
+`valid_to = 2027-06-30`; the projection excludes it from current
+relationships; and no row was updated.
+
+### J2 [r3] — A sequence of relationships is representable
+**Given** company `B` was a subsidiary of `X`, then acquired by `Y` on
+2027-03-01
+**Then** two claims exist — `(B, X, SUBSIDIARY_OF, valid_to = 2027-03-01)` and
+`(B, Y, ACQUIRED_BY, valid_from = 2027-03-01)` — both immutable, and
+`?as_of=2026-01-01` returns the first while the current view returns the second.
+
+### J3 [r3] — A wrong relationship claim is retracted, not deleted
+**Given** an erroneous `SUBSIDIARY_OF` claim
+**When** it is corrected
+**Then** a new `RETRACTED` claim exists with `supersedes_claim_id` pointing at
+it, the original row is byte-identical, and the projection drops the
+relationship.
+
+### J4 [r3] — Inverse relationship types are not stored
+**When** the schema is inspected
+**Then** `PARENT_OF`, `FRANCHISOR_OF` and `ACQUIRER_OF` are absent from stored
+`relationship_type` values, and the bidirectional view derives them from the
+canonical direction.
+*Protects:* two stored directions that could disagree.
+
+### J5 [r3] — `SISTER_OF` is stored once
+**Given** a symmetric sister relationship between `A` and `B`
+**Then** exactly one row exists, with `from_company_id < to_company_id`
+enforced by a CHECK, and both companies see it through the bidirectional view.
+
+### J6 [r3] — `FORMERLY` is a name, not a relationship
+**When** the schema is inspected
+**Then** `FORMERLY` is absent from `relationship_type`, and a former name
+appears in `company_names` with `name_type = FORMER`.
+
+### J7 [r3] — Relationship projection is rebuildable
+**Given** a populated registry
+**When** `company_relationships` is truncated and rebuilt from relationship
+claims
+**Then** it is byte-identical, containing exactly the effective, non-retracted,
+currently-valid relationships.
+
 ## Definition of done for M2
 
 * Every scenario above passes against live PostgreSQL from an empty schema.
@@ -337,3 +529,9 @@ mismatches, and all pre-existing tests pass unchanged.
 * The `AMBIGUOUS` review queue is reachable through the API.
 * A documented promotion path for density proxies exists — and is **not** wired
   to run automatically.
+* The derived-projection rebuild (B3) runs in CI, not only locally, and asserts
+  that every `companies.id` is unchanged.
+* The attribute registry is seeded and versioned, and B8/B9 enforce the
+  contract on every write.
+* At least one provider adapter of each `identity_capability` is exercised, so
+  the derived-key and content-only paths are not theoretical.

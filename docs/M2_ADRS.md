@@ -1,12 +1,12 @@
 # M2 — Architecture Decision Records
 
-**Status:** design only, revision 2. None is implemented. Numbered in their own
+**Status:** design only, revision 3. None is implemented. Numbered in their own
 `M2-` series so they cannot be confused with the accepted ADR-001 … ADR-020
 governing shipped code.
 
-M2-ADR-001 … 009 were written for revision 1. Those superseded by the
-correction pass are marked and cross-referenced; the originals are retained
-rather than rewritten, so the reasoning trail survives.
+M2-ADR-001 … 009 were written for revision 1, 010 … 017 for revision 2, and
+018 … 023 for revision 3. Superseded decisions are marked and cross-referenced;
+originals are retained rather than rewritten, so the reasoning trail survives.
 
 ---
 
@@ -194,7 +194,8 @@ rather than targets.
 ## M2-ADR-012 — Provider identity and provider observations are separate tables
 
 **Status:** Accepted (design) · supersedes the structure in M2-ADR-004 ·
-resolves correction item 2
+**extended by M2-ADR-019** (payload fidelity) and **M2-ADR-020** (providers
+without stable external ids)
 
 ### Context
 Revision 1 required `provider_records` to be `UNIQUE (provider_id,
@@ -225,8 +226,8 @@ payload → new version under the same entity. Nothing is ever overwritten.
 
 ## M2-ADR-013 — Supersession points backwards, from new decision to old
 
-**Status:** Accepted (design) · corrects M2-ADR-008 · resolves correction
-items 3 and 4
+**Status:** Accepted (design) · corrects M2-ADR-008 · **extended by M2-ADR-018**
+(which closes the concurrent-root gap this ADR left open)
 
 ### Context
 Revision 1 declared decisions append-only, then wrote `superseded_by_id` onto
@@ -255,7 +256,8 @@ records, so correcting a resolution would have required mutating evidence.
 
 ## M2-ADR-014 — Evidence records claims, and canonical fields are projections
 
-**Status:** Accepted (design) · extends M2-ADR-009 · resolves correction item 5
+**Status:** Accepted (design) · extends M2-ADR-009 · **identity framing superseded
+by M2-ADR-023**, typing contract **extended by M2-ADR-022**
 
 ### Context
 Revision 1's `company_evidence` recorded *which source* spoke about an
@@ -369,3 +371,262 @@ The constraint moves from `companies` to
 * Group domains and shared hosting no longer force false merges.
 * Domain migration and acquisition are expressible: one company changing
   domains, or two companies linked by `ACQUIRED_BY` — never a silent merge.
+
+
+---
+
+# Revision 3 decisions
+
+## M2-ADR-018 — Two partial unique indexes guarantee one effective resolution head
+
+**Status:** Accepted (design) · extends M2-ADR-013 · resolves invariant 2
+
+### Context
+`UNIQUE (supersedes_decision_id)` stops a decision being superseded twice, but
+PostgreSQL permits multiple NULLs in a unique index — so two concurrent workers
+could each write a *root* decision for the same provider entity, producing two
+independent chains and therefore two effective heads.
+
+### Options
+
+| Option | Assessment |
+| --- | --- |
+| Transactional advisory lock on `provider_entity_id` | Works, but correctness depends on every writer remembering to take it. A forgotten lock fails silently, and ad-hoc SQL bypasses it entirely |
+| Mutable `entity_resolution_heads` table as the invariant | Works, but makes correctness depend on mutable state that the rebuild invariant then has to carve an exception for |
+| **Two partial unique indexes** | **Chosen** |
+
+### Decision
+```sql
+CREATE UNIQUE INDEX uq_resolution_root
+    ON entity_resolution_decisions (provider_entity_id)
+    WHERE supersedes_decision_id IS NULL;
+
+CREATE UNIQUE INDEX uq_resolution_supersedes
+    ON entity_resolution_decisions (supersedes_decision_id)
+    WHERE supersedes_decision_id IS NOT NULL;
+```
+
+One root per entity, and each node superseded at most once, means the decision
+graph is a **linear chain** — therefore exactly one head, by construction.
+
+`entity_resolution_heads` is retained, demoted to a **derived cache** for O(1)
+lookup, maintained in the same transaction and fully rebuildable.
+
+### Consequences
+* The invariant is declarative and enforced for every writer, including ad-hoc
+  SQL — not merely for code that remembers a protocol.
+* Both races resolve through the same `ON CONFLICT` / re-read pattern already
+  proven under a real two-connection race by M1's research-gap detector.
+* The head anti-join returns exactly one row, so `ORDER BY ... LIMIT 1` is no
+  longer needed for correctness.
+* Decisions remain strictly append-only.
+
+---
+
+## M2-ADR-019 — Raw bytes are byte-faithful; identity is the canonical digest
+
+**Status:** Accepted (design) · resolves invariant 3
+
+### Context
+Revision 2 described the stored JSONB as a "verbatim" raw payload. JSONB
+preserves neither original bytes, whitespace, key ordering nor duplicate keys,
+so the claim was false — and an evidence system that misdescribes its own
+fidelity is worse than one that stores less.
+
+### Decision
+Policy A, byte-faithful, with three artifacts doing three jobs:
+
+| Artifact | Location | Job |
+| --- | --- | --- |
+| `raw_body bytea` | `provider_record_bodies` | Literal response bytes |
+| `raw_body_sha256` | `provider_record_versions` | Fidelity auditing |
+| `parsed_payload jsonb` | `provider_record_versions` | Queryable representation |
+| `canonical_payload_hash` | `provider_record_versions` | **Identity and idempotency** |
+
+The word "verbatim" is removed from any description of JSONB.
+
+**Identity stays on the canonical semantic digest**, computed exactly as M0
+computes snapshot identity (ADR-017). A provider reformatting its JSON must not
+manufacture a spurious version — the same reasoning that makes a reindented
+source file a no-op import in M0.
+
+Bodies live in their own table so a retention or redaction policy can prune
+them without touching the append-only version row. Pruning a prunable table is
+not an `UPDATE` on an immutable one, and the design says so explicitly rather
+than quietly permitting `SET raw_body = NULL`.
+
+### Consequences
+* Two byte-different bodies with the same canonical hash are one version with
+  two bodies — both facts preserved.
+* Body retention becomes a policy question (open question 5) rather than a
+  silent data-loss path.
+
+---
+
+## M2-ADR-020 — Provider identity capability is explicit
+
+**Status:** Accepted (design) · resolves invariant 4
+
+### Context
+Revision 2 assumed `UNIQUE (provider_id, provider_external_id)` was always
+meaningful. Many useful sources — directory scrapes, association member lists,
+search results — issue no durable identifier at all.
+
+### Decision
+`discovery_providers.identity_capability ∈ {NATIVE_EXTERNAL_ID,
+DERIVED_STABLE_KEY, CONTENT_ONLY}`, with
+`provider_entities.external_id_kind ∈ {NATIVE, DERIVED, CONTENT}` recording how
+each key was obtained.
+
+`DERIVED_STABLE_KEY` requires declared `key_fields`, a stamped
+`key_algorithm_version`, and explicit collision handling: an entity whose
+non-key identity fields materially disagree is flagged `identity_collision` and
+**must route to `AMBIGUOUS`** rather than auto-match. When key fields change, a
+**new** entity is created; the two are linked only by both resolving to the same
+company, because claiming the provider said they were the same object would be
+false.
+
+`CONTENT_ONLY` entities are keyed by canonical payload hash and **cannot express
+"the same object changed"** — a limitation stated in the design rather than
+hidden, and one their trust tier should reflect.
+
+### Consequences
+* A derived key is never presented as a provider identifier.
+* A colliding derived key is treated as *weaker* evidence than no key, which is
+  the honest ordering.
+* Content-only providers are usable for candidate discovery but not for
+  tracking change over time.
+
+---
+
+## M2-ADR-021 — Relationships are time-bounded claims, and inverses are derived
+
+**Status:** Accepted (design) · resolves invariant 5
+
+### Context
+Revision 2's `company_relationships` was append-only with a uniqueness
+constraint, so it could not express a relationship that ends, one that is later
+corrected, or a sequence such as "subsidiary of X, then acquired by Y" — every
+one of which would have required an `UPDATE`.
+
+It also stored both directions (`SUBSIDIARY_OF` and `PARENT_OF`), which is two
+rows that can disagree.
+
+### Decision
+* `company_relationship_claims` becomes the evidence table: `valid_from`,
+  `valid_to`, `assertion ∈ {ASSERTED, RETRACTED}`, `supersedes_claim_id`
+  (`UNIQUE`), plus the standard provenance columns.
+* `company_relationships` becomes a **derived projection** of effective,
+  non-retracted, currently-valid relationships.
+* Only the canonical direction is stored: `SUBSIDIARY_OF`, `FRANCHISE_OF`,
+  `ACQUIRED_BY`, and the symmetric `SISTER_OF` (stored once, with
+  `from_company_id < to_company_id` enforced by CHECK). `PARENT_OF`,
+  `FRANCHISOR_OF` and `ACQUIRER_OF` are exposed through a bidirectional view.
+* `FORMERLY` is removed — "formerly known as" is a name claim belonging in
+  `company_names` with `name_type = FORMER`. It was a relationship only by
+  accident of vocabulary.
+
+### Consequences
+* All three required statements are representable with no `UPDATE`.
+* A relationship ending is an interval bound; a relationship being wrong is a
+  retraction. Neither is an erasure.
+* Historical queries (`?as_of=DATE`) become possible, which M3 will need.
+* Two stored directions can no longer disagree, because only one is stored.
+
+---
+
+## M2-ADR-022 — A versioned attribute registry replaces untyped EAV
+
+**Status:** Accepted (design) · extends M2-ADR-014 · resolves invariant 6
+
+### Context
+`company_claims` with a free-text `attribute_key`, a `value_jsonb` and two
+typed shadow columns is an untyped entity-attribute-value store. Nothing
+defined what an attribute means, what shape its value takes, which shadow is
+authoritative, or how conflicts project — so every consumer would have had to
+re-derive that knowledge and they would have disagreed.
+
+### Decision
+A versioned `attribute_definitions` registry, held in code as configuration and
+persisted at seed time exactly as M0 persists `scoring_models`. Per attribute:
+`value_kind` (SCALAR / RANGE / SET), `value_type`, `allowed_units`,
+`allowed_fact_types`, `cardinality`, `projection_strategy`,
+`conflict_strategy`, `shadow_column`, `value_schema`, `target_projection`,
+`index_strategy`.
+
+Every claim stamps the `attribute_registry_version` it was written against. A
+claim whose key is absent from that version, or whose value fails its schema,
+is rejected at write time with `ATTRIBUTE_NOT_IN_REGISTRY`.
+
+`value_jsonb` and its typed shadow must never disagree. Preferred enforcement is
+a PostgreSQL **generated column**, which makes disagreement unrepresentable
+rather than merely forbidden; where the shape varies, the registry's declared
+extractor populates the shadow and acceptance scenario B8 asserts agreement
+across every row.
+
+### Consequences
+* Projection and conflict behaviour become properties of the attribute, not of
+  the code that happens to read it.
+* `employee_count` projecting an envelope while `legal_name` projects a single
+  winner is configuration, not a special case.
+* Registry migration becomes a real open question (open question 1) — which is
+  better than having no contract to migrate.
+
+---
+
+## M2-ADR-023 — Company identity is a durable anchor; attribution is derived
+
+**Status:** Accepted (design) · supersedes the projection framing in
+M2-ADR-014 · resolves invariants 1 and 7
+
+### Context
+Two linked contradictions:
+
+* Revision 2 called `companies` a mutable projection while claims, decisions and
+  relationships held foreign keys to it, and simultaneously required all
+  projections to be truncatable and byte-identically rebuildable. Rebuilding
+  would have had to regenerate UUIDs, breaking every reference.
+* Claims carried `company_id`, so correcting a resolution from company A to
+  company B would have required rewriting immutable claims.
+
+### Decision
+**Identity anchor.** `companies` holds only `id`, `created_at`,
+`identity_policy_version`, `lifecycle_status` and `merged_into_company_id`. It
+is **never truncated**. Business attributes move to `company_profiles` and the
+other derived tables.
+
+There is deliberately **no `created_by_decision_id` column** — it would create
+a circular foreign key (`companies → decisions → companies`). The creating
+decision is derived by query.
+
+`lifecycle_status` stays on the anchor because it governs whether an id may be
+referenced as a live target, so it must be readable without running a
+projection. It is maintained transactionally and **reconcilable** against
+decisions — a consistency check, not a rebuild input (acceptance B3c).
+
+**Derived attribution.** `company_id` is **removed** from provider-sourced
+claims. Attribution runs `claim → version → entity → effective decision →
+company`. A claim carries `subject_company_id` only when it is directly
+attributed (human or derived), with a CHECK permitting exactly one attribution
+path.
+
+**Projection input rule.** A rebuild consumes only claims whose provider entity
+resolves, under the selected identity policy version, to an effective
+non-superseded decision naming that company — plus directly-attributed claims.
+
+**Revised rebuild invariant.** All *derived projections* may be truncated and
+rebuilt byte-identically, while identity anchors, claims, decisions and
+relationship claims are never truncated.
+
+### Consequences
+* Correcting a resolution moves the entire claim history to the new company
+  with **zero writes** to `company_claims`.
+* The old company's projection loses those claims on the next rebuild — no
+  contamination — while they stay queryable as history via
+  `resolution_decision_id`.
+* `resolution_decision_id` on a claim becomes purely historical: "what was in
+  force when this was written". It is never used for attribution.
+* Company UUIDs are exempt from the rebuild invariant because they are *minted*
+  by judgement, not computed. Making them deterministic would require hashing an
+  identity that is by definition a judgement call, reintroducing exactly the
+  false-merge problem the identity policy exists to prevent.

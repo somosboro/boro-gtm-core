@@ -1,11 +1,11 @@
 # M2 — Company Discovery and Entity Resolution
 
-**Status:** design only, revision 2. No M2 code, migrations or tables exist in
+**Status:** design only, revision 3. No M2 code, migrations or tables exist in
 this repository, and none should be created from this document without a
 separate implementation authorization.
 
-**Revision 2** corrects internal contradictions found in review. The changes are
-substantive, not cosmetic — see [§0](#0-what-changed-in-revision-2).
+**Revision 3** resolves six design invariants raised in review. The changes are
+structural — see [§0](#0-what-changed-in-revision-3).
 
 **Milestone position:** M2 sits between M1 (contextual market intelligence) and
 M3 (operational research). M1 answers *"which market × vertical × ICP × channel
@@ -19,20 +19,17 @@ of commercial organizations with traceable evidence for every claim.
 
 ---
 
-## 0. What changed in revision 2
+## 0. What changed in revision 3
 
-| # | Contradiction in revision 1 | Correction |
+| # | Invariant violated in revision 2 | Resolution |
 | --- | --- | --- |
-| 1 | "Company" was undefined, and domain equality silently merged legally distinct organizations | Explicit identity unit: **commercial operating organization** (§1), with a domain policy that no longer auto-merges (§8) |
-| 2 | `provider_records` was `UNIQUE (provider_id, external_id)` *and* had to keep a new row per changed payload — impossible | Split into `provider_entities` (identity) and `provider_record_versions` (immutable observations) (§4.1) |
-| 3 | Immutable raw records carried mutable `resolved_company_id` / `resolution_decision_id` | Resolution state removed from raw records entirely; it lives only in decisions (§4.1, §6) |
-| 4 | Decisions were "append-only" but received `superseded_by_id` — an UPDATE | Direction reversed: `new.supersedes_decision_id = old.id`. Old rows are never touched (§6.2) |
-| 5 | `company_evidence` recorded *which source*, never *what it said* | Replaced by `company_claims`, holding the normalized value; `companies` becomes a derived projection (§5) |
-| 6 | `SERVICE_AREA` was a physical location type | Removed. Locations are physical/registered only; operating geography is presence (§5.6) |
-| 7 | "No canonical writes on provider outage" vs "independently retryable stages" | Explicit run lifecycle and per-stage transaction boundaries (§7) |
-| 8 | A universal `UNIQUE (primary_domain)` assumption | Replaced by an explicit domain-identity policy and a narrower constraint (§8) |
-| 9 | Redis assumed without evaluation | Evaluated against PostgreSQL `FOR UPDATE SKIP LOCKED`; PostgreSQL chosen (§10, M2-ADR-010) |
-| — | `provider_records`, `company_evidence` | Removed as tables; responsibilities reassigned (§4.1, §5.5) |
+| 1 | `companies` was a truncatable projection, yet claims and decisions held FKs to it — rebuild would have had to regenerate UUIDs | `companies` becomes a minimal **durable identity anchor**, never truncated. Business attributes move to `company_profiles` and the other derived tables (§3, §5.6) |
+| 2 | `UNIQUE (supersedes_decision_id)` prevents forked children but **not** two concurrent *root* decisions for one provider entity | A second partial unique index on the chain root. Two indexes together force exactly one linear chain, hence exactly one head, with no lock and no mutable state (§6.3, M2-ADR-018) |
+| 3 | "Verbatim raw payload" stored as JSONB — JSONB preserves neither bytes, whitespace, key order nor duplicate keys | Byte-faithful policy: `provider_record_bodies` holds the literal bytes; `provider_record_versions` holds the parsed payload and both digests. Identity stays on the canonical semantic digest (§4.3, M2-ADR-019) |
+| 4 | Every provider was assumed to issue a durable external id | Explicit `identity_capability` per provider: `NATIVE_EXTERNAL_ID`, `DERIVED_STABLE_KEY`, `CONTENT_ONLY`, with derived keys never presented as provider-issued (§4.2, M2-ADR-020) |
+| 5 | `company_relationships` was append-only but relationships start, end and get corrected | Relationships become claims with validity intervals and additive supersession; the relationship table becomes a derived projection. Inverse types removed as stored data (§12, M2-ADR-021) |
+| 6 | `company_claims` was an untyped EAV blob with no schema contract | A versioned **attribute registry** defining value kind, type, units, fact types, projection and conflict strategy, cardinality and indexing per attribute (§5.2, M2-ADR-022) |
+| 7 | Claims carried `company_id`, so a corrected resolution would have required rewriting immutable claims | `company_id` is **removed** from provider-sourced claims. Attribution is derived through the effective decision (§5.5, M2-ADR-023) |
 
 ---
 
@@ -43,13 +40,13 @@ of commercial organizations with traceable evidence for every claim.
 > A **company** is a *canonical commercial operating organization* — the unit
 > BoRo would sell to, contract with and deliver to as **one account**.
 
-It is explicitly **not** necessarily one legal entity, and not one provider
-record, and not one domain.
+It is explicitly **not** necessarily one legal entity, not one provider record,
+and not one domain.
 
-The operational test, applied in this order:
+The operational test, in order:
 
 1. **Commercial autonomy.** Does it make its own buying decision for an
-   operations project? If a regional unit cannot sign, it is not a company.
+   operations project?
 2. **Operational coherence.** Does it run one operation — its own work orders,
    dispatch, technicians, service contracts?
 3. **Account identity.** Would two BoRo reps working these separately be
@@ -60,53 +57,33 @@ entities, domains or provider records sit underneath.
 
 ### 1.2 Why not the legal entity
 
-A legal entity is a *jurisdictional artifact*. A single German operating
-business may hold a GmbH plus a property-holding entity plus a dormant
-predecessor. Targeting the legal entity produces three "companies" where one
-account exists. Conversely, one legal entity may run two genuinely separate
-businesses.
+A legal entity is a *jurisdictional artifact*. One German operating business may
+hold a GmbH plus a property-holding entity plus a dormant predecessor.
+Targeting the legal entity produces three "companies" where one account exists.
 
-Legal entities are still recorded — as `company_claims` with
-`attribute_key = 'legal_entity'` and registry identifiers — but they are
-*evidence about* a company, not the identity of one.
+Legal entities are recorded — as claims with `attribute_key = 'legal_entity'`
+carrying registry identifiers — but they are *evidence about* a company, never
+the identity of one.
 
 ### 1.3 Implications by structure
 
 | Structure | Modelling | Reasoning |
 | --- | --- | --- |
-| **Branch / depot** | **Same company.** A `company_locations` row plus a `company_market_presences` row | A branch has no independent buying authority |
-| **Subsidiary, operationally autonomous** | **Separate company**, linked by `company_relationships (SUBSIDIARY_OF)` | It buys, contracts and delivers on its own |
+| **Branch / depot** | **Same company.** A location row plus a presence row | No independent buying authority |
+| **Subsidiary, operationally autonomous** | **Separate company**, `SUBSIDIARY_OF` relationship claim | Buys, contracts and delivers on its own |
 | **Subsidiary, administratively controlled** | **Same company**, recorded as a `legal_entity` claim | Signing happens at the parent |
-| **Holding group** | **Separate company only if it is itself a target.** Usually it is not; it exists as a `PARENT_OF` relationship node | A holding company has no field operations to re-architect |
-| **Franchise — franchisee** | **Separate company**, `FRANCHISE_OF` the franchisor | Each franchisee buys independently; this is the single most common false-merge trap |
-| **Franchise — franchisor** | **Separate company** | Sells to franchisees; a different account and a different motion |
-| **Multiple legal entities on one domain** | **Depends on the test above.** Domain equality is a *candidate* signal, never an automatic merge (§8) | A group domain covers many autonomous businesses |
-| **Regional operating entity** | **Separate company** if it holds its own P&L and buying authority; otherwise a presence | "Acme UK" vs "Acme DACH" are usually separate accounts |
+| **Holding group** | **Relationship node**, usually not itself a target | No field operations to re-architect |
+| **Franchisee** | **Separate company**, `FRANCHISE_OF` | Buys independently; the most common false-merge trap |
+| **Franchisor** | **Separate company** | A different account and a different motion |
+| **Multiple legal entities on one domain** | Apply the test above; domain equality is a *candidate* signal only (§8) | A group domain covers many autonomous businesses |
+| **Regional operating entity** | **Separate company** if it holds its own P&L and buying authority | "Acme UK" vs "Acme DACH" are usually separate accounts |
 
-### 1.4 `company_relationships`
+### 1.4 Identity policy is explicit and versioned
 
-The identity definition is unusable without a way to say *"these are related but
-distinct"* — that is precisely what prevents a bad merge from being the only
-way to express a real connection.
-
-`company_relationships`: `from_company_id`, `to_company_id`,
-`relationship_type ∈ {SUBSIDIARY_OF, PARENT_OF, FRANCHISE_OF, FRANCHISOR_OF,
-SISTER_OF, ACQUIRED_BY, FORMERLY}`, `confidence`, `claim_id`, `created_at`.
-
-Append-only, with `UNIQUE (from_company_id, to_company_id, relationship_type)`.
-
-This is an addition beyond the table list in the correction brief. It is
-justified by §1.3: without it, holding groups and franchises can only be
-represented by merging or by silent duplication, and both are wrong.
-
-### 1.5 Identity policy is explicit and versioned
-
-The rules above are **configuration**, stored as a versioned
-`identity_policy_version` referenced by every resolution decision. Changing the
-identity policy is therefore a decision with a date, not a silent behaviour
-change — the same discipline as `scoring_models.version` in M0.
-
----
+These rules are **configuration**, stored as a versioned
+`identity_policy_version` stamped on every resolution decision and on every
+identity anchor at creation. Changing the policy is a dated decision, not a
+silent behaviour change — the same discipline as `scoring_models.version` in M0.
 
 ## 2. Pipeline
 
@@ -115,251 +92,402 @@ Discovery Request          M1 context: market × vertical × ICP × channel × t
    ↓
 Provider Adapter           provider-specific I/O, isolated
    ↓
-Provider Entity            stable provider-side identity (provider + external id)
+Provider Entity            provider-side identity, per capability model (§4.2)
    ↓
-Provider Record Version    immutable observation: payload + hash + retrieved_at
+Provider Record Version    immutable observation: parsed payload + digests
    ↓
 Normalization              pure function: provider schema → candidate shape
    ↓
 Candidate Matching         retrieve plausible existing companies
    ↓
-Resolution Decision        append-only, explainable, supersedable
+Resolution Decision        append-only, one linear chain per entity (§6.3)
    ↓
-Company Claims             what was asserted, by whom, when — immutable
+Company Claims             typed assertions against the attribute registry (§5)
    ↓
-Canonical Projections      companies / names / domains / locations /
-                           presences / verticals — derived, rebuildable
+Derived Projections        profiles, names, domains, locations, presences,
+                           verticals, relationships — all rebuildable
 ```
 
 Every arrow attaches provenance. No arrow discards it.
 
-## 3. Layer separation
+## 3. Identity anchors, evidence and projections
 
-Three layers, with different mutability rules:
+Revision 2 called `companies` a projection while claims and decisions held
+foreign keys to it. Truncating and rebuilding would have had to regenerate
+UUIDs, breaking every reference. Three distinct roles are now separated:
 
-| Layer | Tables | Mutability |
-| --- | --- | --- |
-| **Provider (raw)** | `provider_entities`, `provider_record_versions`, `provider_record_sightings`, `discovery_runs`, `discovery_queries` | Append-only |
-| **Decision** | `entity_resolution_candidates`, `entity_resolution_decisions` | Append-only |
-| **Claim (evidence)** | `company_claims`, `company_relationships` | Append-only |
-| **Projection (canonical)** | `companies`, `company_names`, `company_domains`, `company_locations`, `company_market_presences`, `company_verticals` | Mutable, and **fully rebuildable** from claims + decisions |
+### 3.1 The three tiers
 
-The load-bearing invariant: **every mutable row is derivable. Nothing that
-constitutes evidence is ever mutated.** Deleting all projections and rebuilding
-from claims must produce the identical result.
+| Tier | Tables | Truncatable? | Why |
+| --- | --- | --- | --- |
+| **Identity anchors** | `companies` | **Never** | UUIDs are referenced by evidence. They are minted by a decision and are not derivable |
+| **Evidence** | `provider_entities`, `provider_record_versions`, `provider_record_bodies`, `provider_record_normalizations`, `provider_record_sightings`, `discovery_runs`, `discovery_queries`, `entity_resolution_candidates`, `entity_resolution_decisions`, `company_claims`, `company_relationship_claims` | **Never** | Append-only. This *is* the record |
+| **Derived projections** | `company_profiles`, `company_names`, `company_domains`, `company_locations`, `company_market_presences`, `company_verticals`, `company_relationships`, `entity_resolution_heads` | **Yes — fully** | Pure functions of evidence + registry + policy version |
+| **Configuration** | `discovery_providers`, `attribute_definitions` | Rebuildable from the code seed | Versioned contracts, seeded exactly as M0 seeds `scoring_models`. Claims and decisions reference the *version*, not the row |
+
+### 3.2 `companies` — the durable anchor
+
+Only what is required to preserve identity and lifecycle:
+
+| Column | Notes |
+| --- | --- |
+| `id uuid pk` | The anchor. **Never regenerated.** |
+| `created_at timestamptz` | When the identity was minted |
+| `identity_policy_version text` | Which policy was in force at creation |
+| `lifecycle_status text` | `ACTIVE` / `MERGED` / `DISSOLVED` |
+| `merged_into_company_id uuid null` | Self-FK, set when this identity retires in favour of another |
+
+Deliberately **absent**: `canonical_name`, `primary_domain`, `employee_count_*`,
+`legal_form`, `founded_year`, `market_id`, `vertical_id`, `score`. Every one is
+a claim-derived projection.
+
+**No `created_by_decision_id` column.** It would create a circular foreign key
+(`companies → decisions → companies`). The creating decision is *derived*:
+
+```sql
+SELECT d.* FROM entity_resolution_decisions d
+WHERE d.company_id = $1 AND d.decision = 'CREATED_NEW'
+ORDER BY d.decided_at ASC LIMIT 1;
+```
+
+**Why `lifecycle_status` is identity-level, not derived.** It governs whether an
+id may be referenced as a live target, so it must be readable without running a
+projection. It is maintained transactionally by the merge/split writer and is
+**reconcilable** against decisions — a consistency check, not a rebuild input:
+
+```sql
+-- must return zero rows
+SELECT c.id FROM companies c
+LEFT JOIN LATERAL (
+  SELECT d.decision, d.company_id AS survivor
+  FROM entity_resolution_decisions d
+  WHERE d.decision IN ('MERGED','SPLIT') AND d.merged_company_id = c.id
+    AND NOT EXISTS (SELECT 1 FROM entity_resolution_decisions s
+                    WHERE s.supersedes_decision_id = d.id)
+  ORDER BY d.decided_at DESC LIMIT 1
+) eff ON TRUE
+WHERE (eff.decision = 'MERGED') <> (c.lifecycle_status = 'MERGED');
+```
+
+### 3.3 `company_profiles` — the business projection
+
+One row per company, entirely derived: `canonical_name`, `primary_domain`,
+`legal_form`, `founded_year`, `employee_count_min/max`,
+`derived_from_claim_ids uuid[]`, `projection_conflict boolean`,
+`attribute_registry_version`, `last_projected_at`.
+
+Truncating and rebuilding `company_profiles` is always legal.
+
+### 3.4 The revised rebuild invariant
+
+> **All derived projections may be truncated and rebuilt byte-identically,
+> while identity anchors, claims, decisions and relationship claims are never
+> truncated.**
+
+Formally: given fixed evidence tables, a fixed `attribute_registry_version` and
+a fixed `identity_policy_version`, the projection function is deterministic and
+total. `TRUNCATE` on the projection tier followed by a rebuild must reproduce
+byte-identical rows — asserted by acceptance scenario B3.
+
+The anchor tier is exempt because company UUIDs are *minted*, not *computed*.
+Making them deterministic would require hashing an identity that by definition
+is a judgement (§1.1), which would reintroduce exactly the false-merge problem
+the identity policy exists to prevent.
 
 ## 4. Provider layer
 
-### 4.1 Identity and versions, separated
+### 4.1 Identity and observations, separated
 
-Revision 1 required one table to be simultaneously unique per external id and
-to grow a row per payload change. That is impossible. Split:
+* **`provider_entities`** — stable provider-side identity.
+  `UNIQUE (provider_id, provider_external_id)`.
+* **`provider_record_versions`** — immutable observations.
+  `UNIQUE (provider_entity_id, canonical_payload_hash)`.
 
-**`provider_entities`** — the stable provider-side identity.
+Identical semantic payload → no new version; a sighting is recorded. Changed
+payload → new version under the same entity. Nothing is overwritten, and **no
+resolution state lives here** (§5.5).
 
-| Column | Notes |
-| --- | --- |
-| `id uuid pk` | |
-| `provider_id` → `discovery_providers` | |
-| `provider_external_id text` | The provider's own key |
-| `first_seen_at timestamptz` | |
-| `UNIQUE (provider_id, provider_external_id)` | The identity constraint |
+### 4.2 Provider identity capability
 
-**`provider_record_versions`** — immutable observations of that entity.
+Not every provider issues a durable external id. `discovery_providers`
+declares which case applies, and the entity records how its key was obtained —
+so a derived key is never mistaken for a provider-issued one.
 
-| Column | Notes |
-| --- | --- |
-| `id uuid pk` | |
-| `provider_entity_id` → `provider_entities` | |
-| `payload_hash char(64)` | SHA-256 of the canonical payload |
-| `raw_payload jsonb` | Verbatim |
-| `normalized_payload jsonb null` | Output of the pure normalizer; NULL until normalized |
-| `normalizer_version text null` | Which normalizer produced it |
-| `source_url text null` | |
-| `retrieved_at timestamptz` | When this content was first seen |
-| `discovery_query_id` → `discovery_queries` | Which query surfaced it first |
-| `UNIQUE (provider_entity_id, payload_hash)` | Idempotency |
+| `identity_capability` | Meaning | `provider_entities.external_id_kind` |
+| --- | --- | --- |
+| `NATIVE_EXTERNAL_ID` | The provider issues a durable id it promises to keep stable | `NATIVE` |
+| `DERIVED_STABLE_KEY` | No provider id; the adapter derives one from normalized fields | `DERIVED` |
+| `CONTENT_ONLY` | No stable object identity is possible at all | `CONTENT` |
 
-Behaviour:
+**`DERIVED_STABLE_KEY` requires, in provider configuration:**
 
-* **Identical payload → no new version.** The unique constraint plus
-  `ON CONFLICT DO NOTHING` makes re-ingestion a genuine no-op.
-* **Changed payload → new version, same entity.** History accumulates; nothing
-  is overwritten.
-* **No resolution state lives here.** There is no `resolved_company_id` and no
-  `resolution_decision_id`. Correcting a resolution must never require touching
-  raw evidence (§6).
+* `key_fields` — the ordered list of normalized fields that participate, e.g.
+  `[registrable_domain]`, or `[normalized_legal_name, country, postal_code]`.
+  Declared per provider, never improvised per record.
+* `key_algorithm_version` — stamped on every entity, so a change of derivation
+  is a versioned event rather than silent churn.
+* The derived key is stored in `provider_external_id` with
+  `external_id_kind = 'DERIVED'` and the algorithm version alongside it.
 
-`normalized_payload` is the one column written after insert, exactly once,
-by the normalize stage. Two honest options, decided at implementation time:
-either relax the append-only trigger to permit the single NULL → value
-transition, or move normalization into its own
-`provider_record_normalizations` table keyed by
-`(version_id, normalizer_version)`. **The second is preferred** — it keeps the
-raw table strictly immutable and lets a normalizer upgrade re-derive without
-destroying the previous output. Recorded as an open question in §13.
+**Collision handling.** Two genuinely different organizations can produce one
+derived key (two "Schmidt GmbH" in the same postcode). Detection: more than one
+version under a single derived entity whose *non-key* normalized identity fields
+disagree materially. Consequence: the entity is flagged
+`identity_collision = true`, and **resolution must route it to `AMBIGUOUS`** —
+it may never auto-match. A colliding derived key is weaker evidence than no key.
 
-**`provider_record_sightings`** — "the provider re-confirmed this, unchanged, on
-date Y".
+**When key fields change.** The derived key changes, so a **new**
+`provider_entity` is created. The old one persists untouched. The two are linked
+in the only honest way available: the new entity's resolution decision matches
+it to the **same company**, which is queryable. No mutable pointer is invented,
+and no claim is made that the provider said they were the same object — because
+it did not.
 
-`provider_record_version_id`, `discovery_query_id`, `seen_at`. Append-only.
+**`CONTENT_ONLY`.** `provider_external_id` is the canonical payload hash and
+`external_id_kind = 'CONTENT'`. Consequence, stated plainly: any payload change
+creates a new entity, so such providers **cannot express "the same object
+changed"**. Their evidence is correspondingly weaker and their trust tier should
+reflect that. They are usable for discovering candidates, not for tracking
+change over time.
 
-Also an addition beyond the brief's list. Justified: M0's confidence algorithm
-already discounts stale evidence, so "last confirmed" is needed — and a mutable
-`last_seen_at` column would violate append-only. If recency tracking is
-deferred, this table can be too; nothing else depends on it.
+### 4.3 Raw payload fidelity
 
-### 4.2 Runs and queries
+Revision 2 called the stored JSONB "verbatim". JSONB preserves neither original
+bytes, whitespace, key ordering, nor duplicate keys — so the claim was false.
 
-**`discovery_runs`** — one execution. Carries `provider_id`, the M1 context as
-real FKs (`market_id`, `vertical_id`, `icp_id`, `channel_id` — the ADR-014
-pattern), `status` (§7), `adapter_version`, timing, cost, error.
+**Policy A — byte-faithful — is adopted.** Three artifacts with distinct jobs:
 
-**`discovery_queries`** — the exact query issued: parameters, pagination cursor,
-page number, result count. One run has many queries; reproducibility lives here.
+| Artifact | Where | Purpose |
+| --- | --- | --- |
+| `raw_body bytea` | `provider_record_bodies` | The literal response bytes, exactly as received |
+| `raw_body_sha256` | `provider_record_versions` | Digest of those bytes — fidelity auditing |
+| `parsed_payload jsonb` | `provider_record_versions` | Parsed, queryable representation |
+| `canonical_payload_hash` | `provider_record_versions` | **Identity and idempotency** |
 
-### 4.3 Provider abstraction
+**Identity remains the canonical semantic digest**, computed exactly as M0
+computes snapshot identity (ADR-017): sorted keys, tight separators,
+`ensure_ascii=False`, `allow_nan=False`. A provider that reformats its JSON, or
+reorders keys between calls, must not manufacture a spurious version — the same
+reasoning that makes a reindented source file a no-op import in M0.
+
+`raw_body_sha256` is evidence, not identity. Two byte-different bodies with the
+same canonical hash are one version, with two bodies recorded.
+
+**Why bodies live in a separate table.** Raw bodies are large and may carry a
+retention or redaction obligation. `provider_record_bodies` can be pruned
+without touching `provider_record_versions`, so the digests, the parsed payload
+and the whole evidence chain survive body deletion. Pruning a prunable table is
+not a mutation of an append-only one — and the design says so explicitly rather
+than quietly allowing an `UPDATE ... SET raw_body = NULL`.
+
+`provider_record_normalizations` follows the same pattern, keyed by
+`(version_id, normalizer_version)`, so a normalizer upgrade re-derives without
+destroying the previous output and the raw table stays strictly immutable.
+
+### 4.4 Runs and queries
+
+**`discovery_runs`** — one execution: `provider_id`, M1 context as real FKs
+(`market_id`, `vertical_id`, `icp_id`, `channel_id` — the ADR-014 pattern),
+`status` (§7), `adapter_version`, `allow_partial_resolution`, timing, cost,
+error.
+
+**`discovery_queries`** — the exact query: parameters, pagination cursor, page
+number, result count. Reproducibility lives here.
+
+### 4.5 Provider abstraction
 
 ```
 ProviderAdapter
-  .capabilities()  -> supported filters, geography granularity, rate limits
-  .search(query)   -> Iterator[RawRecord]      # I/O, may fail or partially fail
-  .normalize(raw)  -> CandidateCompany         # pure, deterministic, testable
+  .capabilities()   -> filters, geography granularity, rate limits,
+                       identity_capability, key_fields, key_algorithm_version
+  .search(query)    -> Iterator[RawRecord]    # I/O, may fail or partially fail
+  .derive_key(rec)  -> str | None             # pure; only for DERIVED_STABLE_KEY
+  .normalize(raw)   -> CandidateCompany       # pure, deterministic, testable
 ```
 
-1. **Adapters never write canonical tables.** They emit raw records. Only the
-   resolution service writes companies.
-2. **`normalize` is pure** — no I/O, no database. Testable from fixtures with
-   zero network, preserving the existing M0/M1 discipline.
-3. **Raw payloads are append-only and hashed**, like `market_snapshots`.
-4. **Provider trust is versioned configuration** on `discovery_providers`.
+Adapters never write canonical tables. `derive_key` and `normalize` are pure
+functions — no I/O, no database — so both are testable from fixtures with zero
+network, preserving the M0/M1 discipline.
 
 ## 5. Claims — the evidence model
 
-### 5.1 The problem with revision 1
+### 5.1 What a claim is
 
-`company_evidence` recorded *that* provider A said something about
-`employee_count`, but not *what it said*. It could not answer the question it
-existed to answer.
-
-### 5.2 `company_claims`
-
-One row per atomic assertion. Append-only. The source of truth for everything
-canonical.
+One row per atomic assertion, append-only, typed by the attribute registry. The
+source of truth for everything in the projection tier.
 
 | Column | Notes |
 | --- | --- |
 | `id uuid pk` | |
-| `company_id` → `companies` | Which company this is asserted about |
-| `attribute_key text` | `employee_count`, `primary_domain`, `legal_name`, `vertical`, `market_presence`, `location`, `legal_entity`, … |
-| `value_jsonb jsonb` | The normalized claimed value |
-| `value_numeric numeric null` | Typed shadow for numeric attributes, for indexing and range queries |
-| `value_text text null` | Typed shadow for scalar text attributes |
-| `unit text null` | |
-| `fact_type text null` | M0 vocabulary: FACT / PROXY / ESTIMATE / INFERENCE / HYPOTHESIS |
-| `availability text` | `OBSERVED` / `NOT_AVAILABLE`, reusing M0's semantics |
+| `attribute_key text` | Must exist in the registry version in force |
+| `attribute_registry_version text` | Which contract this claim was written against |
+| `value_jsonb jsonb` | Canonical value, shaped by the registry |
+| `value_numeric numeric null` | Typed shadow — registry-derived |
+| `value_text text null` | Typed shadow — registry-derived |
+| `value_ref_id uuid null` | Typed shadow for `REFERENCE` attributes (vertical, market) |
+| `unit text null` | Must be in the registry's `allowed_units` |
+| `fact_type text null` | M0 vocabulary; must be in the registry's `allowed_fact_types` |
+| `availability text` | `OBSERVED` / `NOT_AVAILABLE` — M0 semantics |
 | `confidence numeric null` | From M0's single confidence algorithm |
-| `provider_record_version_id` → `provider_record_versions` | Exactly which observation asserted it |
-| `resolution_decision_id` → `entity_resolution_decisions` | Which decision attached it to this company |
+| `provider_record_version_id uuid null` | Provider-sourced attribution path |
+| `subject_company_id uuid null` | Direct attribution path (human/derived claims) |
+| `resolution_decision_id uuid null` | The decision in force **when written** — history, not attribution |
 | `observed_at date null` | Only when the provider states a date |
-| `period_granularity text` | `DATE` / `YEAR` / `SNAPSHOT` / `UNDATED` — M0's vocabulary |
-| `created_at timestamptz` | Ingest time |
+| `period_granularity text` | `DATE` / `YEAR` / `SNAPSHOT` / `UNDATED` |
+| `created_at timestamptz` | |
 
-The same CHECK constraints M0 uses apply: `availability = NOT_AVAILABLE` implies
-NULL value and NULL fact type; `observed_at` present **iff** granularity is
-`DATE`. Unknown is never zero, and a year is never widened into a date.
+M0's constraints carry over: `NOT_AVAILABLE` implies NULL value and NULL fact
+type; `observed_at` present **iff** granularity is `DATE`. Unknown is never
+zero; a year is never widened into a date.
 
-This answers the required question directly:
+Exactly one attribution path is permitted:
 
 ```sql
-SELECT p.provider_id, c.value_numeric, c.observed_at, c.fact_type, c.confidence
-FROM company_claims c
-JOIN provider_record_versions v ON v.id = c.provider_record_version_id
-JOIN provider_entities p        ON p.id = v.provider_entity_id
-WHERE c.company_id = $1 AND c.attribute_key = 'employee_count'
-ORDER BY c.observed_at DESC NULLS LAST, c.created_at DESC;
+CHECK ( (provider_record_version_id IS NOT NULL) <> (subject_company_id IS NOT NULL) )
 ```
 
-> Provider A said 40 on 2026-03-01 · Provider A said 45 on 2026-07-01 ·
-> Provider B said 42 on 2026-06-15
+### 5.2 The attribute registry
 
-All three rows persist. None overwrites another.
+A generic `attribute_key` with no contract is an untyped EAV store. The registry
+supplies the missing contract: a versioned definition per attribute, held in
+code as configuration and persisted at seed time, exactly as M0 persists
+`scoring_models`.
 
-### 5.3 Projection rules
+Per attribute:
 
-`companies` and the other canonical tables are **mutable projections** computed
-from claims by a deterministic, documented function.
+| Field | Purpose |
+| --- | --- |
+| `attribute_key` | Stable key |
+| `value_kind` | `SCALAR` / `RANGE` / `SET` |
+| `value_type` | `TEXT` / `INTEGER` / `NUMERIC` / `DATE` / `BOOLEAN` / `REFERENCE` / `DOMAIN` / `STRUCTURED` |
+| `allowed_units` | Or empty for unitless |
+| `allowed_fact_types` | Subset of M0's five |
+| `cardinality` | `ONE` / `MANY` |
+| `projection_strategy` | `HIGHEST_PRECEDENCE` / `ENVELOPE` / `UNION` / `LATEST` |
+| `conflict_strategy` | `PRECEDENCE` / `ENVELOPE` / `FLAG_AMBIGUOUS` |
+| `shadow_column` | Which typed shadow is authoritative |
+| `value_schema` | JSON Schema for `value_jsonb` |
+| `target_projection` | Which projection table/column it feeds |
+| `index_strategy` | What the projection needs indexed |
 
-Precedence for a single-valued attribute, applied in order:
+Seed registry:
 
-1. **Human review wins.** A claim whose decision method is `HUMAN_REVIEW`
-   outranks everything.
-2. **Fact type.** FACT > PROXY > ESTIMATE > INFERENCE > HYPOTHESIS.
-3. **Provider trust tier**, from versioned `discovery_providers` configuration.
-4. **Recency.** `observed_at` first, then `retrieved_at`.
-5. **Stability tie-break.** If still tied, keep the current projected value and
-   set `projection_conflict = true` on the projection row.
+| `attribute_key` | kind / type | card. | projection | conflict | shadow |
+| --- | --- | --- | --- | --- | --- |
+| `employee_count` | RANGE / INTEGER | ONE | ENVELOPE | ENVELOPE | `value_numeric` |
+| `revenue_band` | RANGE / NUMERIC | ONE | ENVELOPE | ENVELOPE | `value_numeric` |
+| `founded_year` | SCALAR / INTEGER | ONE | HIGHEST_PRECEDENCE | PRECEDENCE | `value_numeric` |
+| `legal_name` | SCALAR / TEXT | ONE | HIGHEST_PRECEDENCE | PRECEDENCE | `value_text` |
+| `trading_name` | SET / TEXT | MANY | UNION | — | `value_text` |
+| `legal_form` | SCALAR / TEXT | ONE | HIGHEST_PRECEDENCE | PRECEDENCE | `value_text` |
+| `legal_entity` | SET / STRUCTURED | MANY | UNION | FLAG_AMBIGUOUS | — |
+| `domain` | SET / DOMAIN | MANY | UNION | PRECEDENCE | `value_text` |
+| `vertical` | SET / REFERENCE | MANY | UNION | — | `value_ref_id` |
+| `market_presence` | SET / REFERENCE | MANY | UNION | — | `value_ref_id` |
+| `location` | SET / STRUCTURED | MANY | UNION | — | — |
+| `relationship` | SET / STRUCTURED | MANY | UNION | — | — |
 
-For **range-valued** attributes (`employee_count_min/max`, revenue bands), do
-**not** pick a winner among equally-ranked claims. Project the envelope — min of
-mins, max of maxes — and record the contributing claim ids. Providers
-disagreeing is information, not noise, and collapsing it to one number would be
-the same error as collapsing score and coverage.
+**`value_jsonb` and the typed shadows must never disagree.** Preferred
+enforcement is a PostgreSQL **generated column** where a single extraction
+expression suffices — for example
+`value_numeric numeric GENERATED ALWAYS AS ((value_jsonb->>'value')::numeric) STORED`
+for `SCALAR`/`RANGE` numerics — which makes disagreement unrepresentable rather
+than merely forbidden. Where the shape varies, the writer populates the shadow
+from the registry's declared extractor and acceptance scenario B8 asserts
+agreement across every claim in the database.
 
-A projection row records `derived_from_claim_ids`, so any canonical value is one
-join from its justification.
+A claim whose `attribute_key` is absent from its `attribute_registry_version`,
+or whose value fails that version's `value_schema`, is rejected at write time.
 
-### 5.4 Conflict handling and rebuild
+### 5.3 Projection precedence
 
-* Projection is a **pure function of claims + decisions + policy version**.
-* Rebuilding is always legal: truncate projections, recompute, get identical
-  output. This is the integrity test, and an acceptance scenario.
-* A **claim is never edited to fix a projection.** A wrong projection means the
-  precedence rules or the provider trust tier is wrong; both are versioned
+For `HIGHEST_PRECEDENCE` attributes, in order:
+
+1. **Human review wins** — a claim whose decision method is `HUMAN_REVIEW`.
+2. **Fact type** — FACT > PROXY > ESTIMATE > INFERENCE > HYPOTHESIS.
+3. **Provider trust tier** — versioned `discovery_providers` configuration.
+4. **Recency** — `observed_at`, then `retrieved_at`.
+5. **Stability tie-break** — keep the current projected value and set
+   `projection_conflict = true`.
+
+For `ENVELOPE` attributes, do **not** pick a winner among equally-ranked claims:
+project min-of-mins and max-of-maxes, recording the contributing claim ids.
+Providers disagreeing is information, not noise — the same reasoning that keeps
+M0 from collapsing score and coverage into one number.
+
+For `UNION` attributes, every non-superseded claim contributes a row to the
+target projection.
+
+### 5.4 Corrections without mutation
+
+* A projection is never fixed by editing a claim. A wrong projection means the
+  precedence rules, the trust tiers or the registry are wrong — all versioned
   configuration.
-* A retracted claim is expressed as a new claim with
-  `availability = NOT_AVAILABLE` and a superseding decision — never a delete.
+* A retracted claim is a **new** claim with `availability = NOT_AVAILABLE` and a
+  superseding decision — never a delete.
 
-### 5.5 What `company_claims` replaces
+### 5.5 Attribution is derived, never stored
 
-`company_evidence` is **removed**. Its responsibility — linking an attribute to
-its source — is a strict subset of `company_claims`, which also carries the
-value. Keeping both would mean two tables answering "where did this come from?"
-with different completeness.
+Revision 2 put `company_id` on every claim. When a resolution was corrected
+from company A to company B, that column was either wrong or had to be
+rewritten — and rewriting an append-only table is exactly what the design
+forbids.
 
-### 5.6 Locations vs presence — corrected
+**`company_id` is removed from provider-sourced claims.** Attribution runs
+through the effective decision:
 
-**`company_locations`** — physical or registered places only:
+```
+claim → provider_record_version → provider_entity → effective decision → company_id
+```
 
-`location_type ∈ {HEADQUARTERS, BRANCH, DEPOT, REGISTERED_OFFICE}`
+```sql
+CREATE VIEW company_claims_effective AS
+SELECT c.*, h.company_id
+FROM company_claims c
+JOIN provider_record_versions v ON v.id = c.provider_record_version_id
+JOIN entity_resolution_heads  h ON h.provider_entity_id = v.provider_entity_id
+WHERE h.company_id IS NOT NULL
+UNION ALL
+SELECT c.*, c.subject_company_id AS company_id
+FROM company_claims c
+WHERE c.subject_company_id IS NOT NULL;
+```
 
-`SERVICE_AREA` is **removed**. A service area is not a place; treating it as one
-fabricates buildings from coverage statements, which is exactly the class of
-invention M0's provenance rules exist to prevent.
+Consequences, all of them intended:
 
-**`company_market_presences`** — operating geography:
+* Correcting a resolution from A to B **moves the whole claim history** to B,
+  with zero writes to `company_claims`. Everything that provider said was, in
+  fact, about B.
+* A's projection loses those claims on the next rebuild — no contamination.
+* `resolution_decision_id` remains on the claim as **history**: "which decision
+  was in force when this was written". It is never used for attribution.
 
-`presence_type ∈ {HEADQUARTERED, BRANCH, OPERATES, SERVES_REMOTELY}`
+**Projection input rule, stated once:**
 
-A location implies a presence; a presence does **not** imply a location. A
-Belfast contractor serving Ireland has an IE presence of type `SERVES_REMOTELY`
-and **no** Irish location row.
+> A projection rebuild consumes **only** claims whose provider entity resolves,
+> under the selected `identity_policy_version`, to an **effective** (non-superseded)
+> decision naming that company — plus directly-attributed claims. Claims under
+> superseded decisions remain fully queryable as history and contribute to no
+> current projection.
 
-Sub-national coverage ("serves Bavaria") has no home in this model; M1 markets
-are national. Recorded as an open question in §13 rather than forced into a
-location row.
+### 5.6 The derived tables
 
-### 5.7 The other projections
-
-* **`company_names`** — `name_raw`, `name_normalized`, `name_type ∈ {LEGAL,
-  TRADING, FORMER, LOCALIZED, PROVIDER_DISPLAY}`, `is_primary`, derived from
-  `legal_name` / `trading_name` claims. Normalization is stored *alongside* the
-  raw name, never instead of it.
-* **`company_domains`** — `domain_normalized`, `domain_role ∈ {IDENTITY,
-  ALTERNATE, REDIRECT, COUNTRY_TLD, DEFUNCT, GROUP}`, `verified_at` (§8).
-* **`company_verticals`** — `vertical_id` → M1 `verticals`,
-  `classification_method`, `fact_type`, `confidence`, `is_primary`. A
-  keyword-inferred vertical is `INFERENCE`, never `FACT`.
+* **`company_profiles`** — one row per company (§3.3).
+* **`company_names`** — from `legal_name` / `trading_name` claims;
+  `name_type ∈ {LEGAL, TRADING, FORMER, LOCALIZED, PROVIDER_DISPLAY}`.
+  Normalization is stored *alongside* the raw name, never instead of it.
+* **`company_domains`** — from `domain` claims; `domain_role ∈ {IDENTITY,
+  ALTERNATE, REDIRECT, COUNTRY_TLD, DEFUNCT, GROUP}` (§8).
+* **`company_locations`** — physical or registered places only:
+  `location_type ∈ {HEADQUARTERS, BRANCH, DEPOT, REGISTERED_OFFICE}`.
+  `SERVICE_AREA` remains excluded: a service area is not a place, and treating
+  it as one fabricates buildings out of coverage statements.
+* **`company_market_presences`** — operating geography:
+  `presence_type ∈ {HEADQUARTERED, BRANCH, OPERATES, SERVES_REMOTELY}`. A
+  location implies a presence; a presence does not imply a location.
+* **`company_verticals`** — with `classification_method`, `fact_type`,
+  `confidence`. A keyword-inferred vertical is `INFERENCE`, never `FACT`.
+* **`company_relationships`** — effective relationships only (§12).
 
 ## 6. Entity resolution
 
@@ -367,64 +495,94 @@ location row.
 
 `entity_resolution_candidates`: `provider_record_version_id`,
 `candidate_company_id`, `match_signals jsonb`, `score numeric`, `tier`,
-`created_at`. Append-only. Retained even when rejected — a rejected candidate is
-evidence about *why* a decision was made.
+`created_at`. Append-only. Rejected candidates are retained — a rejected
+candidate is evidence about *why* a decision was made.
 
-### 6.2 Decisions, and supersession in the correct direction
-
-Revision 1 claimed append-only decisions while writing `superseded_by_id` onto
-old rows. Reversed:
+### 6.2 Decisions
 
 | Column | Notes |
 | --- | --- |
 | `id uuid pk` | |
 | `provider_entity_id` → `provider_entities` | What is being resolved |
-| `provider_record_version_id` → `provider_record_versions` | Which observation triggered this decision |
-| `company_id uuid null` | The resolved company; NULL for `AMBIGUOUS` / `REJECTED` |
+| `provider_record_version_id` → versions | Which observation triggered this |
+| `company_id uuid null` | Resolved company; NULL for `AMBIGUOUS` / `REJECTED` |
+| `merged_company_id uuid null` | The retiring identity, for `MERGED` / `SPLIT` |
 | `decision text` | `MATCHED` / `CREATED_NEW` / `AMBIGUOUS` / `REJECTED` / `MERGED` / `SPLIT` |
 | `method text` | `DETERMINISTIC` / `CANDIDATE_AUTO` / `HUMAN_REVIEW` |
-| **`supersedes_decision_id uuid null`** | **Points backwards** to the decision this replaces |
-| `identity_policy_version text` | Which policy was in force |
-| `signals jsonb` | The full signal vector |
-| `rationale text` | |
-| `decided_by text` | Actor or `system:<component>` |
-| `decided_at timestamptz` | |
+| `supersedes_decision_id uuid null` | **Points backwards** to the decision replaced |
+| `identity_policy_version text` | Policy in force |
+| `signals jsonb` | Full signal vector |
+| `rationale text`, `decided_by text`, `decided_at timestamptz` | |
 
-Constraints:
+Append-only trigger, as with M0's evidence tables. **No row is ever updated.**
 
-* `UNIQUE (supersedes_decision_id)` — a decision can be superseded at most once,
-  which prevents forked history.
-* `CHECK (id <> supersedes_decision_id)`.
-* Append-only trigger, as with M0's evidence tables. **No row is ever updated.**
+### 6.3 Exactly one effective head per provider entity
 
-### 6.3 Querying effective resolution
+`UNIQUE (supersedes_decision_id)` stops a decision being superseded twice, but
+it does **not** stop two concurrent workers each writing a *root* decision for
+the same provider entity — in PostgreSQL, multiple NULLs coexist happily in a
+unique index. Revision 2 could therefore fork at the root.
 
-The current resolution for a provider entity is the latest decision that nothing
-supersedes:
+**Two partial unique indexes together give the invariant declaratively:**
 
 ```sql
-SELECT d.*
-FROM entity_resolution_decisions d
-WHERE d.provider_entity_id = $1
-  AND NOT EXISTS (
-        SELECT 1 FROM entity_resolution_decisions s
-        WHERE s.supersedes_decision_id = d.id
-      )
-ORDER BY d.decided_at DESC
-LIMIT 1;
+-- at most one root per provider entity
+CREATE UNIQUE INDEX uq_resolution_root
+    ON entity_resolution_decisions (provider_entity_id)
+    WHERE supersedes_decision_id IS NULL;
+
+-- at most one child per decision  (already present)
+CREATE UNIQUE INDEX uq_resolution_supersedes
+    ON entity_resolution_decisions (supersedes_decision_id)
+    WHERE supersedes_decision_id IS NOT NULL;
 ```
 
-Exposed as a view, `current_entity_resolutions`, with a partial index on
-`supersedes_decision_id` to keep the anti-join cheap. If the chain ever grows
-long enough to matter, the view becomes materialized and is refreshed by the
-resolve stage — a performance change with no semantic change.
+One root, and each node superseded at most once, means the decision graph for
+an entity is a **linear chain** — therefore exactly one head, by construction.
 
-### 6.4 Three tiers of authority
+This was chosen over the two options considered (M2-ADR-018):
 
-**Deterministic — may auto-match.**
-* Exact verified national registry identifier
-* An existing non-superseded decision for the same `provider_entity_id`
-* Exact `IDENTITY`-role domain match **that passes the domain policy** (§8)
+| Option | Verdict |
+| --- | --- |
+| Transactional advisory lock on `provider_entity_id` | Works, but correctness depends on every writer remembering to take it. A forgotten lock is silent |
+| Mutable `entity_resolution_heads` table as the invariant | Works, but makes correctness depend on mutable state the rebuild invariant then has to except |
+| **Two partial unique indexes** | **Chosen.** Declarative, enforced by the database for every writer including ad-hoc SQL, no lock, no mutable state |
+
+**Concurrency behaviour.** Both races resolve to one head with no lost update:
+
+* *Two concurrent initial decisions* — one commits, the other violates
+  `uq_resolution_root`, re-reads the now-existing head, and either concludes
+  the same thing (no write) or supersedes it.
+* *Two concurrent superseding decisions* against the same head — one commits,
+  the other violates `uq_resolution_supersedes`, re-reads the new head, and
+  re-evaluates against it.
+
+The retry loop is the same `ON CONFLICT` / re-read pattern already proven under
+a real two-connection race by M1's research-gap detector.
+
+### 6.4 Querying the effective head
+
+```sql
+SELECT d.* FROM entity_resolution_decisions d
+WHERE d.provider_entity_id = $1
+  AND NOT EXISTS (SELECT 1 FROM entity_resolution_decisions s
+                  WHERE s.supersedes_decision_id = d.id);
+```
+
+The chain is linear, so this returns exactly one row — `ORDER BY … LIMIT 1` is
+no longer needed for correctness.
+
+`entity_resolution_heads (provider_entity_id PK, current_decision_id,
+company_id)` exists as a **derived projection** for O(1) lookup, maintained in
+the same transaction as the decision and fully rebuildable. It is a cache, not
+the invariant — which is the difference from revision 2's proposal.
+
+### 6.5 Three tiers of authority
+
+**Deterministic — may auto-match.** Verified national registry identifier; an
+existing effective decision for the same provider entity; an `IDENTITY`-role
+domain match that passes the domain policy (§8). Never for an entity flagged
+`identity_collision` (§4.2).
 
 **Candidate — scored, then gated.**
 
@@ -438,28 +596,26 @@ resolve stage — a performance change with no semantic change.
 | Fuzzy name similarity (trigram) | low |
 | Same vertical + same market | very low, tie-break only |
 
-Two configured thresholds: above `auto_match_threshold` →
-`CANDIDATE_AUTO`, with the full signal vector persisted. Between the two →
-`AMBIGUOUS`, which creates nothing and merges nothing. Below → `CREATED_NEW`.
+Above `auto_match_threshold` → `CANDIDATE_AUTO` with the full signal vector
+persisted. Between the thresholds → `AMBIGUOUS`, which creates nothing and
+merges nothing. Below → `CREATED_NEW`.
 
 **Fuzzy similarity alone never merges.** Trigram similarity is a *retrieval*
-mechanism, never a *decision* mechanism. Without a corroborating domain,
-address or identifier, the honest answer is `AMBIGUOUS` — the same discipline
-that keeps M1 coverage honest instead of inventing vertical density.
+mechanism, never a *decision* mechanism — the same discipline that keeps M1
+coverage honest instead of inventing vertical density.
 
-### 6.5 Merges and splits without touching evidence
+### 6.6 Merges and splits
 
-A merge writes a `MERGED` decision and updates **projections only**:
-`companies.status = 'MERGED'`, `merged_into_company_id` set. Claims and provider
-versions are untouched; claims are re-projected onto the survivor.
+A merge writes a `MERGED` decision and updates the **anchor's lifecycle plus
+projections only**: `companies.lifecycle_status = 'MERGED'`,
+`merged_into_company_id` set. Claims, versions and relationship claims are
+untouched; claims re-project onto the survivor via §5.5.
 
 Reversal writes a `SPLIT` decision whose `supersedes_decision_id` points at the
-merge. Projections are rebuilt. **No raw evidence is rewritten in either
-direction**, which is what makes the reversal safe.
+merge. Anchors return to `ACTIVE`, projections rebuild. **No evidence row is
+rewritten in either direction**, which is what makes reversal safe.
 
 ## 7. Run lifecycle and transaction semantics
-
-### 7.1 States
 
 ```
 PENDING → FETCHING → ┬→ FETCHED ──→ NORMALIZING → RESOLVING → COMPLETED
@@ -471,163 +627,90 @@ PENDING → FETCHING → ┬→ FETCHED ──→ NORMALIZING → RESOLVING → 
 | --- | --- |
 | `PENDING` | Requested, not started |
 | `FETCHING` | Provider calls in progress |
-| `PARTIAL_FETCH` | Provider failed mid-run; some raw versions were persisted |
+| `PARTIAL_FETCH` | Provider failed mid-run; some raw versions persisted |
 | `FETCHED` | All expected pages retrieved |
 | `NORMALIZING` | Pure normalization over persisted versions |
 | `RESOLVING` | Decisions and projections being written |
 | `COMPLETED` | Terminal success |
 | `FAILED` | Terminal failure; raw evidence retained |
 
-`PARTIAL_FETCH` and `FAILED` are distinct: partial means usable raw evidence
-exists, failed means the run produced nothing trustworthy. Eight states is the
-minimum that keeps "raw persisted but not resolved" expressible; collapsing
-`PARTIAL_FETCH` into `FAILED` would lose exactly the distinction that makes
-retry safe.
-
-### 7.2 Transaction boundaries
-
 | Stage | Transaction | On failure |
 | --- | --- | --- |
-| Fetch, per page | One transaction per page: insert versions + sightings + query row, commit | Committed pages survive; run → `PARTIAL_FETCH` |
-| Normalize, per version | One transaction per version | Other versions unaffected; unnormalizable version flagged |
-| Resolve, per provider entity | One short transaction: candidates + decision + claims + projection update | That entity is skipped; others proceed |
-
-Fetch commits incrementally **on purpose**: raw evidence already paid for must
-not be lost to a later failure. Resolve is per-entity and short, so the
-canonical registry is never left half-written for a single company.
-
-### 7.3 The policy, stated unambiguously
+| Fetch, per page | One per page: versions + bodies + sightings + query row | Committed pages survive; run → `PARTIAL_FETCH` |
+| Normalize, per version | One per version | Others unaffected; unnormalizable version flagged |
+| Resolve, per provider entity | One short transaction: candidates + decision + head + claims + projection | That entity is skipped; others proceed |
 
 > **A run that has not reached `FETCHED` does not write to the canonical
-> registry**, unless the run was explicitly created with
-> `allow_partial_resolution = true`.
+> registry**, unless created with `allow_partial_resolution = true`.
 
-This resolves revision 1's contradiction. Both halves are now true:
+Raw evidence already paid for is never discarded; the canonical registry is
+never touched by an incomplete fetch, because a truncated result set is not
+evidence of absence — and treating it as such would let a provider outage
+silently shrink a market.
 
-* raw provider evidence from a partial fetch **is** persisted and retained;
-* canonical companies, claims and projections are **not** touched by an
-  incomplete fetch, because a truncated result set is not evidence of absence —
-  and treating it as such would let a provider outage silently shrink a market.
-
-`allow_partial_resolution` exists for the legitimate case of a very large run
-where partial results are still worth resolving. It is opt-in, recorded on the
-run, and visible in the API.
-
-### 7.4 Retry
-
-Retry is **resumable, not restarting**. A `PARTIAL_FETCH` run retries from the
-last recorded `discovery_queries` cursor. Already-persisted versions are
-re-observed as sightings, not duplicated, because the payload hash is unchanged.
-Normalize and resolve can be re-run independently over stored versions without
-re-paying the provider.
+**Retry is resumable, not restarting.** A `PARTIAL_FETCH` run resumes from the
+last `discovery_queries` cursor. Already-persisted payloads produce sightings,
+not duplicate versions, because the canonical hash is unchanged. Normalize and
+resolve re-run independently over stored versions without re-paying the
+provider.
 
 ## 8. Domain identity policy
 
-### 8.1 Normalization
+Normalize to the **registrable domain** (eTLD+1 via the Public Suffix List):
+lowercase, strip trailing dot, IDN → punycode, strip `www.`. Subdomains are
+never identity on their own.
 
-Lowercase · strip trailing dot · IDN → punycode · strip `www.` · reduce to the
-**registrable domain** (eTLD+1) using the Public Suffix List. `shop.acme.co.uk`
-and `www.acme.co.uk` both normalize to `acme.co.uk`. Subdomains are **never**
-identity on their own.
-
-### 8.2 Why universal uniqueness is wrong
-
-* **Shared corporate domains.** A group runs `group.com` across eight autonomous
-  operating companies. Unique-per-domain would force seven bad merges.
-* **Subsidiaries on the parent domain** — same problem.
-* **Free and hosting domains.** `wixsite.com`, `business.site`, marketplace
-  profile domains — thousands of unrelated firms share these. Blocklisted:
-  never identity, never even a candidate signal.
-* **Domain changes.** A rebrand moves `old.de` → `new.de`. Both belong to one
-  company, across time.
-* **Redirects.** A redirect may mean "same company, new domain" *or* "acquired,
-  now points at the acquirer" — which is a `company_relationships
-  (ACQUIRED_BY)`, **not** a merge.
-* **Acquisitions.** Two companies that genuinely existed remain two companies
-  with a relationship and a date. Merging them destroys history that the M1
-  context may still need.
-
-### 8.3 The three-way test
-
-A domain match is:
+Universal one-domain-one-company is false: group domains, subsidiaries on a
+parent domain, hosting and marketplace domains, rebrands and post-acquisition
+redirects all break it.
 
 | Strength | Conditions |
 | --- | --- |
-| **Deterministic** (may auto-match) | Registrable domain, `domain_role = IDENTITY`, not on the generic/hosting blocklist, not flagged `GROUP`, **and** no conflicting strong signal (different verified registry IDs, or different countries with separately-registered legal entities) |
-| **Strong candidate** (scored, may reach `AMBIGUOUS`) | Domain shared but marked `GROUP`, or names/locations materially differ, or the match is on a subdomain |
-| **Insufficient** (contributes nothing) | Blocklisted generic/hosting domain, parked domain, or a marketplace profile URL |
+| **Deterministic** | `IDENTITY`-role registrable domain, not blocklisted, not `GROUP`, and no conflicting strong signal (different verified registry ids, or different countries with separately-registered entities) |
+| **Strong candidate** | Domain shared but marked `GROUP`, names/locations materially differ, or the match is on a subdomain |
+| **Insufficient** | Blocklisted generic/hosting domain, parked domain, or a marketplace profile URL |
 
-### 8.4 The constraint, corrected
+The constraint lives on the projection, not on the anchor:
 
-The revision-1 `UNIQUE (primary_domain) ON companies` is **removed**. In its
-place:
-
-```
-company_domains  UNIQUE (domain_normalized) WHERE domain_role = 'IDENTITY'
+```sql
+CREATE UNIQUE INDEX uq_identity_domain
+    ON company_domains (domain_normalized) WHERE domain_role = 'IDENTITY';
 ```
 
-A company may hold many domains; at most one company may claim a given domain
-as its *identity*. Group and alternate domains are freely shared. This keeps the
-race protection that made deterministic matching safe (§9.2) without asserting
-that every domain belongs to exactly one organization.
-
-`companies.primary_domain` remains as a **projection** of the `IDENTITY` row,
-for convenience — not as a constraint.
+A company may hold many domains; at most one company may claim a given domain as
+its *identity*. Group and alternate domains are freely shared. An acquisition is
+a relationship with a date (§12), never a silent merge.
 
 ## 9. Concurrency and idempotency
 
-### 9.1 Idempotency
-
 | Event | Mechanism | Result |
 | --- | --- | --- |
-| Same external id, identical payload | `UNIQUE (provider_entity_id, payload_hash)` + `ON CONFLICT DO NOTHING` | No new version; a sighting is recorded |
+| Same external id, identical semantic payload | `UNIQUE (provider_entity_id, canonical_payload_hash)` + `ON CONFLICT DO NOTHING` | No new version; sighting recorded |
 | Same external id, changed payload | Same constraint, different hash | New immutable version, same entity |
-| Same entity resolved again, unchanged | Existing non-superseded decision found | No new decision |
+| Two concurrent root decisions | `uq_resolution_root` | One head; loser re-reads (§6.3) |
+| Two concurrent superseding decisions | `uq_resolution_supersedes` | One head; loser re-reads (§6.3) |
+| Concurrent identity-domain creation | `uq_identity_domain` | One company; loser re-reads |
 | Re-run of a completed run | Runs are immutable | New run, diffable against the old |
 
-### 9.2 Concurrency
-
-Preferred mechanisms, in order:
-
-1. `UNIQUE (domain_normalized) WHERE domain_role = 'IDENTITY'` — the database
-   arbitrates the deterministic case.
-2. `INSERT ... ON CONFLICT DO NOTHING ... RETURNING`, re-read on conflict — the
-   pattern already proven under a real two-connection race by M1's research-gap
-   detector.
-3. For the non-domain case, a transactional advisory lock keyed on
-   `hash(normalized_name, market_id)`, held only for the resolution decision.
-
-No distributed lock service. PostgreSQL constraints plus short transactions are
-sufficient at this scale and are the established house pattern (ADR-001).
+No distributed lock service. PostgreSQL constraints plus short transactions,
+the established house pattern (ADR-001).
 
 ## 10. Worker architecture
 
-Revision 1 assumed Redis without evaluating it. Evaluated:
+A PostgreSQL job table consumed with `SELECT ... FOR UPDATE SKIP LOCKED`.
+**Redis is not part of the M2 design** (M2-ADR-010).
 
-| | PostgreSQL `FOR UPDATE SKIP LOCKED` | Redis + worker |
-| --- | --- | --- |
-| New infrastructure | None — PostgreSQL is already required | A second datastore to run, monitor, back up |
-| Transactional with writes | Yes — enqueue and domain write share one transaction | No — dual-write, needs outbox to be correct |
-| Job durability | ACID by construction | Needs persistence configuration |
-| Visibility | Plain SQL over a table | Separate tooling |
-| Throughput ceiling | Thousands/sec — orders of magnitude above M2's need | Much higher, unneeded |
-| Operational burden for one developer | Low | Meaningfully higher |
+M2's workload is tens to low thousands of provider calls per run, bounded by
+provider rate limits — orders of magnitude below where a dedicated queue earns
+its operational cost. The decisive factor is transactionality: a job that
+enqueues follow-up work in the same transaction as its raw writes cannot drift
+out of sync, which with Redis would require an outbox pattern to match.
 
-**Decision: PostgreSQL `FOR UPDATE SKIP LOCKED`.** Recorded as M2-ADR-010.
-
-M2's real workload is tens to low thousands of provider calls per run, bounded
-by provider rate limits — nowhere near a queue's throughput limits. The
-transactional advantage is the decisive one: a discovery job that enqueues
-follow-up work in the same transaction as its raw writes cannot drift out of
-sync, which with Redis would require an outbox pattern to achieve.
-
-Revisit if and only if: sustained throughput exceeds a few thousand jobs/second,
-or fan-out/pub-sub delivery becomes a requirement, or workers must run where
-PostgreSQL is not reachable. None applies at M2.
+Revisit only if sustained throughput exceeds a few thousand jobs/second, or
+fan-out/pub-sub delivery becomes a requirement, or workers must run where
+PostgreSQL is unreachable.
 
 ## 11. The M1 ↔ M2 boundary — discovery counts are not density
-
-Unchanged from revision 1, and still the most important constraint here.
 
 If provider A returns 2,400 US HVAC companies and 800 German ones, that does
 **not** establish that the US has three times the density. It establishes that
@@ -646,79 +729,151 @@ would flatter a US-first conclusion.
 5. Until calibrated, the honest M1 representation of vertical density remains
    what it is today: **a research gap**.
 
-A `market_density_proxies` table keeps provider-derived estimates in their own
-space with their own methodology fields, requiring a deliberate promotion step
-before anything reaches `market_observations`.
+## 12. Company relationships over time
 
-## 12. API surface
+### 12.1 Relationships are claims
+
+Revision 2 made `company_relationships` append-only with a uniqueness
+constraint — which cannot express a relationship that ends, or one asserted in
+error. `company_relationship_claims` replaces it as the evidence table:
+
+| Column | Notes |
+| --- | --- |
+| `id uuid pk` | |
+| `from_company_id`, `to_company_id` | Anchors |
+| `relationship_type text` | Canonical types only (§12.3) |
+| `valid_from date null`, `valid_to date null` | NULL `valid_to` = still in force |
+| `assertion text` | `ASSERTED` / `RETRACTED` |
+| `supersedes_claim_id uuid null` | `UNIQUE` — corrections are additive |
+| `provider_record_version_id`, `resolution_decision_id` | Provenance |
+| `fact_type`, `confidence`, `observed_at`, `period_granularity` | M0 vocabulary |
+| `created_at` | |
+
+`company_relationships` becomes a **derived projection** of effective,
+non-retracted, currently-valid relationships.
+
+### 12.2 The three required statements
+
+| Statement | Representation |
+| --- | --- |
+| *"A was a franchisee until 2027"* | One `ASSERTED` `FRANCHISE_OF` claim with `valid_to = 2027-xx-xx` |
+| *"B was a subsidiary of X, then acquired by Y"* | Two claims: `(B, X, SUBSIDIARY_OF, valid_to = D)` and `(B, Y, ACQUIRED_BY, valid_from = D)` |
+| *"That relationship claim was wrong"* | A new `RETRACTED` claim with `supersedes_claim_id` pointing at the mistaken one |
+
+No `UPDATE` in any case. A relationship ending is an interval bound, not a
+deletion; a relationship being wrong is a retraction, not an erasure.
+
+### 12.3 Canonical types and derived inverses
+
+Storing both directions would mean two rows that can disagree. Only the
+canonical direction is stored:
+
+| Canonical (stored) | Derived inverse (query projection only) |
+| --- | --- |
+| `SUBSIDIARY_OF` | `PARENT_OF` |
+| `FRANCHISE_OF` | `FRANCHISOR_OF` |
+| `ACQUIRED_BY` | `ACQUIRER_OF` |
+| `SISTER_OF` *(symmetric)* | — |
+
+`SISTER_OF` is symmetric, so it is stored once with
+`from_company_id < to_company_id` enforced by a CHECK, preventing a duplicate
+pair in the other order.
+
+`FORMERLY` is **removed** from relationship types: "formerly known as" is a name
+claim, and belongs in `company_names` with `name_type = FORMER`. It was a
+relationship only by accident of vocabulary.
+
+Inverses are exposed through a view:
+
+```sql
+CREATE VIEW company_relationships_bidirectional AS
+SELECT from_company_id AS company_id, to_company_id AS related_company_id,
+       relationship_type, 'CANONICAL' AS direction, valid_from, valid_to
+FROM company_relationships
+UNION ALL
+SELECT to_company_id, from_company_id,
+       CASE relationship_type
+            WHEN 'SUBSIDIARY_OF' THEN 'PARENT_OF'
+            WHEN 'FRANCHISE_OF'  THEN 'FRANCHISOR_OF'
+            WHEN 'ACQUIRED_BY'   THEN 'ACQUIRER_OF'
+            WHEN 'SISTER_OF'     THEN 'SISTER_OF'
+       END,
+       'DERIVED', valid_from, valid_to
+FROM company_relationships;
+```
+
+## 13. API surface
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/discovery-providers` | Registry and capabilities |
+| `GET` | `/discovery-providers` | Registry, capabilities, `identity_capability` |
 | `POST` | `/discovery-runs` | Start a run for an M1 context |
-| `GET` | `/discovery-runs[/{id}]` | Status, lifecycle state, counts, cost |
+| `GET` | `/discovery-runs[/{id}]` | Lifecycle state, counts, cost |
 | `POST` | `/discovery-runs/{id}/retry` | Resume from the last cursor |
 | `GET` | `/discovery-runs/{id}/queries` | Exact queries and cursors |
 | `GET` | `/provider-entities/{id}/versions` | Full observation history |
+| `GET` | `/provider-entities/{id}/resolution-chain` | Root → head, in order |
 | `GET` | `/companies` | Filter by market, vertical, presence, status |
-| `GET` | `/companies/{id}` | Canonical projection |
-| `GET` | `/companies/{id}/claims` | Every claim, with provider, value and date |
-| `GET` | `/companies/{id}/claims?attribute_key=employee_count` | The claim history for one attribute |
-| `GET` | `/companies/{id}/locations` | Physical/registered only |
-| `GET` | `/companies/{id}/market-presences` | Operating geography |
-| `GET` | `/companies/{id}/verticals` | With `fact_type` and confidence |
-| `GET` | `/companies/{id}/relationships` | Parent, franchise, acquisition links |
+| `GET` | `/companies/{id}` | Anchor plus current profile |
+| `GET` | `/companies/{id}/claims` | Effective claims, with provider and date |
+| `GET` | `/companies/{id}/claims?include_superseded=true` | Full history |
+| `GET` | `/companies/{id}/locations` · `/market-presences` · `/verticals` | Projections |
+| `GET` | `/companies/{id}/relationships[?as_of=DATE]` | Effective or historical |
+| `GET` | `/attribute-registry[/{version}]` | The contract itself |
 | `GET` | `/entity-resolution/decisions` | Filter by decision, method, run |
-| `GET` | `/entity-resolution/decisions/{id}/chain` | Full supersession chain |
 | `GET` | `/entity-resolution/ambiguous` | The human-review queue |
-| `POST` | `/entity-resolution/decisions` | Record a human decision (supersedes by id) |
+| `POST` | `/entity-resolution/decisions` | Record a human decision |
 
 New error codes: `PROVIDER_UNAVAILABLE`, `RESOLUTION_AMBIGUOUS`,
-`IDENTITY_POLICY_CONFLICT`, `MERGE_CONFLICT`, `PARTIAL_FETCH_NOT_RESOLVABLE`.
+`IDENTITY_POLICY_CONFLICT`, `MERGE_CONFLICT`, `PARTIAL_FETCH_NOT_RESOLVABLE`,
+`ATTRIBUTE_NOT_IN_REGISTRY`, `RESOLUTION_HEAD_CONFLICT`.
 
-## 13. Open design questions
+## 14. Open design questions
 
-Genuinely unresolved, listed rather than papered over:
-
-1. **Normalized payload storage.** Column on the immutable version (requiring a
-   narrow append-only exception) versus a separate
-   `provider_record_normalizations` table. The separate table is preferred; the
-   cost is one more join on a hot path.
-2. **Sub-national service coverage.** "Serves Bavaria" has no home. M1 markets
-   are national. Options: a `company_service_areas` table keyed to a geography
-   vocabulary M1 does not yet have, or deferring to M3.
-3. **Projection rebuild cost.** Full rebuild is the integrity guarantee, but at
-   scale it needs to be incremental. Trigger-based or job-based incremental
+1. **Registry migration.** When `attribute_registry_version` changes, existing
+   claims were written against the old contract. Re-validating every claim is
+   expensive; ignoring it risks a projection reading a value shape that no
+   longer exists. A migration strategy is undesigned.
+2. **Identity policy migration.** Same problem for `identity_policy_version`:
+   past decisions were made under the old policy. Re-resolving everything is
+   expensive; leaving it is inconsistent.
+3. **Incremental projection.** Full rebuild is the integrity guarantee, but at
+   scale it needs an incremental path. Trigger-based or job-based incremental
    projection is undesigned.
-4. **Identity policy migration.** When the policy version changes, existing
-   decisions were made under the old one. Re-resolving everything is expensive;
-   leaving it is inconsistent. A migration strategy is undesigned.
-5. **Provider trust calibration.** Trust tiers are currently a judgement. Making
-   them evidence-based requires a labelled corpus of human decisions — which
-   M2 will produce but does not yet have.
-6. **Cross-provider claim conflicts at equal rank.** The envelope rule handles
-   ranges; genuinely contradictory scalars (two different registry IDs) fall to
-   the stability tie-break and a conflict flag. Whether that should instead force
-   `AMBIGUOUS` is unresolved.
+4. **Sub-national coverage.** "Serves Bavaria" has no home, since M1 markets are
+   national. Options: a `company_service_areas` table keyed to a geography
+   vocabulary M1 does not yet have, or deferring to M3.
+5. **Raw body retention.** `provider_record_bodies` is prunable, but the
+   retention period, and whether pruning is permitted before a dispute window
+   closes, is a policy question rather than a schema one.
+6. **Provider trust calibration.** Trust tiers are currently a judgement.
+   Making them evidence-based requires a labelled corpus of human decisions,
+   which M2 will produce but does not yet have.
+7. **Equal-rank scalar conflicts.** The envelope rule handles ranges; two
+   contradictory registry identifiers fall to the stability tie-break and a
+   conflict flag. Whether that should instead force `AMBIGUOUS` is unresolved.
+8. **Derived-key rotation across providers.** When a `DERIVED_STABLE_KEY`
+   provider rotates keys en masse (a normalization change on their side), many
+   new entities appear at once. Detecting that as rotation rather than growth
+   is undesigned.
 
-## 14. How M3 consumes M2
+## 15. How M3 consumes M2
 
 M3 (Operational Research) takes a canonical company and gathers operational
 evidence — fleet size, service contracts, dispatch tooling, hiring signals. It
-depends on M2 for a **stable company id**, **market presence**, **vertical
+depends on M2 for a **stable anchor id**, **market presence**, **vertical
 association with confidence**, **provider versions** as seed URLs, and an
-explicit **ambiguity flag** so research effort is not spent on possible
-duplicates.
+explicit **ambiguity flag** so effort is not spent on possible duplicates.
 
-M3 attaches its findings as `company_claims` with the same structure — which is
-why claims are generic over `attribute_key` rather than enumerating M2 columns.
+M3 attaches findings as `company_claims` against registered attributes — which
+is why the registry is versioned and extensible rather than M2-specific.
 
-## 15. Explicit non-goals for M2
+## 16. Explicit non-goals for M2
 
 * No people, buyers, contacts or email discovery — M5.
 * No outbound, sequences or campaigns — M6.
 * No CRM synchronisation.
-* No scoring of companies — qualification is M4, and it will follow the same
+* No scoring of companies — qualification is M4, following the same
   score/confidence/coverage discipline.
 * No automatic promotion of discovery counts into M1 (§11).
 * No web scraping of company websites — that is M3; M2 consumes structured
