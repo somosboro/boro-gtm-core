@@ -1,11 +1,12 @@
 # M2 — Company Discovery and Entity Resolution
 
-**Status:** design only, revision 3. No M2 code, migrations or tables exist in
+**Status:** design only, revision 4. No M2 code, migrations or tables exist in
 this repository, and none should be created from this document without a
 separate implementation authorization.
 
-**Revision 3** resolves six design invariants raised in review. The changes are
-structural — see [§0](#0-what-changed-in-revision-3).
+**Revision 4** makes the rebuild contract genuinely deterministic, closes a
+cross-entity supersession hole, corrects body/version cardinality and adds a
+per-provider canonicalization contract — see [§0](#0-what-changed).
 
 **Milestone position:** M2 sits between M1 (contextual market intelligence) and
 M3 (operational research). M1 answers *"which market × vertical × ICP × channel
@@ -19,7 +20,7 @@ of commercial organizations with traceable evidence for every claim.
 
 ---
 
-## 0. What changed in revision 3
+## 0. What changed
 
 | # | Invariant violated in revision 2 | Resolution |
 | --- | --- | --- |
@@ -30,6 +31,16 @@ of commercial organizations with traceable evidence for every claim.
 | 5 | `company_relationships` was append-only but relationships start, end and get corrected | Relationships become claims with validity intervals and additive supersession; the relationship table becomes a derived projection. Inverse types removed as stored data (§12, M2-ADR-021) |
 | 6 | `company_claims` was an untyped EAV blob with no schema contract | A versioned **attribute registry** defining value kind, type, units, fact types, projection and conflict strategy, cardinality and indexing per attribute (§5.2, M2-ADR-022) |
 | 7 | Claims carried `company_id`, so a corrected resolution would have required rewriting immutable claims | `company_id` is **removed** from provider-sourced claims. Attribution is derived through the effective decision (§5.5, M2-ADR-023) |
+
+### Revision 4
+
+| # | Invariant violated in revision 3 | Resolution |
+| --- | --- | --- |
+| 8 | `company_profiles.last_projected_at` and a "currently-valid" relationship projection both made projection content depend on wall-clock time, contradicting byte-identical rebuild | Operational metadata moves to `projection_runs`; the relationship projection stores **deterministic effective intervals** and the date filter moves into a view. The equality contract is defined precisely (§3.4, M2-ADR-024) |
+| 9 | Precedence rule 5 said "keep the current projected value" — meaningless when rebuilding from empty, and therefore itself non-deterministic | Replaced by a deterministic total order on stored claim ids (§5.3, M2-ADR-024) |
+| 10 | The partial indexes forced one root and one child, but nothing stopped a decision of entity **B** superseding a decision of entity **A** | Composite self-foreign-key on `(supersedes_decision_id, provider_entity_id)` makes cross-entity supersession unrepresentable (§6.3, M2-ADR-025) |
+| 11 | `raw_body_sha256` sat on `provider_record_versions`, but one semantic version may legitimately have many byte-different bodies | Byte fidelity moves to `provider_record_bodies`, which becomes 1:N under a version (§4.3, M2-ADR-026) |
+| 12 | M0's canonical-JSON algorithm was assumed universal, though providers return CSV, XML and HTML | Each provider declares a versioned `canonicalization_strategy`, stamped on every version (§4.4, M2-ADR-027) |
 
 ---
 
@@ -124,6 +135,7 @@ UUIDs, breaking every reference. Three distinct roles are now separated:
 | **Evidence** | `provider_entities`, `provider_record_versions`, `provider_record_bodies`, `provider_record_normalizations`, `provider_record_sightings`, `discovery_runs`, `discovery_queries`, `entity_resolution_candidates`, `entity_resolution_decisions`, `company_claims`, `company_relationship_claims` | **Never** | Append-only. This *is* the record |
 | **Derived projections** | `company_profiles`, `company_names`, `company_domains`, `company_locations`, `company_market_presences`, `company_verticals`, `company_relationships`, `entity_resolution_heads` | **Yes — fully** | Pure functions of evidence + registry + policy version |
 | **Configuration** | `discovery_providers`, `attribute_definitions` | Rebuildable from the code seed | Versioned contracts, seeded exactly as M0 seeds `scoring_models`. Claims and decisions reference the *version*, not the row |
+| **Operational** | `projection_runs` | Yes, independently | Wall-clock timing, row counts and content digests of each rebuild. Deliberately **outside** every deterministic projection payload (§3.4) |
 
 ### 3.2 `companies` — the durable anchor
 
@@ -174,25 +186,75 @@ WHERE (eff.decision = 'MERGED') <> (c.lifecycle_status = 'MERGED');
 One row per company, entirely derived: `canonical_name`, `primary_domain`,
 `legal_form`, `founded_year`, `employee_count_min/max`,
 `derived_from_claim_ids uuid[]`, `projection_conflict boolean`,
-`attribute_registry_version`, `last_projected_at`.
+`attribute_registry_version`.
 
-Truncating and rebuilding `company_profiles` is always legal.
+**No `last_projected_at`.** A wall-clock timestamp inside a projection payload
+would make byte-identical rebuild impossible by construction. Rebuild timing
+lives in `projection_runs` (§3.4).
 
-### 3.4 The revised rebuild invariant
+Two rules apply to every derived projection, not just this one:
+
+* **Natural keys only — no surrogate primary keys.** A generated UUID would
+  differ on every rebuild, so `company_profiles` is keyed on `company_id`,
+  `company_names` on `(company_id, name_normalized, name_type)`,
+  `company_relationships` on `(from_company_id, to_company_id,
+  relationship_type)`, and so on. A projection with a surrogate key cannot
+  satisfy the rebuild contract.
+* **Array columns are sorted.** `derived_from_claim_ids` is stored ascending,
+  so two rebuilds cannot differ by ordering alone.
+
+### 3.4 The rebuild contract
 
 > **All derived projections may be truncated and rebuilt byte-identically,
 > while identity anchors, claims, decisions and relationship claims are never
 > truncated.**
 
-Formally: given fixed evidence tables, a fixed `attribute_registry_version` and
-a fixed `identity_policy_version`, the projection function is deterministic and
-total. `TRUNCATE` on the projection tier followed by a rebuild must reproduce
-byte-identical rows — asserted by acceptance scenario B3.
+"Byte-identical" needs a precise definition, or the claim is untestable.
 
-The anchor tier is exempt because company UUIDs are *minted*, not *computed*.
-Making them deterministic would require hashing an identity that by definition
-is a judgement (§1.1), which would reintroduce exactly the false-merge problem
-the identity policy exists to prevent.
+**The projection function.** Let `P` be the projection function. Its inputs are
+exactly: the evidence tables, `attribute_registry_version` and
+`identity_policy_version`. `P` is **pure** — it reads no clock, no sequence, no
+random source, and no prior projection state.
+
+**What the equality contract compares.** For every deterministic projection
+table, the full set of rows over **all of its columns**. There are no excluded
+columns, because nothing non-deterministic is stored in a projection at all:
+
+| Hazard | How it is eliminated |
+| --- | --- |
+| Rebuild timestamps | Live in `projection_runs`, never in a projection |
+| Surrogate keys | Forbidden — projections use natural keys (§3.3) |
+| Array ordering | Arrays are stored sorted (§3.3) |
+| Wall-clock filtering | Projections store intervals; date filters live in views (§12.4) |
+| Tie-breaks on prior state | Replaced by a total order on stored claim ids (§5.3) |
+| Row insertion order | Compared as a set, via a sorted digest |
+
+Mechanically, the comparison is a canonical digest per table:
+
+```sql
+SELECT md5(string_agg(t::text, '|' ORDER BY t::text))
+FROM company_profiles t;          -- and likewise for each projection table
+```
+
+`projection_runs` records that digest per table per rebuild, so drift is
+detectable without keeping a second copy of the data.
+
+**What is deliberately outside the contract.** `projection_runs` itself —
+`started_at`, `completed_at`, `row_counts`, `content_digests`,
+`triggered_by`. It is operational telemetry about the rebuild, not a
+projection of evidence, and it is truncatable independently without affecting
+any equality claim.
+
+**What is exempt, and why.** The anchor tier. Company UUIDs are *minted*, not
+computed; making them deterministic would require hashing an identity that
+§1.1 defines as a judgement, reintroducing exactly the false-merge problem the
+identity policy exists to prevent.
+
+**What legitimately changes over time.** Views over the projections — such as
+`current_company_relationships` — depend on `CURRENT_DATE` by design. A view
+returning different rows tomorrow is correct behaviour and says nothing about
+the projection beneath it, which is unchanged. Acceptance scenarios B3d–B3f
+assert exactly this separation.
 
 ## 4. Provider layer
 
@@ -255,36 +317,87 @@ change over time.
 Revision 2 called the stored JSONB "verbatim". JSONB preserves neither original
 bytes, whitespace, key ordering, nor duplicate keys — so the claim was false.
 
-**Policy A — byte-faithful — is adopted.** Three artifacts with distinct jobs:
+**Policy A — byte-faithful — is adopted**, with byte fidelity living on the
+body, not the version:
 
 | Artifact | Where | Purpose |
 | --- | --- | --- |
-| `raw_body bytea` | `provider_record_bodies` | The literal response bytes, exactly as received |
-| `raw_body_sha256` | `provider_record_versions` | Digest of those bytes — fidelity auditing |
+| `canonical_payload_hash` | `provider_record_versions` | **Semantic identity and idempotency** |
 | `parsed_payload jsonb` | `provider_record_versions` | Parsed, queryable representation |
-| `canonical_payload_hash` | `provider_record_versions` | **Identity and idempotency** |
+| `canonicalization_strategy` + `_version` | `provider_record_versions` | Which algorithm produced the hash (§4.4) |
+| `raw_body bytea` | `provider_record_bodies` | The literal bytes, exactly as received |
+| `raw_body_sha256` | `provider_record_bodies` | Digest of *those* bytes |
+| `content_type`, `retrieved_at`, `discovery_query_id` | `provider_record_bodies` | Which fetch produced these bytes |
 
-**Identity remains the canonical semantic digest**, computed exactly as M0
-computes snapshot identity (ADR-017): sorted keys, tight separators,
-`ensure_ascii=False`, `allow_nan=False`. A provider that reformats its JSON, or
-reorders keys between calls, must not manufacture a spurious version — the same
-reasoning that makes a reindented source file a no-op import in M0.
+**One semantic version may have many byte-faithful bodies.** Revision 3 put
+`raw_body_sha256` on the version, which silently asserted one body per version —
+directly contradicting the decision that identity is *semantic*. If a provider
+reindents its JSON between two calls, that is one version and two bodies.
 
-`raw_body_sha256` is evidence, not identity. Two byte-different bodies with the
-same canonical hash are one version, with two bodies recorded.
+```
+provider_record_versions  1 ──── N  provider_record_bodies
+     canonical_payload_hash              raw_body_sha256
+     UNIQUE (entity, canonical_hash)     UNIQUE (version_id, raw_body_sha256)
+```
 
-**Why bodies live in a separate table.** Raw bodies are large and may carry a
-retention or redaction obligation. `provider_record_bodies` can be pruned
-without touching `provider_record_versions`, so the digests, the parsed payload
-and the whole evidence chain survive body deletion. Pruning a prunable table is
-not a mutation of an append-only one — and the design says so explicitly rather
+| Event | Version | Body | Sighting |
+| --- | --- | --- | --- |
+| Identical bytes re-fetched | unchanged | **deduped** by the unique constraint | recorded |
+| Reindented / reordered JSON, same semantics | **unchanged** | **new body** | recorded |
+| Semantic payload change | **new version** | new body under it | recorded |
+| Bodies pruned by retention | **untouched** | removed | untouched |
+
+`provider_record_bodies` carries a surrogate `id` because it is *evidence*, not
+a projection — the no-surrogate-key rule in §3.3 applies only to the derived
+tier.
+
+Bodies live in their own table so a retention or redaction policy can prune
+them without touching the append-only version row. Pruning a prunable table is
+not an `UPDATE` on an immutable one — and the design says so explicitly rather
 than quietly allowing an `UPDATE ... SET raw_body = NULL`.
 
 `provider_record_normalizations` follows the same pattern, keyed by
 `(version_id, normalizer_version)`, so a normalizer upgrade re-derives without
 destroying the previous output and the raw table stays strictly immutable.
 
-### 4.4 Runs and queries
+### 4.4 Canonicalization is per provider, and versioned
+
+**M0's canonical-JSON algorithm is not automatically universal.** It is defined
+for JSON documents. Providers return CSV exports, XML feeds, HTML pages and
+binary formats, none of which have a meaningful "sorted keys, tight
+separators" form.
+
+Each provider therefore declares, in `discovery_providers`:
+
+| Field | Purpose |
+| --- | --- |
+| `canonicalization_strategy` | Named algorithm, e.g. `JSON_CANONICAL_V1` |
+| `canonicalization_version` | Version of that algorithm |
+
+and every `provider_record_versions` row stamps both, so the hash is always
+interpretable and a strategy change is a visible, dated event rather than
+silent churn.
+
+`JSON_CANONICAL_V1` is defined as M0's algorithm — sorted keys, tight
+separators, `ensure_ascii=False`, `allow_nan=False` — and JSON providers may
+reuse it directly.
+
+For non-JSON sources the strategy must be **explicit and versioned** before that
+adapter is written. None is specified here: inventing an HTML or CSV
+canonicalization in the abstract, with no provider to validate it against,
+would be guessing. What the design fixes now is that no adapter may quietly
+borrow the JSON algorithm for a payload it does not fit.
+
+**Consequence worth stating.** Changing a provider's canonicalization strategy
+changes its canonical hashes, so previously-seen payloads will produce **new
+versions**. That is a migration event, recorded as open question 9.
+
+**Identity remains the canonical semantic digest.** A provider that reformats
+its JSON, or reorders keys between calls, must not manufacture a spurious
+version — the same reasoning that makes a reindented source file a no-op import
+in M0 (ADR-017).
+
+### 4.5 Runs and queries
 
 **`discovery_runs`** — one execution: `provider_id`, M1 context as real FKs
 (`market_id`, `vertical_id`, `icp_id`, `channel_id` — the ADR-014 pattern),
@@ -294,12 +407,14 @@ error.
 **`discovery_queries`** — the exact query: parameters, pagination cursor, page
 number, result count. Reproducibility lives here.
 
-### 4.5 Provider abstraction
+### 4.6 Provider abstraction
 
 ```
 ProviderAdapter
   .capabilities()   -> filters, geography granularity, rate limits,
-                       identity_capability, key_fields, key_algorithm_version
+                       identity_capability, key_fields, key_algorithm_version,
+                       canonicalization_strategy + version
+  .canonicalize(raw)-> bytes                  # pure; per-provider (§4.4)
   .search(query)    -> Iterator[RawRecord]    # I/O, may fail or partially fail
   .derive_key(rec)  -> str | None             # pure; only for DERIVED_STABLE_KEY
   .normalize(raw)   -> CandidateCompany       # pure, deterministic, testable
@@ -407,8 +522,13 @@ For `HIGHEST_PRECEDENCE` attributes, in order:
 2. **Fact type** — FACT > PROXY > ESTIMATE > INFERENCE > HYPOTHESIS.
 3. **Provider trust tier** — versioned `discovery_providers` configuration.
 4. **Recency** — `observed_at`, then `retrieved_at`.
-5. **Stability tie-break** — keep the current projected value and set
-   `projection_conflict = true`.
+5. **Deterministic tie-break** — the claim with the lowest `claim.id` wins, and
+   `projection_conflict = true` is set.
+
+   Revision 3 said "keep the current projected value", which has no meaning
+   when rebuilding from an empty table and therefore made the projection
+   depend on its own prior state. Claim ids are stored and immutable, so
+   ordering on them is a total order that survives truncation.
 
 For `ENVELOPE` attributes, do **not** pick a winner among equally-ranked claims:
 project min-of-mins and max-of-maxes, recording the contributing claim ids.
@@ -416,7 +536,9 @@ Providers disagreeing is information, not noise — the same reasoning that keep
 M0 from collapsing score and coverage into one number.
 
 For `UNION` attributes, every non-superseded claim contributes a row to the
-target projection.
+target projection. Where several claims collapse to one projection row, the
+contributing ids are recorded sorted, so the row is identical regardless of the
+order claims were read in.
 
 ### 5.4 Corrections without mutation
 
@@ -523,7 +645,7 @@ it does **not** stop two concurrent workers each writing a *root* decision for
 the same provider entity — in PostgreSQL, multiple NULLs coexist happily in a
 unique index. Revision 2 could therefore fork at the root.
 
-**Two partial unique indexes together give the invariant declaratively:**
+Two partial unique indexes bound the *shape* of the chain:
 
 ```sql
 -- at most one root per provider entity
@@ -531,14 +653,51 @@ CREATE UNIQUE INDEX uq_resolution_root
     ON entity_resolution_decisions (provider_entity_id)
     WHERE supersedes_decision_id IS NULL;
 
--- at most one child per decision  (already present)
+-- at most one child per decision
 CREATE UNIQUE INDEX uq_resolution_supersedes
     ON entity_resolution_decisions (supersedes_decision_id)
     WHERE supersedes_decision_id IS NOT NULL;
 ```
 
-One root, and each node superseded at most once, means the decision graph for
-an entity is a **linear chain** — therefore exactly one head, by construction.
+But shape is not enough. Neither index prevents a decision belonging to entity
+**B** from superseding a decision belonging to entity **A** — which would splice
+two entities' histories into one chain, leaving A headless and B forked.
+
+**A composite self-foreign-key makes that unrepresentable:**
+
+```sql
+ALTER TABLE entity_resolution_decisions
+  ADD CONSTRAINT uq_decision_entity UNIQUE (id, provider_entity_id);
+
+ALTER TABLE entity_resolution_decisions
+  ADD CONSTRAINT fk_supersedes_same_entity
+  FOREIGN KEY  (supersedes_decision_id, provider_entity_id)
+  REFERENCES entity_resolution_decisions (id, provider_entity_id);
+```
+
+The referenced row must match on **both** columns, so a superseding decision can
+only point at a decision of the *same* provider entity. `UNIQUE (id,
+provider_entity_id)` is redundant against the primary key on `id` alone, but
+PostgreSQL requires a unique constraint covering the referenced columns for the
+composite foreign key to be legal — it exists to serve the FK, not to add a new
+rule.
+
+Together, the four constraints give the full invariant:
+
+| Constraint | Prevents |
+| --- | --- |
+| `PRIMARY KEY (id)` | Duplicate decisions |
+| `uq_resolution_root` | Two chains for one entity |
+| `uq_resolution_supersedes` | A forked chain |
+| `fk_supersedes_same_entity` | **Cross-entity supersession** |
+| `CHECK (id <> supersedes_decision_id)` | Self-reference |
+
+One root, one child each, all within one entity, means the decision graph per
+entity is a **linear chain** — therefore exactly one head, by construction.
+
+Cycles are unconstructible rather than merely forbidden: every insert must
+reference an already-committed row, and rows are never updated, so no sequence
+of writes can close a loop.
 
 This was chosen over the two options considered (M2-ADR-018):
 
@@ -562,20 +721,35 @@ a real two-connection race by M1's research-gap detector.
 
 ### 6.4 Querying the effective head
 
+The **authoritative definition** is a view — the decision nothing supersedes:
+
 ```sql
-SELECT d.* FROM entity_resolution_decisions d
-WHERE d.provider_entity_id = $1
-  AND NOT EXISTS (SELECT 1 FROM entity_resolution_decisions s
+CREATE VIEW current_entity_resolutions AS
+SELECT d.*
+FROM entity_resolution_decisions d
+WHERE NOT EXISTS (SELECT 1 FROM entity_resolution_decisions s
                   WHERE s.supersedes_decision_id = d.id);
 ```
 
-The chain is linear, so this returns exactly one row — `ORDER BY … LIMIT 1` is
-no longer needed for correctness.
+Because §6.3 forces one linear chain per entity, this yields exactly one row per
+provider entity — `ORDER BY … LIMIT 1` is not needed for correctness.
 
 `entity_resolution_heads (provider_entity_id PK, current_decision_id,
-company_id)` exists as a **derived projection** for O(1) lookup, maintained in
-the same transaction as the decision and fully rebuildable. It is a cache, not
-the invariant — which is the difference from revision 2's proposal.
+company_id)` is a **materialized cache of that view**, maintained in the same
+transaction as the decision and fully rebuildable. It is a performance
+projection, not the invariant — the difference from revision 2's proposal,
+where the table *was* the invariant.
+
+The two must agree, and acceptance scenario C12 asserts it:
+
+```sql
+-- must return zero rows
+SELECT * FROM entity_resolution_heads h
+FULL OUTER JOIN current_entity_resolutions v
+  ON v.provider_entity_id = h.provider_entity_id
+ AND v.id                 = h.current_decision_id
+WHERE h.provider_entity_id IS NULL OR v.id IS NULL;
+```
 
 ### 6.5 Three tiers of authority
 
@@ -750,7 +924,8 @@ error. `company_relationship_claims` replaces it as the evidence table:
 | `created_at` | |
 
 `company_relationships` becomes a **derived projection** of effective,
-non-retracted, currently-valid relationships.
+non-retracted relationships — storing their **validity intervals**, not a
+snapshot of what is valid today (§12.4).
 
 ### 12.2 The three required statements
 
@@ -782,6 +957,35 @@ pair in the other order.
 `FORMERLY` is **removed** from relationship types: "formerly known as" is a name
 claim, and belongs in `company_names` with `name_type = FORMER`. It was a
 relationship only by accident of vocabulary.
+
+### 12.4 The projection stores intervals; views apply the date
+
+Revision 3 described the projection as holding "currently-valid" relationships.
+That made its content depend on `CURRENT_DATE`, so the same evidence would
+rebuild into different rows tomorrow — breaking the determinism contract for no
+benefit.
+
+The stored projection is therefore **time-independent**: one row per effective
+`(from, to, type)` with `effective_from` and `effective_to` derived from the
+non-retracted, non-superseded claims. Nothing in it reads the clock.
+
+The date filter moves into views:
+
+```sql
+CREATE VIEW current_company_relationships AS
+SELECT * FROM company_relationships
+WHERE (effective_from IS NULL OR effective_from <= CURRENT_DATE)
+  AND (effective_to   IS NULL OR effective_to   >  CURRENT_DATE);
+```
+
+and `?as_of=DATE` applies the same predicate against a supplied date. A view
+returning different rows tomorrow is correct; the projection beneath it is
+unchanged, and its digest proves it.
+
+This is the general rule, not a relationship special case: **no persisted
+projection may depend on `now()`**. Any temporal narrowing belongs in a view.
+
+### 12.5 Derived inverses
 
 Inverses are exposed through a view:
 
@@ -856,6 +1060,18 @@ New error codes: `PROVIDER_UNAVAILABLE`, `RESOLUTION_AMBIGUOUS`,
    provider rotates keys en masse (a normalization change on their side), many
    new entities appear at once. Detecting that as rotation rather than growth
    is undesigned.
+9. **Canonicalization strategy migration.** Changing a provider's strategy
+   changes its canonical hashes, so previously-seen payloads produce new
+   versions. Whether to re-canonicalize historical bodies under the new
+   strategy, or to treat the change as a clean cut-over, is undesigned. Bodies
+   are retained precisely so that re-canonicalization stays *possible*.
+10. **Temporal market presence.** Relationships now carry validity intervals,
+    but `company_market_presences` does not — a company that exits a market has
+    no way to say so. The same interval treatment probably applies; it was out
+    of scope here and would need its own claim shape.
+11. **Projection digest granularity.** `projection_runs` records a digest per
+    table. Whether per-company digests are needed to localise drift, and what
+    that costs on a full rebuild, is undesigned.
 
 ## 15. How M3 consumes M2
 

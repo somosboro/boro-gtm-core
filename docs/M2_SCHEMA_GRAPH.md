@@ -1,6 +1,6 @@
 # M2 — Schema Graph
 
-**Status:** design only, revision 3. No migrations. Read alongside
+**Status:** design only, revision 4. No migrations. Read alongside
 [M2_COMPANY_DISCOVERY_DESIGN.md](M2_COMPANY_DISCOVERY_DESIGN.md).
 
 ---
@@ -31,11 +31,12 @@ different truncation rules.
 ║                 │ 1:N                      │          ║     │
 ║                 ▼                          │          ║     │
 ║           provider_record_versions ◀───────┘          ║     │
-║                 │ 1:1    │ 1:N    │ 1:N               ║     │
+║                 │ 1:N    │ 1:N    │ 1:N               ║     │
 ║                 ▼        ▼        ▼                   ║     │
 ║   provider_record_  provider_   provider_record_      ║     │
 ║        bodies      record_norm   sightings            ║     │
-║     (prunable)     alizations                         ║     │
+║     (prunable,     alizations                         ║     │
+║      N per version)                                   ║     │
 ║                                                       ║     │
 ║  entity_resolution_candidates                         ║     │
 ║        │                                              ║     │
@@ -50,10 +51,23 @@ different truncation rules.
                           projected into                       │
                                    ▼                           │
 ╔═══════════════════════════════════════════════════════════════╧═══════════╗
-║ DERIVED PROJECTIONS — fully truncatable and rebuildable                   ║
+║ DERIVED PROJECTIONS — fully truncatable, deterministic, natural keys only ║
 ║   company_profiles · company_names · company_domains                      ║
 ║   company_locations · company_market_presences · company_verticals        ║
-║   company_relationships · entity_resolution_heads                         ║
+║   company_relationships (intervals) · entity_resolution_heads             ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+                                   │
+                          date filters applied by
+                                   ▼
+╔═══════════════════════════════════════════════════════════════════════════╗
+║ VIEWS — may legitimately vary with wall-clock time                        ║
+║   current_company_relationships · company_relationships_bidirectional     ║
+║   company_claims_effective · current_entity_resolutions                   ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║ OPERATIONAL — outside every determinism claim                             ║
+║   projection_runs (timing, row counts, per-table content digests)         ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 ```
 
@@ -65,6 +79,8 @@ different truncation rules.
 | Evidence tables | **No** | This *is* the record. Nothing else can reconstruct it |
 | `provider_record_bodies` | **Prunable** — by documented retention policy only | Digests, parsed payload and the evidence chain survive; only literal bytes are lost |
 | Derived projections | **Yes, entirely** | Rebuilt byte-identically from evidence + registry version + policy version |
+| `projection_runs` | **Yes, independently** | Operational telemetry only; outside every determinism claim |
+| Views | n/a | Not stored. May legitimately return different rows as the date moves |
 
 ### The rebuild invariant
 
@@ -73,8 +89,20 @@ different truncation rules.
 > truncated.**
 
 Given fixed evidence, a fixed `attribute_registry_version` and a fixed
-`identity_policy_version`, the projection function is deterministic and total.
-Asserted by acceptance scenario B3.
+`identity_policy_version`, the projection function is **pure** — it reads no
+clock, no sequence and no prior projection state.
+
+Equality is compared over **all columns of every projection table**, because
+nothing non-deterministic is stored in one: no rebuild timestamps (they live in
+`projection_runs`), no surrogate keys (projections use natural keys), sorted
+arrays, and interval columns rather than `now()`-filtered snapshots. The
+mechanical check is a per-table canonical digest:
+
+```sql
+SELECT md5(string_agg(t::text, '|' ORDER BY t::text)) FROM <projection> t;
+```
+
+Asserted by acceptance scenarios B3 and B3d–B3f.
 
 ## 3. Tables, ownership and cardinality
 
@@ -92,12 +120,12 @@ Asserted by acceptance scenario B3.
 | `discovery_runs` | One execution in one M1 context, lifecycle state, `allow_partial_resolution` | provider 1:N | — |
 | `discovery_queries` | Exact query, params, cursor, page, result count | run 1:N | — |
 | `provider_entities` | Provider-side identity, `external_id_kind`, `identity_collision` | provider 1:N | **`UNIQUE (provider_id, provider_external_id)`** |
-| `provider_record_versions` | Immutable observation: `parsed_payload`, `canonical_payload_hash`, `raw_body_sha256`, `retrieved_at` | entity 1:N · query 1:N | **`UNIQUE (provider_entity_id, canonical_payload_hash)`** |
-| `provider_record_bodies` | Literal response bytes | version 1:1 | PK `provider_record_version_id` |
+| `provider_record_versions` | Immutable **semantic** observation: `parsed_payload`, `canonical_payload_hash`, `canonicalization_strategy` + `_version`, `retrieved_at` | entity 1:N · query 1:N | **`UNIQUE (provider_entity_id, canonical_payload_hash)`** |
+| `provider_record_bodies` | Distinct **byte** representations of one semantic version: `raw_body`, `raw_body_sha256`, `content_type`, `retrieved_at`, `discovery_query_id` | version **1:N** | **`UNIQUE (provider_record_version_id, raw_body_sha256)`** |
 | `provider_record_normalizations` | Normalizer output per version | version 1:N | `UNIQUE (version_id, normalizer_version)` |
 | `provider_record_sightings` | "Re-confirmed unchanged on date Y" | version 1:N | `UNIQUE (version_id, discovery_query_id)` |
 | `entity_resolution_candidates` | A considered pairing with signals and score | version 1:N · company 1:N | — |
-| `entity_resolution_decisions` | Outcome, method, rationale, actor, policy version | entity 1:N, **linear chain** | `uq_resolution_root` + `uq_resolution_supersedes` — see §7. Together they force exactly one effective head (M2-ADR-018) |
+| `entity_resolution_decisions` | Outcome, method, rationale, actor, policy version | entity 1:N, **linear chain within one entity** | `uq_resolution_root` + `uq_resolution_supersedes` + `fk_supersedes_same_entity` — see §7 (M2-ADR-018, M2-ADR-025) |
 | `company_claims` | One typed assertion against the registry | version 1:N *or* company 1:N | `CHECK` exactly one attribution path |
 | `company_relationship_claims` | Typed, time-bounded relationship assertion | company N:N | `UNIQUE (supersedes_claim_id)`; `CHECK (from < to)` for `SISTER_OF` |
 
@@ -111,7 +139,7 @@ Asserted by acceptance scenario B3.
 | `company_locations` | Physical/registered places only | company 1:N · market 1:N | `INDEX (market_id)` |
 | `company_market_presences` | Operating geography | company N:N market | `UNIQUE (company_id, market_id, presence_type)` |
 | `company_verticals` | Vertical membership with evidence | company N:N vertical | `UNIQUE (company_id, vertical_id)` |
-| `company_relationships` | Effective, non-retracted, currently-valid relationships | company N:N | `UNIQUE (from_company_id, to_company_id, relationship_type)` |
+| `company_relationships` | Effective, non-retracted relationships with **validity intervals** (`effective_from`, `effective_to`) — never a `now()`-filtered snapshot | company N:N | PK `(from_company_id, to_company_id, relationship_type)` |
 | `entity_resolution_heads` | O(1) head lookup cache | entity 1:1 | PK `provider_entity_id` |
 
 ### Registry
@@ -119,6 +147,12 @@ Asserted by acceptance scenario B3.
 | Table | Owns | Notes |
 | --- | --- | --- |
 | `attribute_definitions` | The versioned attribute contract (design §5.2) | Configuration tier: seeded from code as M0 seeds `scoring_models`, rebuildable from that seed. Claims reference the *version*, not the row. `UNIQUE (registry_version, attribute_key)` |
+
+### Operational
+
+| Table | Owns | Notes |
+| --- | --- | --- |
+| `projection_runs` | One rebuild: `started_at`, `completed_at`, `attribute_registry_version`, `identity_policy_version`, `row_counts jsonb`, `content_digests jsonb`, `triggered_by` | Deliberately outside every determinism claim. This is where rebuild timestamps live so that no projection has to carry one |
 
 ## 4. Cross-milestone foreign keys
 
@@ -144,9 +178,22 @@ keeps the density boundary enforceable.
 | `company_relationships` **became** `company_relationship_claims` + a projection | Relationships start, end and get corrected |
 | `provider_record_bodies` **added** | JSONB is not byte-faithful; bodies must be separable and prunable |
 | `attribute_definitions` **added** | A generic `attribute_key` with no contract is untyped EAV |
-| `entity_resolution_heads` **demoted** to a cache | The invariant is now declarative (two partial unique indexes), not a mutable table |
+| `entity_resolution_heads` **demoted** to a cache | The invariant is declarative (indexes + composite FK), not a mutable table |
 | `PARENT_OF`, `FRANCHISOR_OF`, `ACQUIRER_OF` **removed** as stored types | Derivable from the canonical direction; storing both risks disagreement |
 | `FORMERLY` **removed** from relationship types | It is a name claim, not a relationship |
+
+## 5a. Changes in revision 4
+
+| Change | Reason |
+| --- | --- |
+| `provider_record_bodies` **1:1 → 1:N**, `raw_body_sha256` moved onto it | Identity is *semantic*, so one version may legitimately have many byte-different bodies. Keeping the byte digest on the version silently asserted the opposite |
+| `canonicalization_strategy` + `_version` **added** to providers and versions | M0's canonical-JSON algorithm is not universal; CSV/XML/HTML need their own, declared and versioned |
+| `company_profiles.last_projected_at` **removed** | A wall-clock value inside a projection makes byte-identical rebuild impossible by construction |
+| `projection_runs` **added** | Somewhere for rebuild telemetry to live that is not a projection |
+| `company_relationships` stores **intervals**, not a current snapshot | `now()`-dependent content cannot satisfy the determinism contract |
+| `current_company_relationships` **view added** | The date filter belongs in a view, where varying over time is correct |
+| **No surrogate keys** in the derived tier | A generated UUID differs on every rebuild |
+| `fk_supersedes_same_entity` **added** | Nothing previously stopped entity B superseding entity A's decision |
 
 ## 6. Tables removed or never created
 
@@ -168,9 +215,18 @@ provider_entities              UNIQUE (provider_id, provider_external_id)
 provider_record_versions       UNIQUE (provider_entity_id, canonical_payload_hash)
                                INDEX  (discovery_query_id)
                                INDEX  (provider_entity_id, retrieved_at DESC)
+provider_record_bodies         UNIQUE (provider_record_version_id, raw_body_sha256)
+                               INDEX  (provider_record_version_id, retrieved_at DESC)
 provider_record_sightings      UNIQUE (provider_record_version_id, discovery_query_id)
 
-entity_resolution_decisions    uq_resolution_root
+entity_resolution_decisions    PRIMARY KEY (id)
+                               uq_decision_entity      UNIQUE (id, provider_entity_id)
+                                 -- exists only to serve the composite FK below
+                               fk_supersedes_same_entity
+                                 FOREIGN KEY (supersedes_decision_id, provider_entity_id)
+                                 REFERENCES  entity_resolution_decisions (id, provider_entity_id)
+                                 -- makes cross-entity supersession unrepresentable
+                               uq_resolution_root
                                  UNIQUE (provider_entity_id) WHERE supersedes_decision_id IS NULL
                                uq_resolution_supersedes
                                  UNIQUE (supersedes_decision_id) WHERE supersedes_decision_id IS NOT NULL
@@ -198,7 +254,8 @@ company_domains                UNIQUE (domain_normalized) WHERE domain_role = 'I
 company_market_presences       UNIQUE (company_id, market_id, presence_type)
                                INDEX  (market_id, presence_type)
 company_verticals              UNIQUE (company_id, vertical_id)
-company_relationships          UNIQUE (from_company_id, to_company_id, relationship_type)
+company_relationships          PRIMARY KEY (from_company_id, to_company_id, relationship_type)
+                               INDEX  (effective_from, effective_to)   -- view predicate
 
 attribute_definitions          UNIQUE (registry_version, attribute_key)
 discovery_runs                 INDEX  (status) WHERE status IN ('PENDING','PARTIAL_FETCH')

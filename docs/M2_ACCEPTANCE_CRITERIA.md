@@ -1,14 +1,14 @@
 # M2 — Acceptance Criteria
 
-**Status:** design only, revision 3. These scenarios are specified *before*
+**Status:** design only, revision 4. These scenarios are specified *before*
 implementation, as M0/M1 were. None is implemented as a test yet.
 
 Each states a **Given / When / Then** and the invariant it protects. An
 implementation is not done until every scenario passes against live PostgreSQL
 from an empty schema.
 
-Scenarios marked **[r2]** were added in revision 2; **[r3]** in revision 3,
-covering the design invariants resolved there.
+Scenarios marked **[r2]** were added in revision 2, **[r3]** in revision 3 and
+**[r4]** in revision 4, each covering the invariants resolved in that revision.
 
 ---
 
@@ -46,6 +46,52 @@ key ordering on two calls
 different `raw_body_sha256`, and a sighting records the second observation.
 *Protects:* a provider reformatting its JSON must not manufacture a version —
 the same rule that makes a reindented source file a no-op import in M0.
+
+### A5a [r4] — One version may hold many bodies
+**When** the schema is inspected
+**Then** `raw_body_sha256` lives on `provider_record_bodies`, not on
+`provider_record_versions`; the relationship is **1:N**; and the unique
+constraint is `(provider_record_version_id, raw_body_sha256)`.
+*Protects:* the revision-3 placement, which silently asserted one body per
+version while identity was defined semantically.
+
+### A5b [r4] — Identical bytes re-fetched do not duplicate a body
+**Given** a version with one body at `raw_body_sha256 = H`
+**When** the identical bytes are fetched again
+**Then** no second body row is created, and a sighting records the observation.
+
+### A5c [r4] — Semantic mutation creates a version; reformatting does not
+**Given** a version `V1`
+**When** the provider returns semantically different content
+**Then** a **new version** `V2` is created with its own body. **When** it
+instead returns the same content reformatted, `V1` is unchanged and gains a
+second body.
+
+### A5d [r4] — Pruning bodies never changes version identity or history
+**Given** a version with three bodies
+**When** all bodies are pruned by retention
+**Then** `canonical_payload_hash`, `parsed_payload`, sightings, decisions and
+claims are all unchanged, and the version still resolves to the same company.
+
+### A13 [r4] — Canonicalization strategy is declared and stamped
+**Given** a JSON provider and a CSV provider
+**Then** each declares its own `canonicalization_strategy` and version; every
+`provider_record_versions` row stamps both; and the JSON provider's strategy is
+`JSON_CANONICAL_V1`, the algorithm M0 uses for snapshots.
+*Protects:* the assumption that M0's canonical JSON is universal.
+
+### A14 [r4] — A non-JSON provider may not borrow the JSON canonicalizer
+**Given** an adapter whose payload is CSV, XML or HTML
+**When** it declares `canonicalization_strategy = 'JSON_CANONICAL_V1'`
+**Then** registration is rejected: the strategy must match the declared media
+type.
+
+### A15 [r4] — Changing a strategy is a visible, versioned event
+**Given** a provider whose canonicalization version changes
+**When** a previously-seen payload is re-ingested
+**Then** it produces a **new version** stamped with the new strategy version,
+the old version is untouched, and the change is attributable — never silent
+churn.
 
 ### A6 [r3] — Raw bytes are preserved, and JSONB is not called verbatim
 **Given** any ingested record
@@ -152,6 +198,49 @@ column; all appear on `company_profiles` or another projection.
 effective `MERGED` / `SPLIT` decision.
 *Protects:* the one cached identity-level fact stays truthful.
 
+### B3d [r4] — Two rebuilds at different wall-clock times are identical
+**Given** a populated registry with unchanged evidence
+**When** every derived projection is rebuilt, the clock is advanced (by days,
+across a relationship's `effective_to` boundary), and it is rebuilt again
+**Then** the per-table content digests from both rebuilds are **identical**.
+*Protects:* the determinism contract — a projection may not read the clock.
+
+### B3e [r4] — A date-filtered view may legitimately change
+**Given** the same unchanged projection
+**When** the clock crosses a relationship's `effective_to`
+**Then** `current_company_relationships` returns **fewer** rows, while
+`company_relationships` and its digest are **unchanged**.
+*Protects:* the separation between a time-independent projection and a view
+that applies the date.
+
+### B3f [r4] — Operational metadata cannot invalidate rebuild equality
+**Given** two rebuilds producing identical projection digests
+**Then** `projection_runs` holds two rows with different `started_at`,
+`completed_at` and `triggered_by`, **and no projection table contains any
+timestamp of its own**.
+*Protects:* the revision-3 `last_projected_at` contradiction.
+
+### B3g [r4] — No derived projection has a surrogate key
+**When** the schema is inspected
+**Then** every derived projection's primary key is a natural key composed of
+stored columns; none is a generated UUID.
+*Protects:* a surrogate key would differ on every rebuild.
+
+### B3h [r4] — Projection array columns are sorted
+**Given** a projection row whose `derived_from_claim_ids` draws on several
+claims
+**Then** the array is stored in ascending order, so two rebuilds cannot differ
+by ordering alone.
+
+### B3i [r4] — Tie-breaks do not depend on prior projection state
+**Given** two claims that tie on human review, fact type, provider trust and
+recency
+**When** the projection is rebuilt from an **empty** table
+**Then** the claim with the lowest `claim.id` wins, `projection_conflict` is
+set, and the result equals a rebuild performed over a pre-populated table.
+*Protects:* the revision-3 rule "keep the current projected value", which had
+no meaning on a rebuild from empty.
+
 ### B8 [r3] — `value_jsonb` and typed shadows never disagree
 **Given** every claim in the database
 **When** each shadow is recomputed from `value_jsonb` using its registry
@@ -247,11 +336,40 @@ exists.
 is superseded twice, and the anti-join for the head returns exactly one row
 without needing `ORDER BY ... LIMIT 1`.
 
+### C11a [r4] — A valid chain within one entity is accepted
+**Given** provider entity `A`
+**When** decisions `A1 → A2 → A3` are written, each superseding the previous
+**Then** all three commit, `A3` is the head, and the full chain is retrievable
+in order.
+
+### C11b [r4] — A decision of entity B cannot supersede a decision of entity A
+**Given** decision `A1` belonging to provider entity `A`
+**When** a decision belonging to entity `B` attempts
+`supersedes_decision_id = A1.id`
+**Then** the database rejects it on `fk_supersedes_same_entity` — the composite
+foreign key requires the referenced row to share the same `provider_entity_id`.
+*Protects:* the revision-3 hole — the partial indexes constrained chain *shape*
+but not chain *ownership*, so B could have spliced itself into A's history,
+leaving A headless and B forked.
+
+### C11c [r4] — The invariant is declarative, not procedural
+**When** cross-entity supersession is attempted through raw SQL, bypassing all
+application code
+**Then** it still fails.
+*Protects:* correctness that does not depend on every writer remembering a
+protocol.
+
+### C11d [r4] — Cycles are unconstructible
+**Given** any sequence of writes
+**Then** no cycle exists in the supersession graph, because every insert must
+reference an already-committed row and rows are never updated.
+
 ### C12 [r3] — The heads table is a cache, not the invariant
 **Given** a populated registry
 **When** `entity_resolution_heads` is truncated and rebuilt from decisions
-**Then** it is byte-identical, and resolution correctness was never dependent
-on it.
+**Then** it is byte-identical, it agrees row-for-row with the
+`current_entity_resolutions` view, and resolution correctness was never
+dependent on it.
 
 ### C13 [r3] — Corrected resolution moves claim history without rewriting it
 **Given** provider entity `P` resolved to company `A` by decision `D1`, with
@@ -508,6 +626,25 @@ enforced by a CHECK, and both companies see it through the bidirectional view.
 **Then** `FORMERLY` is absent from `relationship_type`, and a former name
 appears in `company_names` with `name_type = FORMER`.
 
+### J7a [r4] — The relationship projection stores intervals, not a snapshot
+**When** the schema is inspected
+**Then** `company_relationships` has `effective_from` and `effective_to`
+columns, contains relationships whose interval has already closed, and its
+rebuild reads no clock.
+*Protects:* the revision-3 "currently-valid" framing, which made content
+depend on wall-clock time.
+
+### J7b [r4] — The current view applies the date, the projection does not
+**Given** a relationship with `effective_to = 2027-06-30`
+**When** queried on 2027-06-01 and again on 2027-07-01
+**Then** `current_company_relationships` includes it, then excludes it, while
+`company_relationships` returns the identical row both times.
+
+### J7c [r4] — `as_of` reproduces a historical answer exactly
+**Given** the same relationship
+**When** queried with `?as_of=2027-06-01` at any later date
+**Then** the answer is the same as the current view returned on that date.
+
 ### J7 [r3] — Relationship projection is rebuildable
 **Given** a populated registry
 **When** `company_relationships` is truncated and rebuilt from relationship
@@ -535,3 +672,6 @@ currently-valid relationships.
   contract on every write.
 * At least one provider adapter of each `identity_capability` is exercised, so
   the derived-key and content-only paths are not theoretical.
+* B3d–B3i run in CI, including a rebuild with the clock advanced across a
+  relationship boundary, so determinism is proven rather than asserted.
+* C11b is exercised through raw SQL, not only through application code.

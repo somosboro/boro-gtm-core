@@ -1,11 +1,11 @@
 # M2 — Architecture Decision Records
 
-**Status:** design only, revision 3. None is implemented. Numbered in their own
+**Status:** design only, revision 4. None is implemented. Numbered in their own
 `M2-` series so they cannot be confused with the accepted ADR-001 … ADR-020
 governing shipped code.
 
-M2-ADR-001 … 009 were written for revision 1, 010 … 017 for revision 2, and
-018 … 023 for revision 3. Superseded decisions are marked and cross-referenced;
+M2-ADR-001 … 009 were written for revision 1, 010 … 017 for revision 2,
+018 … 023 for revision 3, and 024 … 027 for revision 4. Superseded decisions are marked and cross-referenced;
 originals are retained rather than rewritten, so the reasoning trail survives.
 
 ---
@@ -379,7 +379,8 @@ The constraint moves from `companies` to
 
 ## M2-ADR-018 — Two partial unique indexes guarantee one effective resolution head
 
-**Status:** Accepted (design) · extends M2-ADR-013 · resolves invariant 2
+**Status:** Accepted (design) · extends M2-ADR-013 · **completed by M2-ADR-025**
+(which adds the missing same-entity constraint)
 
 ### Context
 `UNIQUE (supersedes_decision_id)` stops a decision being superseded twice, but
@@ -630,3 +631,180 @@ relationship claims are never truncated.
   by judgement, not computed. Making them deterministic would require hashing an
   identity that is by definition a judgement call, reintroducing exactly the
   false-merge problem the identity policy exists to prevent.
+
+
+---
+
+# Revision 4 decisions
+
+## M2-ADR-024 — Projections are pure; time and telemetry live outside them
+
+**Status:** Accepted (design) · refines M2-ADR-023 · resolves invariant 1
+
+### Context
+Revision 3 claimed derived projections rebuild byte-identically, while
+simultaneously storing `company_profiles.last_projected_at` and describing
+`company_relationships` as holding "currently-valid" relationships. Both make
+projection content depend on wall-clock time, so the same evidence would rebuild
+differently tomorrow.
+
+A third, subtler violation: precedence rule 5 resolved ties by "keeping the
+current projected value" — which has no meaning when rebuilding from an empty
+table, making the projection depend on its own prior state.
+
+### Decision
+The projection function `P` is **pure**. Its only inputs are the evidence
+tables, `attribute_registry_version` and `identity_policy_version`. It reads no
+clock, no sequence, no random source and no prior projection.
+
+Five consequences, each removing a specific hazard:
+
+| Hazard | Resolution |
+| --- | --- |
+| Rebuild timestamps | Moved to `projection_runs` — a new operational table outside every determinism claim |
+| Surrogate keys | Forbidden in the derived tier; projections use natural keys |
+| Array ordering | Arrays stored sorted |
+| Wall-clock filtering | Projections store intervals; date predicates move into views |
+| Tie-breaks on prior state | Replaced by lowest `claim.id` — a total order over stored, immutable values |
+
+**The equality contract.** Comparison is over *all* columns of every projection
+table, because nothing non-deterministic is stored in one. Mechanically, a
+per-table canonical digest:
+
+```sql
+SELECT md5(string_agg(t::text, '|' ORDER BY t::text)) FROM <projection> t;
+```
+
+`projection_runs` records these digests per rebuild, so drift is detectable
+without keeping a second copy of the data.
+
+**What may still vary with time.** Views — `current_company_relationships`,
+`company_claims_effective`, `current_entity_resolutions`. A view returning
+different rows tomorrow is correct and says nothing about the projection
+beneath it.
+
+### Consequences
+* Determinism becomes testable rather than asserted (scenarios B3d–B3i).
+* "No persisted projection may depend on `now()`" becomes a general rule, not a
+  relationship special case.
+* `projection_runs` gives rebuild telemetry a home, which is why no projection
+  needs a timestamp of its own.
+
+---
+
+## M2-ADR-025 — Supersession is confined to one provider entity by a composite FK
+
+**Status:** Accepted (design) · completes M2-ADR-018 · resolves invariant 2
+
+### Context
+`uq_resolution_root` and `uq_resolution_supersedes` constrain the *shape* of a
+decision chain — one root, one child each. Neither constrains its *ownership*.
+Nothing prevented a decision belonging to provider entity **B** from superseding
+a decision belonging to entity **A**, which would splice two histories into one
+chain: A would be left headless (its root superseded by a foreign decision) and
+B would hold two chains.
+
+### Decision
+A composite self-foreign-key makes the illegal state unrepresentable:
+
+```sql
+ALTER TABLE entity_resolution_decisions
+  ADD CONSTRAINT uq_decision_entity UNIQUE (id, provider_entity_id);
+
+ALTER TABLE entity_resolution_decisions
+  ADD CONSTRAINT fk_supersedes_same_entity
+  FOREIGN KEY  (supersedes_decision_id, provider_entity_id)
+  REFERENCES entity_resolution_decisions (id, provider_entity_id);
+```
+
+The referenced row must match on **both** columns, so a superseding decision can
+only point at a decision of the same entity. `UNIQUE (id, provider_entity_id)`
+is redundant against the primary key; it exists solely because PostgreSQL
+requires a unique constraint covering the referenced columns.
+
+### Consequences
+* The full invariant is now: one root per entity, one child per decision, all
+  within one entity, no self-reference — therefore exactly one linear chain and
+  exactly one head, by construction.
+* It holds for raw SQL, not only for code that remembers a protocol — which is
+  the same reason the root index was chosen over an advisory lock.
+* Cycles are unconstructible rather than merely forbidden: every insert
+  references an already-committed row, and rows are never updated.
+
+---
+
+## M2-ADR-026 — Byte fidelity belongs to the body, not the version
+
+**Status:** Accepted (design) · corrects M2-ADR-019 · resolves invariant 3
+
+### Context
+M2-ADR-019 established that version identity is the **canonical semantic**
+digest, so a provider reformatting its JSON does not create a new version. It
+then placed `raw_body_sha256` on `provider_record_versions` — a column that can
+hold exactly one value per version, silently asserting one body per version.
+The two statements cannot both be true.
+
+### Decision
+Byte fidelity moves to the body, and the relationship becomes **1:N**:
+
+```
+provider_record_versions  1 ──── N  provider_record_bodies
+  canonical_payload_hash              raw_body, raw_body_sha256,
+  parsed_payload                      content_type, retrieved_at,
+  canonicalization_strategy           discovery_query_id
+  UNIQUE (entity, canonical_hash)     UNIQUE (version_id, raw_body_sha256)
+```
+
+| Event | Version | Body |
+| --- | --- | --- |
+| Identical bytes re-fetched | unchanged | deduped |
+| Reformatted, same semantics | **unchanged** | **new body** |
+| Semantic change | **new version** | new body under it |
+| Retention pruning | untouched | removed |
+
+`provider_record_bodies` keeps a surrogate `id` because it is evidence; the
+no-surrogate-key rule applies only to the derived tier.
+
+### Consequences
+* "Which exact bytes did this provider send, and when?" is answerable for every
+  distinct representation, not just the most recent.
+* Pruning bodies cannot alter semantic identity or history.
+* Bodies being retained is what keeps re-canonicalization possible if a
+  strategy changes (M2-ADR-027).
+
+---
+
+## M2-ADR-027 — Canonicalization is declared per provider and versioned
+
+**Status:** Accepted (design) · extends M2-ADR-019 · resolves invariant 4
+
+### Context
+M0's canonical-JSON algorithm — sorted keys, tight separators,
+`ensure_ascii=False`, `allow_nan=False` — is defined for JSON documents.
+Revision 3 assumed it applied to all provider payloads. Providers return CSV
+exports, XML feeds, HTML pages and binary formats, none of which have a
+meaningful sorted-key form.
+
+### Decision
+Each provider declares `canonicalization_strategy` and
+`canonicalization_version` in `discovery_providers`, and every
+`provider_record_versions` row stamps both, so a hash is always interpretable.
+
+`JSON_CANONICAL_V1` is defined as M0's algorithm; JSON providers reuse it
+directly. Non-JSON sources must declare an explicit, versioned strategy before
+their adapter is written, and registration is rejected if a declared strategy
+does not match the payload's media type.
+
+**No provider-specific algorithm is specified here.** Inventing an HTML or CSV
+canonicalization in the abstract, with no provider to validate it against,
+would be guessing — and a wrong canonicalizer silently corrupts identity for
+every record it touches.
+
+### Consequences
+* No adapter can quietly borrow the JSON algorithm for a payload it does not
+  fit.
+* Changing a strategy changes canonical hashes, so previously-seen payloads
+  produce **new versions**. That is a migration event, recorded as open
+  question 9, and retained bodies are what make re-canonicalization possible.
+* The strategy is stamped on the version, so a hash computed under an old
+  strategy stays interpretable after the strategy changes.
