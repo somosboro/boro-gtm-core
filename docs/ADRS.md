@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
 ADR-001 to ADR-008 are inherited from the implementation pack
-(`docs/07_ADRS.md`) and are treated as constraints. ADR-008 below **replaces**
+(`docs/implementation-pack/07_ADRS.md`) and are treated as constraints. ADR-008 below **replaces**
 the pack's ADR-008 at the client's instruction; the deferred-company-discovery
 decision it used to hold is preserved as ADR-011 so nothing is lost.
 

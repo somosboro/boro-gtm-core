@@ -1,7 +1,7 @@
 [project]
 name = "boro-gtm-core"
 version = "0.1.0"
-description = "BoRo GTM Core (working codename) — evidence-driven GTM Market Intelligence engine (M0 + M1)"
+description = "Evidence-driven market intelligence and commercial experimentation infrastructure"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -22,6 +22,20 @@ dev = [
     "httpx>=0.28",
     "ruff>=0.8",
 ]
+
+readme = "README.md"
+keywords = ["market-intelligence", "gtm", "b2b", "scoring", "evidence", "data-provenance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business",
+]
+
+[project.urls]
+Homepage = "https://somosboro.com"
+Repository = "https://github.com/somosboro/boro-gtm-core"
 
 [project.scripts]
 gtm = "boro_gtm.cli:app"

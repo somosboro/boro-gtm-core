@@ -30,11 +30,15 @@ def create_app() -> FastAPI:
     configure_logging(settings.log_level, settings.log_json)
 
     app = FastAPI(
-        title="BoRo GTM Core — Working Codename",
+        title="BoRo GTM Core",
         version=__version__,
         description=(
-            "Evidence-driven GTM Market Intelligence engine. "
-            "M0 = market intelligence foundation, M1 = contextual intelligence."
+            "Evidence-driven market intelligence and commercial experimentation "
+            "infrastructure. Implemented scope: M0 market-intelligence "
+            "foundation and M1 contextual market intelligence. Scores always "
+            "carry separate confidence and coverage, and missing evidence "
+            "lowers coverage rather than being scored as zero. "
+            "'BoRo GTM Core' is a working codename."
         ),
         openapi_url=f"{API_PREFIX}/openapi.json",
         docs_url=f"{API_PREFIX}/docs",

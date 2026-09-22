@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: lint · migrate · test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        # Test-only credentials. This database is created fresh for each run
+        # and destroyed with the runner; it never holds real data.
+        env:
+          POSTGRES_USER: gtm
+          POSTGRES_PASSWORD: gtm
+          POSTGRES_DB: gtm_core
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gtm -d gtm_core"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      GTM_DATABASE_URL: postgresql+psycopg://gtm:gtm@localhost:5432/gtm_core
+      GTM_TEST_DATABASE_URL: postgresql+psycopg://gtm:gtm@localhost:5432/gtm_core_test
+      GTM_LOG_JSON: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Create test database
+        run: PGPASSWORD=gtm psql -h localhost -U gtm -d gtm_core -c 'CREATE DATABASE gtm_core_test;'
+
+      - name: Lint
+        run: ruff check packages tests migrations
+
+      - name: Migrate from an empty database
+        run: alembic upgrade head
+
+      - name: Verify migration head and invariants
+        run: |
+          PGPASSWORD=gtm psql -h localhost -U gtm -d gtm_core -tAc \
+            "SELECT 'alembic head: ' || version_num FROM alembic_version;"
+          PGPASSWORD=gtm psql -h localhost -U gtm -d gtm_core -tAc \
+            "SELECT 'tables: ' || count(*) FROM information_schema.tables WHERE table_schema='public';"
+          PGPASSWORD=gtm psql -h localhost -U gtm -d gtm_core -tAc \
+            "SELECT 'check constraints: ' || count(*) FROM pg_constraint c
+               JOIN pg_class r ON r.oid = c.conrelid
+               JOIN pg_namespace n ON n.oid = r.relnamespace
+              WHERE n.nspname='public' AND c.contype='c';"
+          PGPASSWORD=gtm psql -h localhost -U gtm -d gtm_core -tAc \
+            "SELECT 'append-only triggers: ' || count(*) FROM pg_trigger WHERE NOT tgisinternal;"
+
+      - name: Import snapshot
+        run: python -m boro_gtm.cli market-intelligence import ./data/boro_market_intelligence_top50.json
+
+      - name: Re-import is a no-op
+        run: |
+          python -m boro_gtm.cli market-intelligence import ./data/boro_market_intelligence_top50.json \
+            | python -c "import json,sys; d=json.load(sys.stdin); assert d['created'] is False, d; print('idempotent re-import OK')"
+
+      - name: Seed strategy registries
+        run: python -m boro_gtm.cli strategy seed
+
+      - name: Reference reproduction must be exact
+        run: |
+          python -m boro_gtm.cli market-intelligence recalculate \
+            --snapshot MI-2026-09-21-V1 --mode reference_reproduction \
+            | python -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          c = d['comparison_vs_imported_reference']
+          assert c['max_score_delta'] == 0.0, c
+          assert c['rank_mismatches'] == [], c
+          print(f\"reference reproduction exact: delta={c['max_score_delta']} mismatches=0\")
+          "
+
+      - name: Tests
+        run: pytest -q

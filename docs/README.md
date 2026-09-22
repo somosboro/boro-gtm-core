@@ -1,52 +1,41 @@
-# OpenGTM / BoRo GTM Engine — M0 + M1 Implementation Pack
+# Documentation index
 
-This pack is the implementation handoff for Claude Code.
+## Current design documents
 
-## Goal
-Build the first two milestones of the Market Intelligence subsystem that will become the foundation of OpenGTM (public/open-source core) and BoRo GTM Engine (private BoRo strategy/runtime).
+These describe the system **as built**.
 
-## Milestone definitions
+| Document | What it covers |
+| --- | --- |
+| [ADRS.md](ADRS.md) | Architecture decision records, ADR-001 … ADR-020 |
+| [SCORING.md](SCORING.md) | Scoring models, percentile convention, confidence, ranking, both score modes |
+| [DESIGN_NOTE_market_gtm_profiles.md](DESIGN_NOTE_market_gtm_profiles.md) | Why `market_gtm_profiles` was removed and where GTM context lives instead |
 
-### M0 — Market Intelligence Foundation
-M0 ingests and reproduces the existing BoRo Studio International Market Intelligence 2026 dataset.
+## M2 design (not implemented)
 
-It must provide:
-- PostgreSQL domain model and migrations.
-- Import of the supplied 2026 market-intelligence JSON as an immutable snapshot.
-- Market registry for the 63-economy normalization universe.
-- Source catalog and observation provenance.
-- Versioned scoring models and score runs.
-- Reproducible calculation of the current base market ranking.
-- Read-only REST API for markets, snapshots, sources, scoring models, rankings, score components and TAM/SAM/SOM data.
-- Deterministic tests proving that the imported scoring model reproduces the supplied score values within a defined tolerance.
+| Document | What it covers |
+| --- | --- |
+| [M2_COMPANY_DISCOVERY_DESIGN.md](M2_COMPANY_DISCOVERY_DESIGN.md) | Canonical company model, provider abstraction, entity resolution |
+| [M2_ACCEPTANCE_CRITERIA.md](M2_ACCEPTANCE_CRITERIA.md) | Scenarios M2 must satisfy before it is considered done |
+| [M2_ADRS.md](M2_ADRS.md) | Decisions taken during M2 design |
 
-### M1 — Contextual Market Intelligence
-M1 turns the base country ranking into a contextual scoring system.
+No M2 code, migrations or tables exist in this repository.
 
-It must provide:
-- First-class entities for verticals, ICPs, offers and channels.
-- Market × Vertical profiles.
-- Contextual score runs that accept `market + vertical + ICP + channel + offer/ticket` as context.
-- Separate concepts for score, confidence and data coverage.
-- Research-gap detection for missing evidence/metrics.
-- API endpoints to calculate and inspect contextual rankings.
-- Seed strategy objects for BoRo's initial commercial hypotheses.
-- No company discovery, people enrichment, sending or CRM automation yet.
+## `implementation-pack/` — preserved source material
 
-## Files
-- `00_CONTEXT_AND_SCOPE.md` — product context, scope and non-goals.
-- `01_ARCHITECTURE.md` — technical architecture and module boundaries.
-- `02_DOMAIN_MODEL_AND_DATABASE.md` — entities, relationships and schema rules.
-- `03_IMPORTER_AND_DATA_CONTRACT.md` — immutable snapshot importer and validation rules.
-- `04_SCORING_ENGINE.md` — base + contextual scoring specification.
-- `05_API_SPEC.md` — REST contract for M0/M1.
-- `06_TEST_AND_ACCEPTANCE.md` — acceptance criteria and test matrix.
-- `07_ADRS.md` — architecture decisions that should not be casually changed.
-- `08_CLAUDE_CODE_PROMPT.md` — copy/paste prompt for Claude Code.
-- `market_intelligence_v1.schema.json` — validation schema for the source JSON.
-- `boro_market_intelligence_top50.json` — source dataset to ingest.
+[`implementation-pack/`](implementation-pack/) holds the original M0/M1 handoff
+specification exactly as it was received: ten files, byte-for-byte unmodified.
 
-## Implementation principle
-Do not build a large microservice estate. Start as a modular monolith with asynchronous-ready boundaries. One developer should be able to run the entire system locally with Docker Compose.
+**It uses the earlier working name "OpenGTM" throughout.** That name was
+retired — it is already in use by several active GTM products — and the project
+is now *BoRo GTM Core*. See [ADR-008](ADRS.md) for the naming decision.
 
-The intended public product is **OpenGTM**. BoRo-specific strategy data must remain configuration/seed data, not hard-coded business logic.
+The pack is kept verbatim rather than rebranded because it is the historical
+record the implementation was accepted against: acceptance criteria, scoring
+formulas and domain model as originally specified. Editing it to match current
+naming would destroy that record's value as an audit trail. Where the pack and
+the current design disagree, **the current design documents win**, and the ADRs
+say why.
+
+The same reasoning applies to `data/market_intelligence_v1.schema.json`, a
+supplied artifact whose `$id` still points at `opengtm.dev`
+(see [ADR-019](ADRS.md)).
