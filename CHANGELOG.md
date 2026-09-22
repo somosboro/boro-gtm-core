@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.1] — 2026-09-22
+
+Packaging fix. No behavioural change to the engine.
+
+### Fixed
+* `pyproject.toml` declared `readme`, `keywords` and `classifiers` inside
+  `[project.optional-dependencies]` rather than `[project]`, so a clean
+  `pip install -e .` failed with
+  `project.optional-dependencies.readme must be array`. Existing editable
+  installs never re-validated the manifest, so this only surfaced on a fresh
+  build. **v0.1.0 is superseded by this release and should not be used.**
+
+### Added
+* `tests/unit/test_packaging.py` — nine stdlib-only checks that parse the
+  manifest and assert optional-dependency groups hold only arrays, no
+  `[project]` key has leaked into another table, the declared readme exists,
+  package discovery points at the real source root, the console-script target
+  is importable, project URLs are HTTPS and the declared version matches the
+  package. Reintroducing the original defect fails two of them.
+
+Test count is now 283.
+
 ## [0.1.0] — 2026-09-22
 
 **M0/M1 Market Intelligence Foundation.** First public baseline.
@@ -95,4 +117,5 @@ M2 Company Discovery is **designed but not implemented**. There is no company
 table, provider adapter, discovery job, enrichment, people/buyer, campaign or
 CRM code in this release. See [`docs/M2_COMPANY_DISCOVERY_DESIGN.md`](docs/M2_COMPANY_DISCOVERY_DESIGN.md).
 
+[0.1.1]: https://github.com/somosboro/boro-gtm-core/releases/tag/v0.1.1
 [0.1.0]: https://github.com/somosboro/boro-gtm-core/releases/tag/v0.1.0

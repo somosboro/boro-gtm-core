@@ -272,7 +272,7 @@ honest result.
 ## Testing and reproducibility
 
 ```bash
-pytest -q          # 274 tests
+pytest -q          # 283 tests
 ruff check packages tests migrations
 ```
 

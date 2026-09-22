@@ -217,7 +217,7 @@ mismatches.
 * No test requires network access; provider adapters are tested from recorded
   fixtures.
 * Normalization functions are pure and independently tested.
-* `pytest` and `ruff` green, with M0/M1's 274 tests still passing unchanged.
+* `pytest` and `ruff` green, with M0/M1's full suite still passing unchanged.
 * Migrations verified from an empty database.
 * At least two provider adapters exist, so the abstraction is proven against
   more than one shape of data.
