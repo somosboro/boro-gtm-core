@@ -39,6 +39,30 @@ from boro_gtm.discovery.services import projection, resolution
 router = APIRouter()
 
 
+def _run_or_404(db: Session, run_id: uuid.UUID) -> DiscoveryRun:
+    """A subresource of something that does not exist is a 404, not an empty list.
+
+    Returning ``[]`` for an unknown parent makes a typo indistinguishable from
+    a run that genuinely has no queries yet.
+    """
+    run = db.get(DiscoveryRun, run_id)
+    if run is None:
+        raise NotFoundError(
+            f"No discovery run {run_id}", details={"discovery_run_id": str(run_id)}
+        )
+    return run
+
+
+def _entity_or_404(db: Session, entity_id: uuid.UUID) -> ProviderEntity:
+    entity = db.get(ProviderEntity, entity_id)
+    if entity is None:
+        raise NotFoundError(
+            f"No provider entity {entity_id}",
+            details={"provider_entity_id": str(entity_id)},
+        )
+    return entity
+
+
 def _company_or_404(db: Session, company_id: uuid.UUID) -> Company:
     company = db.get(Company, company_id)
     if company is None:
@@ -105,6 +129,7 @@ def get_run(run_id: uuid.UUID, db: Session = Depends(get_db)) -> Any:
     tags=["discovery"],
 )
 def get_run_queries(run_id: uuid.UUID, db: Session = Depends(get_db)) -> Any:
+    _run_or_404(db, run_id)
     return db.scalars(
         select(DiscoveryQuery)
         .where(DiscoveryQuery.discovery_run_id == run_id)
@@ -118,6 +143,7 @@ def get_run_queries(run_id: uuid.UUID, db: Session = Depends(get_db)) -> Any:
     tags=["discovery"],
 )
 def get_run_versions(run_id: uuid.UUID, db: Session = Depends(get_db)) -> Any:
+    _run_or_404(db, run_id)
     versions = db.scalars(
         select(ProviderRecordVersion)
         .join(DiscoveryQuery, DiscoveryQuery.id == ProviderRecordVersion.discovery_query_id)
@@ -146,6 +172,7 @@ def _version_out(db: Session, version: ProviderRecordVersion) -> s.RecordVersion
     tags=["discovery"],
 )
 def get_entity_versions(entity_id: uuid.UUID, db: Session = Depends(get_db)) -> Any:
+    _entity_or_404(db, entity_id)
     versions = db.scalars(
         select(ProviderRecordVersion)
         .where(ProviderRecordVersion.provider_entity_id == entity_id)
@@ -161,6 +188,7 @@ def get_entity_versions(entity_id: uuid.UUID, db: Session = Depends(get_db)) -> 
 )
 def get_resolution_chain(entity_id: uuid.UUID, db: Session = Depends(get_db)) -> Any:
     """Root → head, in order. The chain is linear by construction."""
+    _entity_or_404(db, entity_id)
     decisions = db.scalars(
         select(EntityResolutionDecision)
         .where(EntityResolutionDecision.provider_entity_id == entity_id)
