@@ -158,7 +158,27 @@ class SnapshotImporter:
         ``source_file_sha256`` for literal-fidelity auditing.
         """
         raw_bytes = path.read_bytes()
-        payload = json.loads(raw_bytes.decode("utf-8"))
+        try:
+            payload = json.loads(raw_bytes.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise ValidationError(
+                f"{path.name} is not UTF-8 text, so it cannot be a snapshot document.",
+                details={"file": path.name, "error": str(exc)},
+            ) from exc
+        except json.JSONDecodeError as exc:
+            # Pointing at the file and the position beats a traceback through
+            # the json module for someone who mistyped a path.
+            raise ValidationError(
+                f"{path.name} is not valid JSON: {exc.msg} "
+                f"(line {exc.lineno}, column {exc.colno}).",
+                details={"file": path.name, "line": exc.lineno, "column": exc.colno},
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ValidationError(
+                f"{path.name} must contain a JSON object, not "
+                f"{type(payload).__name__}.",
+                details={"file": path.name},
+            )
         return self.import_payload(
             payload,
             source_filename=path.name,

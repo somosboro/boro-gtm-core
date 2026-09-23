@@ -20,7 +20,7 @@ import typer
 from boro_gtm.core.config import get_settings
 from boro_gtm.core.db import session_scope
 from boro_gtm.core.enums import ScoreRunKind
-from boro_gtm.core.errors import GtmError
+from boro_gtm.core.errors import GtmError, NotFoundError
 from boro_gtm.core.logging import configure_logging
 
 app = typer.Typer(help="BoRo GTM Core — working codename", no_args_is_help=True)
@@ -220,15 +220,20 @@ def discovery_run(
                     DiscoveryProvider.provider_key == provider)
             )
             if row is None:
-                raise GtmError(
-                    f"Provider {provider!r} is not seeded. Run: discovery seed"
+                raise NotFoundError(
+                    f"Provider {provider!r} is not seeded. Run: discovery seed",
+                    details={"provider_key": provider},
                 )
             market_id = None
             if market:
                 market_id = session.scalar(
                     select(Market.id).where(Market.iso2 == market.upper()))
                 if market_id is None:
-                    raise GtmError(f"No M1 market with iso2 {market!r}")
+                    raise NotFoundError(
+                        f"No M1 market with ISO-3166-1 alpha-2 code {market!r}. "
+                        "Import a snapshot first, or check the code.",
+                        details={"iso2": market.upper()},
+                    )
 
             adapter = adapter_cls(records)
             run = runs.create_run(session, row, market_id=market_id,
