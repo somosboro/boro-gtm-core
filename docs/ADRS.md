@@ -5,7 +5,9 @@ ADR-001 to ADR-008 are inherited from the implementation pack
 the pack's ADR-008 at the client's instruction; the deferred-company-discovery
 decision it used to hold is preserved as ADR-011 so nothing is lost.
 
-ADR-009 to ADR-012 were raised during implementation.
+ADR-009 to ADR-020 were raised during M0/M1 implementation and the
+remediation pass that followed. M2's decisions live separately, in
+[M2_ADRS.md](M2_ADRS.md).
 
 ---
 

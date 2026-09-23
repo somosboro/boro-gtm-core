@@ -226,6 +226,10 @@ uvicorn boro_gtm.api.main:app --reload --port 8000
 | Reference reproduction | `python -m boro_gtm.cli market-intelligence recalculate --snapshot MI-2026-09-21-V1 --mode reference_reproduction` |
 | Native recalculation | `python -m boro_gtm.cli market-intelligence recalculate --snapshot MI-2026-09-21-V1 --mode native_recalculation` |
 | Seed strategy objects | `python -m boro_gtm.cli strategy seed` |
+| Seed discovery registry | `python -m boro_gtm.cli discovery seed` |
+| Discovery run (fixtures) | `python -m boro_gtm.cli discovery run --provider fixture_json_directory --fixture ./data/fixtures/discovery_sample.json --market DE` |
+| Rebuild projections | `python -m boro_gtm.cli discovery project` |
+| M1 write fingerprint | `python -m boro_gtm.cli discovery firewall` |
 | Tests | `pytest -q` |
 | Lint | `ruff check packages tests migrations` |
 
@@ -290,7 +294,7 @@ honest result.
 ## Testing and reproducibility
 
 ```bash
-pytest -q          # 283 tests
+pytest -q          # 402 tests (283 M0/M1, 119 M2)
 ruff check packages tests migrations
 ```
 
@@ -301,7 +305,9 @@ run rather than asserted once. No test reaches the network.
 Release acceptance is reproducible from an empty database: migrate → import →
 re-import (no-op) → seed → reference reproduction → native recalculation →
 contextual ranking, with golden values asserted from the database rather than
-from memory.
+from memory. The M2 half runs in the same CI job: seed the discovery registry →
+fetch from fixtures → resolve → rebuild projections twice and compare digests →
+assert every M0/M1 row count is unchanged.
 
 ## Repository structure
 
@@ -317,13 +323,22 @@ packages/boro_gtm/
     api/                    M0 routes and schemas
   strategy/
     domain/ seeds/ api/     M1 registries, BoRo seed data, M1 routes
+  discovery/
+    domain/                 M2 ORM models (anchor, evidence, projections)
+    providers/              adapter contract, canonicalizers, fixture adapters
+    services/               ingestion, resolution, claims, projection, runs,
+                            jobs, firewall
+    registry.py seeds.py    versioned attribute registry and seeding
+    api/                    M2 routes and schemas
   api/main.py               FastAPI app factory
   cli.py                    Typer CLI
-migrations/                 Alembic (0001 initial, 0002 remediation)
+migrations/                 Alembic (0001 initial, 0002 remediation,
+                            0003 M2 company discovery) — head 0003_m2
 services/api/               Dockerfile
 tests/                      unit, integration, golden fixtures
-docs/                       ADRs, scoring reference, M2 design, preserved source pack
-data/                       supplied snapshot + JSON Schema (verbatim)
+docs/                       ADRs, scoring reference, M2 design set, source pack
+data/                       supplied snapshot + JSON Schema (verbatim),
+                            discovery fixtures
 ```
 
 ## Current evidence gaps and limitations
@@ -387,7 +402,7 @@ M0/M1 row counts are byte-identical before and after a full discovery run. See
   and ranking ties
 * [Scoring reference](docs/SCORING.md)
 * [M2 design](docs/M2_COMPANY_DISCOVERY_DESIGN.md) — revision 6 records the
-  thirteen defects that implementing revision 5 exposed in it ·
+  sixteen defects that implementing revision 5 exposed in it ·
   [M2 schema graph](docs/M2_SCHEMA_GRAPH.md) ·
   [M2 acceptance criteria](docs/M2_ACCEPTANCE_CRITERIA.md) ·
   [M2 ADRs](docs/M2_ADRS.md)
