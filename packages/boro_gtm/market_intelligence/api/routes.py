@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from boro_gtm.core.db import get_db
-from boro_gtm.core.enums import ScoreRunKind
+from boro_gtm.core.enums import FactType, ScoreRunKind, coerce_vocabulary
 from boro_gtm.core.errors import MarketNotFoundError, NotFoundError
 from boro_gtm.market_intelligence.api import schemas as s
 from boro_gtm.market_intelligence.domain.models import (
@@ -272,6 +272,10 @@ def get_observations(
     metric_key: str | None = Query(None),
     fact_type: str | None = Query(None),
 ) -> Any:
+    # Query parameters are validated before the path resource is resolved, so
+    # a malformed request is refused on its own merits — the same order
+    # FastAPI already uses for a malformed UUID.
+    wanted_fact = coerce_vocabulary(fact_type, FactType, "fact_type")
     market = _market_by_iso(db, iso2)
     stmt = (
         select(MarketObservation)
@@ -283,8 +287,8 @@ def get_observations(
         stmt = stmt.where(MarketObservation.snapshot_id == snap.id)
     if metric_key:
         stmt = stmt.where(MarketObservation.metric_key == metric_key)
-    if fact_type:
-        stmt = stmt.where(MarketObservation.fact_type == fact_type.upper())
+    if wanted_fact:
+        stmt = stmt.where(MarketObservation.fact_type == wanted_fact)
 
     out = []
     for obs in db.scalars(stmt.order_by(MarketObservation.metric_key)).all():
@@ -419,11 +423,12 @@ def list_score_runs(
     model: str | None = Query(None, description="key:version"),
     kind: str | None = Query(None),
 ) -> Any:
+    wanted_kind = coerce_vocabulary(kind, ScoreRunKind, "kind")
     stmt = select(ScoreRun).order_by(ScoreRun.started_at.desc().nullslast())
     if snapshot:
         stmt = stmt.where(ScoreRun.snapshot_id == scoring_service.get_snapshot(db, snapshot).id)
-    if kind:
-        stmt = stmt.where(ScoreRun.kind == kind)
+    if wanted_kind:
+        stmt = stmt.where(ScoreRun.kind == wanted_kind)
     if model:
         model_key, _, model_version = model.partition(":")
         stmt = stmt.where(

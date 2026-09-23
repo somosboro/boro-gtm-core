@@ -169,3 +169,30 @@ OPEN_VOCABULARIES: tuple[str, ...] = (
     "market_competition_assessments.level",
     "market_size_estimates.confidence_level",
 )
+
+
+def coerce_vocabulary(value: str | None, vocabulary: type[StrEnum], field: str) -> str | None:
+    """Validate a closed-vocabulary filter value, or refuse it by name.
+
+    A filter value outside its vocabulary used to return an empty list, so a
+    typo was indistinguishable from "nothing matches". On a review queue that
+    reads as "nothing to review", which is the wrong answer to give quietly.
+
+    Returns the vocabulary's own spelling of the value, or ``None`` when no
+    filter was supplied.
+    """
+    from boro_gtm.core.errors import ValidationError
+
+    if value is None or value == "":
+        return None
+    # Match case-insensitively but return the vocabulary's own spelling: these
+    # enums are not uniformly upper-case (ScoreRunKind is lower), so upper-casing
+    # the caller's input would reject a value the vocabulary actually contains.
+    by_fold = {member.value.casefold(): member.value for member in vocabulary}
+    canonical = by_fold.get(value.strip().casefold())
+    if canonical is None:
+        raise ValidationError(
+            f"{field}={value!r} is not a valid value",
+            details={"field": field, "valid": sorted(by_fold.values())},
+        )
+    return canonical

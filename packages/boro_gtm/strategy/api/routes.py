@@ -11,7 +11,11 @@ from sqlalchemy.orm import Session
 
 from boro_gtm.core.config import get_settings
 from boro_gtm.core.db import get_db
-from boro_gtm.core.enums import ResearchGapStatus
+from boro_gtm.core.enums import (
+    ResearchGapPriority,
+    ResearchGapStatus,
+    coerce_vocabulary,
+)
 from boro_gtm.core.errors import InsufficientCoverageError, NotFoundError, ValidationError
 from boro_gtm.market_intelligence.domain.models import Market, MarketSnapshot
 from boro_gtm.market_intelligence.research_gaps import detector
@@ -336,10 +340,12 @@ def list_research_gaps(
         if row is None:
             raise NotFoundError(f"No vertical {vertical!r}")
         stmt = stmt.where(ResearchGap.vertical_id == row.id)
-    if status:
-        stmt = stmt.where(ResearchGap.status == status.upper())
-    if priority:
-        stmt = stmt.where(ResearchGap.priority == priority.upper())
+    wanted_status = coerce_vocabulary(status, ResearchGapStatus, "status")
+    wanted_priority = coerce_vocabulary(priority, ResearchGapPriority, "priority")
+    if wanted_status:
+        stmt = stmt.where(ResearchGap.status == wanted_status)
+    if wanted_priority:
+        stmt = stmt.where(ResearchGap.priority == wanted_priority)
 
     rows = db.scalars(
         stmt.order_by(ResearchGap.priority, ResearchGap.metric_key).limit(limit).offset(offset)

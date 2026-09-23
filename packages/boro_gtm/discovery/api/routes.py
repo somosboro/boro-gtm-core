@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from boro_gtm.core.db import get_db
+from boro_gtm.core.enums import coerce_vocabulary
 from boro_gtm.core.errors import NotFoundError, ValidationError
 from boro_gtm.discovery.api import schemas as s
 from boro_gtm.discovery.domain.models import (
@@ -32,7 +33,12 @@ from boro_gtm.discovery.domain.models import (
     ProviderRecordSighting,
     ProviderRecordVersion,
 )
-from boro_gtm.discovery.enums import ResolutionDecision
+from boro_gtm.discovery.enums import (
+    CompanyLifecycle,
+    DiscoveryRunStatus,
+    ResolutionDecision,
+    ResolutionMethod,
+)
 from boro_gtm.discovery.registry import ATTRIBUTE_REGISTRY_VERSION
 from boro_gtm.discovery.services import projection, resolution
 
@@ -107,9 +113,10 @@ def list_runs(
     status: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
 ) -> Any:
+    wanted = coerce_vocabulary(status, DiscoveryRunStatus, "status")
     stmt = select(DiscoveryRun).order_by(DiscoveryRun.created_at.desc()).limit(limit)
-    if status:
-        stmt = stmt.where(DiscoveryRun.status == status.upper())
+    if wanted:
+        stmt = stmt.where(DiscoveryRun.status == wanted)
     return db.scalars(stmt).all()
 
 
@@ -215,9 +222,10 @@ def list_companies(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> Any:
+    lifecycle = coerce_vocabulary(lifecycle_status, CompanyLifecycle, "lifecycle_status")
     stmt = select(Company)
-    if lifecycle_status:
-        stmt = stmt.where(Company.lifecycle_status == lifecycle_status.upper())
+    if lifecycle:
+        stmt = stmt.where(Company.lifecycle_status == lifecycle)
     if market_id:
         stmt = stmt.where(
             Company.id.in_(
@@ -397,10 +405,12 @@ def list_decisions(
     stmt = select(EntityResolutionDecision).order_by(
         EntityResolutionDecision.decided_at.desc()
     ).limit(limit)
-    if decision:
-        stmt = stmt.where(EntityResolutionDecision.decision == decision.upper())
-    if method:
-        stmt = stmt.where(EntityResolutionDecision.method == method.upper())
+    wanted = coerce_vocabulary(decision, ResolutionDecision, "decision")
+    how = coerce_vocabulary(method, ResolutionMethod, "method")
+    if wanted:
+        stmt = stmt.where(EntityResolutionDecision.decision == wanted)
+    if how:
+        stmt = stmt.where(EntityResolutionDecision.method == how)
     return db.scalars(stmt).all()
 
 
