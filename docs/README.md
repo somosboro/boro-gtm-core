@@ -43,12 +43,16 @@ from each contradiction to its resolution stays readable.
 
 ## M3 — Operational Research (design only, not implemented)
 
+The design is at **revision 2**, which resolved six structural contradictions
+in revision 1 — all instances of an append-only row carrying a value that
+changes.
+
 | Document | What it covers |
 | --- | --- |
 | [M3_OPERATIONAL_RESEARCH_DESIGN.md](M3_OPERATIONAL_RESEARCH_DESIGN.md) | Responsibility and boundaries, source/artifact/version model, the claim-ledger audit, operational attribute taxonomy, extraction and model-assisted evidence, contradictions, temporal semantics, gaps and coverage, fetch policy, firewalls |
 | [M3_SCHEMA_GRAPH.md](M3_SCHEMA_GRAPH.md) | Proposed table graph: ownership, mutability, keys, indexes and what is deliberately *not* created |
-| [M3_ACCEPTANCE_CRITERIA.md](M3_ACCEPTANCE_CRITERIA.md) | 67 Given/When/Then scenarios M3 must satisfy |
-| [M3_ADRS.md](M3_ADRS.md) | 13 decision records, including the one-ledger decision and the M3/M4 boundary |
+| [M3_ACCEPTANCE_CRITERIA.md](M3_ACCEPTANCE_CRITERIA.md) | 80 Given/When/Then scenarios M3 must satisfy |
+| [M3_ADRS.md](M3_ADRS.md) | 19 decision records, including the one-ledger decision and the M3/M4 boundary |
 
 **No M3 code, migrations or tables exist in this repository.** M3 is roadmap
 only; the released milestones are M0, M1 and M2.

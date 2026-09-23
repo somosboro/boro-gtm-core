@@ -1,6 +1,6 @@
 # M3 — Operational Research
 
-**Status:** design, revision 1. **Not implemented.** No M3 runtime code,
+**Status:** design, revision 2. **Not implemented.** No M3 runtime code,
 migrations or tables exist in this repository.
 
 **Milestone position.** M1 answers *which market × vertical × ICP × channel
@@ -90,149 +90,209 @@ absent. Silence is not that page.
 
 ---
 
-## 3. Source model: location identity is not content identity
+## 3. Source, bytes, semantics, text — four separable layers
 
 M3 must never rely on a live URL. A URL is a *place we looked*, not a thing we
-know. The model therefore separates three concepts that a naïve design
-collapses into one:
+know. Revision 1 separated three concepts; revision 2 separates five, because
+building the acceptance scenarios against three showed that retrieval history,
+raw bytes, semantic identity and readable text each change on their own
+schedule and cannot share a row.
 
-| Concept | Table | Identity | Mutable? |
+| Layer | Table | Identity | Answers |
 | --- | --- | --- | --- |
-| **Where we looked** | `research_sources` | normalized locator | append-only; last-seen state in a projection |
-| **What we got, semantically** | `research_artifacts` | canonical content hash + canonicalization contract | append-only |
-| **What we got, literally** | `research_artifact_versions` | raw body hash under an artifact | append-only |
+| **A. Retrieval** | `research_fetch_events` | none — every retrieval is an event | *When did we look, and what happened?* |
+| **B. Bytes** | `research_artifact_bodies` | `UNIQUE (raw_body_sha256)`, global | *What exact octets exist?* |
+| **C. Semantics** | `research_artifacts`, joined by `research_artifact_derivations` | `(strategy, strategy_version, canonical_hash)` | *What does this mean, under which contract?* |
+| **D. Text** | `research_text_derivations` | `(body, text_policy_version)` | *What readable text do extractions and locators use?* |
+| **E. Claims** | extraction → evidence link → claim | assertion fingerprint | *What do we assert, on what evidence?* |
 
-This is the same three-tier shape M2 uses for providers
-(`provider_entities` / `provider_record_versions` / `provider_record_bodies`),
-and it is reused deliberately: the problems are the same problems, and a second
-vocabulary for them would be a cost with no benefit.
+Each layer is versioned independently, so an upgrade at one never forces work
+at another: a new canonicalization version re-derives C from stored bytes, a
+new text policy re-derives D from stored bytes, and a new extractor re-derives
+E from stored text. **None requires a refetch.**
 
-### 3.1 `research_sources` — where we looked
+### 3.1 `research_sources` — where we looked, and nothing more
 
-A source is a *normalized locator*, not a URL string. Normalization is
-versioned (`locator_policy_version`) and strips what does not carry identity:
+A source is a *normalized locator* under a versioned policy. Normalization
+strips what does not carry identity — scheme and case, trailing slash, default
+ports, tracking parameters (`utm_*`, `gclid`, `fbclid`, session ids), the
+fragment, a `www.` prefix — and preserves what does: host, path, and meaningful
+query parameters such as `?id=` or `?job=`.
 
-* scheme and case, trailing slash, default ports
-* tracking parameters (`utm_*`, `gclid`, `fbclid`, `mc_cid`, session ids)
-* fragment, unless the fragment is the document (SPA routes — see below)
-* `www.` host prefix
+The row holds the locator, its policy version, the host, the registrable domain
+and `first_seen_at`. **Nothing else.** In particular it does not hold who
+discovered it, what page linked to it, or where it redirects, because a source
+can be discovered by many attempts, through many parents, by several methods,
+for several companies, and can acquire redirect and canonical relationships
+long after it was created. Revision 1 stored each of those as one field on an
+append-only row, which made all but the first unrecordable (M3-ADR-015).
 
-It preserves what does carry identity: path, meaningful query parameters
-(`?id=`, `?job=`), and the host.
+A source row is therefore **global and reusable**: two companies researched a
+year apart that both cite the same trade-association page share one source,
+and each keeps its own provenance.
 
-Redirects are recorded, not followed silently: a source has an optional
-`resolves_to_source_id`, so `/about-us` → `/company/about` is a fact about the
-site, queryable later. The canonical URL a page declares (`<link rel=canonical>`)
-is recorded as a separate edge; a page may lie about its canonical URL, so the
-edge is evidence, not a merge instruction.
+### 3.2 Discovery and relationships, as append-only observations
 
-**Sources are never merged.** Two URLs serving the same bytes converge at the
-*artifact* level, not the source level, because "these two places served the
-same document" is a finding worth keeping.
+`research_source_discoveries` records *how we found it, each time*: the source,
+the attempt, the method (`SITEMAP | CRAWL_LINK | SEARCH | JOB_BOARD |
+REGISTRY | HUMAN_SEED | API`), the parent source when there was one, and the
+query or anchor text. One page found by both a sitemap and a search engine is
+two discoveries — a real finding about how discoverable it is.
 
-### 3.2 `research_artifacts` — what we got, semantically
+`research_source_edges` records relationships between locators —
+`REDIRECTS_TO`, `DECLARES_CANONICAL`, `LANGUAGE_VARIANT_OF`,
+`MIRROR_CANDIDATE` — each carrying the fetch event that observed it. Learning
+about a redirect six months later **appends an edge and mutates nothing**. A
+site that changes its redirect target appends a second edge and both survive.
 
-Identity is `(canonicalization_strategy, canonicalization_version,
-canonical_content_hash)`. Carrying the strategy and its version *inside* the
-identity key is not optional: a hash means nothing without the algorithm that
-produced it, and M2 already learned this the expensive way (M2-ADR-028).
+The canonical URL a page declares is an edge, never a merge instruction: a page
+may misdeclare it. **Sources are never merged.** Two URLs serving one document
+converge at the *body*, because "the same document is mirrored at two URLs" is
+worth keeping.
 
-Canonicalization is **content-type specific and versioned**:
+### 3.3 Bytes, and the contracts applied to them
+
+`research_artifact_bodies` is unique on `raw_body_sha256` **globally**. The same
+PDF at four URLs is one body, four sources and four fetch events — not four
+copies of a 2 MB file.
+
+`research_artifact_derivations` joins a body to an artifact under a named,
+versioned contract. This is the join revision 1 lacked: a single
+`version → artifact` pointer made it impossible for one byte string to belong
+to two canonicalization contracts at once, which acceptance A9 requires
+(M3-ADR-016).
+
+Canonicalization is content-type specific and versioned:
 
 | Strategy | Applies to | Normalizes away | Preserves |
 | --- | --- | --- | --- |
-| `HTML_TEXT_V1` | `text/html` | scripts, styles, comments, attribute order, whitespace runs, nav/footer boilerplate, session tokens in markup | visible text, heading structure, link targets, structured data blocks |
-| `PDF_TEXT_V1` | `application/pdf` | producer metadata, creation timestamps, object ordering | page-segmented text, page count |
+| `HTML_TEXT_V1` | `text/html` | scripts, styles, comments, attribute order, whitespace runs, nav/footer boilerplate, session tokens | visible text, heading structure, link targets, structured data, **declared publication metadata** |
+| `PDF_TEXT_V1` | `application/pdf` | producer metadata, creation timestamps, object ordering | page-segmented text, page count, **declared publication date** |
 | `JSON_CANONICAL_V1` | `application/json` | key order, whitespace | values, structure — reused verbatim from M0 |
 | `PLAINTEXT_V1` | `text/plain` | line-ending style, trailing whitespace | text |
 
-A cosmetic HTML change — a rotating testimonial, a build hash in a script tag,
-a copyright year in the footer — must **not** create a new semantic artifact.
-A changed sentence about emergency service must. That is exactly what the
-canonicalization policy decides, which is why it is versioned and why the
-version is part of identity: when the policy improves, old artifacts remain
-interpretable under the policy that produced them, and the new policy produces
-new artifacts rather than silently reinterpreting old ones.
+Every strategy is **required to preserve declared publication metadata**.
+Without that requirement two documents differing only in publication date would
+canonicalize to one artifact, and the artifact is where
+`source_published_at` lives.
 
-### 3.3 `research_artifact_versions` — what we got, literally
+A cosmetic change — a rotating testimonial, a build hash, a footer year —
+produces a **new body** and **no new artifact**. A changed sentence about
+emergency service produces both.
 
-One semantic artifact may have many byte-different versions: the same page
-fetched on two days with a different build hash is one artifact, two versions.
-Each version records:
+### 3.4 Text, versioned separately from semantics
 
-`source_id`, `retrieved_at`, `http_status`, `final_url` (after redirects),
-`content_type`, `content_length`, `raw_body_sha256`, `raw_body` (nullable, see
-§27), `extracted_text`, `extraction_policy_version`, `language`,
-`title`, `source_published_at`, `source_published_granularity`, `etag`,
-`last_modified`.
+`research_text_derivations` holds the readable text extractions and locators
+work against, keyed `(body, text_extraction_policy_version)`.
 
-**`source_published_at` is only ever populated when the source states it.** A
-page with no date has `NULL` and granularity `UNDATED`. A job ad saying
-"Posted March 2026" gets `2026-03-01` with granularity `MONTH`. A retrieval
-timestamp is *never* copied into it. This is the single most common way an
-evidence system starts lying, and §12 returns to it.
+Canonicalization and text extraction are separate because they answer different
+questions at different speeds. Canonicalization asks *are these the same
+document?* and is aggressive, stripping boilerplate so churn does not look like
+change. Text extraction asks *what can a reader see?* and is conservative,
+keeping content a locator may need. Upgrading a PDF text extractor re-derives
+text from stored bytes with no refetch and **no new artifact** — impossible in
+revision 1, where `extracted_text` and its policy version sat on the same
+append-only row as the bytes (M3-ADR-017).
 
-`source_published_granularity` extends M0's vocabulary with `MONTH`, which M0
-did not need: `DATE | MONTH | YEAR | UNDATED`.
+Extractions point at a text derivation, never at a body, so an extraction is
+reproducible: same body + same text policy + same extractor = same input.
 
-### 3.4 What this answers
+### 3.5 Retrieval history
 
-The prompt's provenance questions, mapped:
+`research_fetch_events` records **every** retrieval, successful or not: source,
+attempt, `retrieved_at`, outcome, HTTP status, final URL, content type, ETag,
+Last-Modified, and the body when one was obtained (NULL when the fetch failed).
+
+It is unique on nothing, deliberately. *"We saw these exact bytes on Sep 1, Sep
+8 and Sep 20"* is three events pointing at one body, and no evidence row is
+touched to record the second and third. Revision 1 promised exactly this
+behaviour in acceptance A1 and had nowhere to put it: the only row that could
+hold a retrieval time was unique on `(source_id, raw_body_sha256)`, so the
+second retrieval of identical bytes was unrecordable (M3-ADR-014).
+
+Eleven failed attempts are eleven events with `body_id IS NULL`, which is how
+"we tried and were refused" stays distinguishable from "we never looked".
+
+### 3.6 What this answers
 
 | Question | Answered by |
 | --- | --- |
-| Where did this claim come from? | `claim_evidence_links → extraction → artifact_version → source` |
-| What exact content was observed? | `raw_body` / `extracted_text` + `canonical_content_hash` |
-| When did we retrieve it? | `artifact_version.retrieved_at` |
-| What did the source itself date? | `artifact_version.source_published_at` + granularity, NULL when unstated |
-| What content type? | `artifact_version.content_type`, validated against the strategy |
-| What extraction read it? | `research_extractions` (§10) |
-| Has the live page changed? | A later version under the same source with a different `raw_body_sha256`; a different artifact if the change was semantic |
-| Which exact span supported the claim? | `claim_evidence_links.locator` (§9) |
+| Where did this claim come from? | `claim → link → extraction → text derivation → body → fetch event → source` |
+| What exact content was observed? | `research_artifact_bodies.raw_body` (or its hash after pruning) |
+| When did we retrieve it — every time? | `research_fetch_events`, one row per retrieval |
+| What did the source itself date? | `research_artifacts.source_published_at` + granularity, NULL when unstated |
+| What content type? | `research_fetch_events`, declared and sniffed |
+| What extraction read it? | `research_extractions`, with model and prompt version |
+| Has the live page changed? | A later fetch event yielding a different body; a different artifact only if the change was semantic |
+| Which exact span supported the claim? | `claim_evidence_links.locator` (§8) |
+| How did we find this page? | `research_source_discoveries`, one row per method |
+| Where does this URL redirect? | `research_source_edges`, with the observing fetch event |
 
----
+## 4. The logical run, and the attempts that execute it
 
-## 4. The research run
+Revision 1 had one `operational_research_runs` table that was simultaneously
+the research question and its execution. That produced a contradiction it could
+not resolve: `PARTIAL` was called terminal, and retry was said to advance the
+same run. A terminal execution cannot become active again without rewriting
+history.
 
-A run is a reproducible unit of work against **one company** under **one
-policy version**.
+Revision 2 splits them (M3-ADR-019).
+
+### 4.1 The run is a question
+
+```
+operational_research_runs
+  UNIQUE (company_id, research_policy_version, target_set_hash)
+```
+
+*"What do we know about company X's operations, under policy v2, across these
+18 attributes?"* The run carries the sorted target attribute keys and their
+hash, the seed inputs, and nothing else. It has **no status**, no stage
+timestamps and no error.
+
+`target_set_hash` is part of the key because revision 1 asserted in prose that
+a different target set means a different run while leaving the target set out
+of the identity entirely. Asking the same question again reuses the run;
+changing the policy version or the attribute set makes it a different question
+and a different run.
+
+### 4.2 The attempt is an execution
+
+```
+operational_research_attempts
+  UNIQUE (run_id, attempt_number)
+  partial UNIQUE (run_id) WHERE status NOT IN ('COMPLETED','PARTIAL','FAILED')
+```
 
 ```
 PENDING → DISCOVERING → FETCHING → EXTRACTING → ASSERTING → COMPLETED
-                                                          ↘ PARTIAL
-   any stage ────────────────────────────────────────────→ FAILED
+   any non-terminal ─────────────────────────────────────→ PARTIAL
+   any non-terminal ─────────────────────────────────────→ FAILED
+
+terminal: COMPLETED, PARTIAL, FAILED — never re-entered
 ```
 
-Six states, not eight. `DISCOVERING` and `FETCHING` stay distinct because
-discovery may succeed while every fetch fails, and the difference matters for
-retry. `EXTRACTING` and `ASSERTING` stay distinct because re-extraction under
-a new extractor version is a first-class operation (§10) that must not re-fetch.
+A trigger rejects any transition outside that graph and any transition **out
+of** a terminal state. `PARTIAL` means: some evidence was captured and
+asserted, some planned work did not complete. It is genuinely terminal.
 
-`PARTIAL` is a terminal state meaning: some evidence was captured and asserted,
-some planned work did not complete. It is not a failure — partial evidence is
-still evidence — but it *is* visible in coverage.
+**Retry creates attempt *n+1* on the same run.** The `PARTIAL` attempt stays
+`PARTIAL` forever, with its own stage timestamps and its own error, and the
+evidence it captured keeps pointing at it. The partial unique index allows at
+most one live attempt per run, so two workers cannot execute the same question
+concurrently.
 
-### 4.1 The gate on canonical writes
+Every fetch event, extraction and discovery carries `attempt_id`, so
+"which execution captured this?" is always answerable — including for evidence
+captured by an attempt that later failed.
 
-M2 learned that a mutable `status` column cannot be the gate on canonical
-writes, because a later stage overwrites it (M2-ADR-031). M3 inherits the
-lesson rather than the defect:
+### 4.3 The gate on canonical writes
 
-* `discovery_completed_at`, `fetch_completed_at` and `extraction_completed_at`
-  are durable timestamps, written once when that stage genuinely finishes.
-* Claim assertion requires `extraction_completed_at IS NOT NULL`, unless the
-  run was created with `allow_partial_assertion = true`.
-* `status` is descriptive. No guard reads it.
-
-### 4.2 Retry and idempotency
-
-A retried run does not create a second run. It advances the same run, and
-because every write below it is insert-or-ignore on a natural key (§23),
-re-running any stage converges rather than duplicating. A *new* run is created
-when the policy version or the target attribute set changes — because then it
-is genuinely a different question.
-
----
+Durable per-stage timestamps on the **attempt** —
+`discovery_completed_at`, `fetch_completed_at`, `extraction_completed_at` —
+gate claim assertion. `status` is descriptive and no guard reads it, inheriting
+M2-ADR-031 rather than relearning it: a later stage overwriting `status` must
+not be able to launder an incomplete earlier stage into permission to write.
 
 ## 5. The claim model — and an audit of whether M2's will do
 
@@ -263,10 +323,10 @@ a company.** M3 does not create a parallel claim table. The three gaps are
 closed by *adding provenance beside the claim*, not by forking the claim:
 
 * **`claim_evidence_links`** — an N:M table between a claim and the evidence
-  that supports it, carrying the locator and the extraction. One claim, many
-  artifacts. One artifact, many claims. One claim, many *independent* sources —
-  which is the strongest evidential state M3 can reach and deserves to be
-  representable.
+  that supports it, carrying the locator and the extraction. One artifact may
+  support many claims, and **one claim may need several spans to justify it** —
+  most obviously an inference drawn from three job postings and a services
+  page. That is one claim with four links.
 * **`research_extractions`** — what read the artifact, with what extractor,
   model and prompt version (§10). The link points at it, so "human said so"
   and "GPT-class model said so" are different rows, not a convention.
@@ -274,6 +334,50 @@ closed by *adding provenance beside the claim*, not by forking the claim:
 M3 claims use the `subject_company_id` attribution path, which already exists
 and already satisfies `exactly_one_attribution_path`. **No released CHECK
 constraint is altered.**
+
+### 5.1.1 What one claim is
+
+Revision 1 said both *"one claim, many independent sources"* and, in acceptance
+C7, *"two independent sources yield two claims"*. Those are different models
+and revision 2 picks one:
+
+> **A `company_claim` is one atomic assertion produced from one evidence
+> lineage.**
+
+A lineage is the set of artifacts justifying the assertion. Two independent
+sources are two lineages, therefore **two claims** — they may legitimately
+differ in fact type, confidence, source trust and source date, and merging them
+would destroy all four. Corroboration is computed by grouping, not by
+collapsing.
+
+The dedupe key is an **assertion fingerprint**:
+
+```
+sha256(subject_company_id, attribute_key, attribute_registry_version,
+       canonical_json(value), fact_type, period_granularity, observed_at,
+       lineage_key)           -- lineage_key = sorted distinct artifact ids
+```
+
+stored on `company_claims.assertion_fingerprint` (nullable, partial unique
+index `WHERE NOT NULL`, so M2 claims are untouched).
+
+It **excludes the extractor**, and that one choice produces every behaviour
+required:
+
+| Situation | Result |
+| --- | --- |
+| Same extraction rerun | Same fingerprint → no new claim |
+| **Newer extractor, same lineage, same value** | Same fingerprint → **no new claim**; a new evidence link is appended to the existing one |
+| Newer extractor, same lineage, different value | New fingerprint → new claim; a real disagreement within one lineage, now visible |
+| Two independent sources, same value | Different lineage → **two claims** |
+| Contradictory values | Different fingerprint → separate claims |
+
+The second row is what revision 1 got wrong. Its rule — a newer extractor
+creates new claims — meant re-extracting one page three times looked like
+threefold corroboration. Corroboration is now counted over **distinct
+lineages**, and a lineage has exactly one claim per asserted value by
+construction, so double-weighting is unrepresentable rather than merely
+discouraged (M3-ADR-017).
 
 Rejected: **option B** (separate M3 observation tables promoted into
 `company_claims` on validation). It sounds safer and is not. It creates two
@@ -339,8 +443,10 @@ observed facts filters `fact_type = 'FACT'` and gets a defensible set.
 **The walk is always possible:**
 
 ```
-claim → claim_evidence_links → research_extractions → research_artifact_versions
-      → research_artifacts → research_sources → (raw body or its hash)
+claim → claim_evidence_links → research_extractions → research_text_derivations
+      → research_artifact_bodies → research_fetch_events → research_sources
+                                 ↘ research_artifact_derivations
+                                   → research_artifacts  (semantic identity)
 ```
 
 ---
@@ -494,7 +600,7 @@ artifact version and produced these observations*.
 
 Every extraction stamps:
 
-`artifact_version_id`, `extractor_kind`
+`text_derivation_id`, `extractor_kind`
 (`RULE | PARSER | MODEL | HUMAN`), `extractor_id`, `extractor_version`,
 `model_provider`, `model_name`, `model_version`, `prompt_template_version`,
 `output_schema_version`, `determinism` (`DETERMINISTIC | SAMPLED`),
@@ -636,13 +742,29 @@ UNIQUE (company_id, attribute_key, research_policy_version, gap_kind)
 ```
 
 Re-running research over unchanged evidence produces the same gap rows, not
-duplicates. A gap closes by being **resolved** — an append-only status change
-with the claim that closed it — not by deletion, so "we once did not know this"
-stays answerable.
+duplicates.
 
-Gaps carry `attempted_source_count` and `last_attempt_at`, so "unknown because
-we never looked" is distinguishable from "unknown after eleven sources", which
-are very different states that a single boolean would merge.
+The gap row holds **that key and `first_raised_at`, and nothing else.**
+Everything that changes lives in `operational_research_gap_events` —
+`RAISED`, `ATTEMPTED`, `RESOLVED`, `ABANDONED` — each carrying the attempt,
+the source where applicable, and the resolving claim when one exists.
+
+Revision 1 declared the gap row append-only while putting
+`attempted_source_count`, `last_attempt_at` and `resolved_by_claim_id` on it.
+All three change. They are now derived (M3-ADR-018):
+
+| Derived | From |
+| --- | --- |
+| `attempted_source_count` | `count(DISTINCT source_id) WHERE event_kind = 'ATTEMPTED'` |
+| `last_attempt_at` | `max(occurred_at) WHERE event_kind = 'ATTEMPTED'` |
+| current status | the latest event's kind |
+| `resolved_by_claim_id` | the latest `RESOLVED` event's claim |
+
+Eleven attempts append eleven rows and leave the parent byte-identical. A gap
+closes by a `RESOLVED` event, never by deletion, so "we once did not know this"
+stays answerable — and "unknown because we never looked" stays distinguishable
+from "unknown after eleven sources", which a single counter could record but
+not evidence.
 
 ---
 
@@ -870,22 +992,28 @@ Coverage and confidence are exported; their *interpretation* is not.
 
 | Case | Result |
 | --- | --- |
-| Same URL, same bytes | New `research_artifact_versions` row? **No.** Unique on `(source_id, raw_body_sha256)`; a repeat fetch records a *sighting* (`retrieved_at` appended) and nothing else |
-| Same URL, different bytes, same canonical content | New **version**, same **artifact**. Cosmetic change, no new semantics |
-| Same URL, different canonical content | New artifact **and** new version. The page genuinely changed |
-| Different URL, same content | Same artifact, new source, new version. Both places recorded; the finding "mirrored at two URLs" is preserved |
-| Re-fetched next week | Sighting if unchanged; new version if changed. Either way, one row per genuine state |
-| Same extraction version rerun | Unique on `(artifact_version_id, extractor_id, extractor_version, prompt_template_version)` → no-op |
-| New extractor version | New extraction, new claims, old ones untouched (§9.2) |
-| Same claim value extracted twice from one source | Unique on `(subject_company_id, attribute_key, value_hash, extraction_id)` → no-op |
-| Same claim from two *different* sources | **Two claims, both kept** — independent corroboration is the strongest state M3 can reach and must be representable, not deduplicated away |
-| Research gap re-raised | Unique on `(company_id, attribute_key, policy_version, gap_kind)` → no-op |
+| Same URL, same bytes, fetched again | **One new `research_fetch_events` row.** No new body, no new artifact, no new derivation. "Seen on Sep 1, Sep 8 and Sep 20" is three events, one body |
+| Same URL, different bytes, same canonical content | New **body**, new fetch event, new derivation pointing at the **existing artifact**. Cosmetic change, no new semantics |
+| Same URL, different canonical content | New body **and** new artifact. The page genuinely changed |
+| Different URL, same bytes | **Same body** (globally unique on the content hash), new source, new fetch event, and a `MIRROR_CANDIDATE` edge |
+| Same body under a new canonicalization version | New **derivation** and new **artifact**; the old derivation and artifact are untouched. No refetch |
+| Same body under a new text extraction policy | New **text derivation**; no new body, no new artifact, no refetch |
+| Same extractor rerun over the same text derivation | Unique on `(text_derivation_id, extractor_id, extractor_version, prompt_template_version)` → no-op |
+| Newer extractor, same lineage, same value | **No new claim.** A new evidence link is appended to the existing claim (§5.1.1) |
+| Newer extractor, same lineage, different value | New claim — a genuine disagreement within one lineage |
+| Same claim value from two *different* lineages | **Two claims, both kept.** Independent corroboration is the strongest state M3 reaches and must be representable |
+| Research gap re-raised | Unique on `(company_id, attribute_key, policy_version, gap_kind)` → no new parent; an `ATTEMPTED` event is appended |
+| Attempt retried | New attempt on the same run; the terminal attempt is untouched |
+| Same question asked again | Same run reused; a new attempt executes it |
+| Different target attribute set | Different `target_set_hash` → **different run** |
 
-The last two rows are the subtle pair: deduplicating identical claims from
-different sources would destroy exactly the signal worth having, while *not*
-deduplicating a re-extraction would inflate the evidence base without new
-evidence. M2 shipped that second defect and had to fix it; M3 starts with the
-constraint.
+Three rows carry the weight. Deduplicating identical claims from *different*
+lineages would destroy exactly the signal worth having. *Not* deduplicating a
+re-extraction of the *same* lineage would inflate corroboration without new
+evidence — revision 1's rule did precisely that. And recording a repeat fetch
+anywhere other than an event log would require mutating evidence, which is why
+`research_fetch_events` exists at all. M2 shipped the re-extraction defect once
+and had to fix it; M3 starts with the constraint.
 
 ---
 
@@ -897,12 +1025,12 @@ connections.
 
 | Race | Protection |
 | --- | --- |
-| Two workers fetch the same URL | `UNIQUE (source_id, raw_body_sha256)` on versions; both converge, one row |
-| Same content discovered via two URLs | `UNIQUE (canonicalization_strategy, canonicalization_version, canonical_content_hash)` on artifacts |
-| Same artifact extracted concurrently | `UNIQUE (artifact_version_id, extractor_id, extractor_version, prompt_template_version)` |
-| Same claim asserted concurrently | `UNIQUE (subject_company_id, attribute_key, value_hash, extraction_id)` |
-| Same gap created concurrently | `UNIQUE (company_id, attribute_key, policy_version, gap_kind)` |
-| Two runs on one company | Partial unique index: at most one non-terminal run per `(company_id, policy_version)` |
+| Two workers fetch the same URL | `UNIQUE (raw_body_sha256)` on bodies; both converge on one body, and each records its own fetch event |
+| Same content discovered via two URLs | `UNIQUE (raw_body_sha256)` on bodies, then `UNIQUE (body_id, strategy, version)` on derivations |
+| Same text derivation extracted concurrently | `UNIQUE (text_derivation_id, extractor_id, extractor_version, prompt_template_version)` |
+| Same claim asserted concurrently | partial `UNIQUE (assertion_fingerprint)` on `company_claims` |
+| Same gap created concurrently | `UNIQUE (company_id, attribute_key, policy_version, gap_kind)` on the identity parent |
+| Two attempts on one question | Partial unique index: at most one non-terminal attempt per run |
 | Profile rebuilt concurrently | Advisory lock per company for the rebuild; the projection is derived, so the loser simply re-derives |
 
 Every `IntegrityError` on these keys is caught and translated into a re-read,
@@ -977,17 +1105,18 @@ Raw HTML and PDF bodies dominate storage and are the least reusable part.
 
 | Class | Retention | Rationale |
 | --- | --- | --- |
-| Metadata (source, URL, status, times, hashes) | **Permanent** | Provenance must outlive bytes |
+| Metadata: sources, discoveries, edges, fetch events, derivations, artifacts | **Permanent** | Provenance must outlive bytes |
 | `canonical_content_hash`, `raw_body_sha256` | **Permanent** | Identity and later verification |
 | Claims, extractions, evidence links, locators | **Permanent** | The findings themselves |
-| `extracted_text` | Default 24 months, configurable | Enough to re-resolve a locator and re-extract |
-| `raw_body` | Default 90 days, configurable per content type | Expensive; recoverable by re-fetch when the page still exists |
+| `research_text_derivations.extracted_text` | Default 24 months, configurable | Enough to re-resolve a locator and re-extract |
+| `research_artifact_bodies.raw_body` | Default 90 days, configurable per content type | Expensive; recoverable by re-fetch when the page still exists |
 | Model `raw_output` | Default 90 days; hash permanent | Audit trail without indefinite bulk |
 
 **Deleting a raw body must never make provenance unintelligible.** After
-pruning, an artifact version still reports its source, retrieval time, status,
-both hashes, its `source_published_at`, and `body_retention = 'PRUNED'` with
-the pruning date. A claim's evidence link still resolves to that version and
+pruning, a body still reports its hash, its byte length and
+`body_retention = 'PRUNED'` with the pruning date, while its fetch events keep
+the source, every retrieval time and every status, and its artifact keeps
+`source_published_at`. A claim's evidence link still resolves to that version and
 still carries its own quote and quote hash — so the exact supporting text
 remains readable from the claim even when the full body is gone. The claim
 degrades from "we can show you the whole page" to "we can show you the quoted
@@ -1102,11 +1231,37 @@ be prevented, or was a real contradiction found and fixed here.
 | Evidence unreproducible after the page changes | **Bounded, not eliminated.** Quote and quote hash live on the evidence link, so the supporting span survives body pruning; a rotted locator weakens the claim rather than invalidating it (§8, B5, §26) |
 | One giant EAV table with no schema contract | **Prevented.** The versioned attribute registry contracts every attribute, as it already does for M2 (§7) |
 
-Two further contradictions were found and fixed during this review: a
+Two further contradictions were found and fixed during revision 1's review: a
 projection referred to in the singular where the table is plural, and a table
-count in the schema graph that disagreed with its own ownership summary. Both
-are corrected; the count is now derived from the ownership table rather than
-written by hand.
+count that disagreed with its own ownership summary. Both are corrected; the
+count is now derived from the ownership table rather than written by hand.
+
+### Revision 2 findings
+
+Revision 2 resolved six structural contradictions, all instances of one rule
+being broken: **an append-only row may not contain a value that changes.**
+
+| # | Contradiction | Resolution |
+| --- | --- | --- |
+| 1 | A "sighting" was promised in the design and in acceptance A1, and no such table existed. The only row that could hold a retrieval time was unique on `(source_id, raw_body_sha256)`, so a second retrieval of identical bytes was unrecordable | `research_fetch_events`, append-only, unique on nothing (M3-ADR-014) |
+| 2 | `research_sources` was an append-only identity row carrying three one-to-many facts as three single fields: who discovered it, what linked to it, where it redirects | Locator identity only; discovery and relationships become append-only observations (M3-ADR-015) |
+| 3 | One byte string could point at only one artifact, while acceptance A9 required the same bytes under two canonicalization versions to produce two artifacts | `research_artifact_bodies` → `research_artifact_derivations` → `research_artifacts` (M3-ADR-016) |
+| 4 | `extracted_text` and its policy version sat on the append-only bytes row, so a parser upgrade required an UPDATE | `research_text_derivations`, keyed `(body, text policy version)` (M3-ADR-017) |
+| 5 | The gap row was declared append-only while storing an attempt counter, a last-attempt timestamp and a resolving claim pointer | Identity parent plus `operational_research_gap_events`; all three derived (M3-ADR-018) |
+| 6 | `PARTIAL` was called terminal *and* retry was said to advance the same run; the target attribute set determined run identity in prose but not in the key | Logical run (the question) split from attempts (executions), with `target_set_hash` in the run key (M3-ADR-019) |
+
+A seventh was found while rechecking, not listed in the brief: **M3-ADR-008
+argued against a separate bodies table, which revision 2 then adopted.** The
+ADR is amended rather than rewritten — the retention decision it records still
+stands, and the table now exists for a different reason. An accepted ADR
+silently contradicting the live design is the kind of rot that makes a decision
+log worthless.
+
+Two claims in revision 1's own review table needed correcting in light of the
+above: "append-only tables requiring a later UPDATE — found and fixed" was true
+only for gap and signal status, and missed four further instances; and
+"duplicated evidence under retries — prevented" was false for re-extraction,
+which double-counted corroboration until M3-ADR-017.
 
 ---
 

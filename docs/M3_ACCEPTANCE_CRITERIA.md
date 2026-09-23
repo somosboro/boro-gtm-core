@@ -1,6 +1,6 @@
 # M3 — Acceptance Criteria
 
-**Status:** design, revision 1. **Not implemented.** No test below exists.
+**Status:** design, revision 2. **Not implemented.** No test below exists.
 
 Scenarios M3 must satisfy before it is considered done. Every scenario marked
 **MUST** runs against real PostgreSQL. No scenario may require public internet
@@ -12,12 +12,17 @@ Companion to [M3_OPERATIONAL_RESEARCH_DESIGN.md](M3_OPERATIONAL_RESEARCH_DESIGN.
 
 ## A. Source and artifact identity
 
-### A1 [MUST] — The same URL, unchanged, is not re-recorded
-**Given** a source fetched once, producing one artifact and one version
-**When** the identical URL is fetched again and the bytes are identical
-**Then** no new artifact, no new version and no new source row is created; only
-the retrieval is recorded as a sighting.
-*Protects:* re-running research must not inflate the evidence base.
+### A1 [MUST] — Repeated identical retrieval appends an event, nothing else
+**Given** a source fetched once, producing one body and one artifact
+**When** the identical URL is fetched again on two later dates, returning
+identical bytes each time
+**Then** exactly one `research_artifact_bodies` row, one `research_artifacts`
+row and one `research_sources` row exist, **three** `research_fetch_events`
+rows exist, and no evidence row was updated.
+**And** the system can answer "we saw these exact bytes on Sep 1, Sep 8 and
+Sep 20" from those events alone.
+*Protects:* revision 1 promised this and had nowhere to record the second
+retrieval.
 
 ### A2 [MUST] — Cosmetic change: one artifact, two versions
 **Given** a page whose only change between fetches is a build hash in a script
@@ -34,19 +39,22 @@ artifact** (canonical content is unchanged), and no new claims are asserted.
 is untouched, and the prior claim remains with its original `observed_at`.
 *Protects:* history is not rewritten by the present.
 
-### A4 [MUST] — Same content at two URLs converges at the artifact
+### A4 [MUST] — Same bytes at two URLs converge at the body
 **Given** the same PDF served at `/docs/maint.pdf` and `/files/maint.pdf`
 **When** both are fetched
-**Then** two `research_sources` rows exist, two versions exist, and both point
-at **one** `research_artifacts` row.
+**Then** two `research_sources` rows and two `research_fetch_events` rows
+exist, both pointing at **one** `research_artifact_bodies` row, and a
+`MIRROR_CANDIDATE` edge is recorded between the sources.
+**And** the 2 MB payload is stored once.
 *Protects:* "mirrored at two URLs" is a finding worth keeping, while the
-document is recognised as one document.
+document is stored and recognised once.
 
-### A5 [MUST] — A redirect is recorded, not silently followed
+### A5 [MUST] — A redirect is recorded as an edge, not a mutation
 **Given** `/about-us` returns 301 to `/company/about`
 **When** it is fetched
-**Then** both sources exist, `resolves_to_source_id` links them, the version
-records `final_url`, and neither source is deleted or merged.
+**Then** both sources exist, a `REDIRECTS_TO` edge links them carrying the
+observing fetch event, the fetch event records `final_url`, and neither source
+row is updated or merged.
 
 ### A6 [MUST] — A declared canonical URL is evidence, not an instruction
 **Given** a page whose `<link rel="canonical">` points at an unrelated host
@@ -67,12 +75,52 @@ parameters, and its `locator_policy_version` is recorded.
 artifact, versions and claims all remain, and claims are **not** invalidated.
 *Protects:* the page existed and we saw it; that stays true.
 
-### A9 [MUST] — Canonicalization version participates in identity
-**Given** an artifact stored under `HTML_TEXT_V1`
-**When** the same bytes are canonicalized under `HTML_TEXT_V2` producing an
-identical hash
-**Then** two distinct artifacts exist, because the contract differs.
-*Protects:* a hash is meaningless without the algorithm that produced it.
+### A9 [MUST] — One body, two canonicalization versions, two artifacts
+**Given** a body already derived under `HTML_TEXT_V1` into artifact A
+**When** the **same body** is derived under `HTML_TEXT_V2`
+**Then** a second `research_artifact_derivations` row exists pointing at a
+distinct artifact B, the V1 derivation and artifact A are byte-identical to
+before, **no refetch occurs** and no new body is created.
+*Protects:* revision 1's single `version → artifact` pointer made this
+unrepresentable.
+
+### A10 [MUST] — A text extractor upgrade needs no refetch
+**Given** a body with a text derivation at policy `v1`
+**When** text policy `v2` is applied
+**Then** a second `research_text_derivations` row exists, the `v1` derivation
+is unchanged, **no new body and no new artifact** are created, and no fetch
+occurs.
+*Protects:* revision 1 put `extracted_text` and its policy version on the same
+append-only row as the bytes, so this required an UPDATE.
+
+### A11 [MUST] — A failed fetch is an event with no body
+**Given** a source returning 403 eleven times
+**When** the fetches complete
+**Then** eleven `research_fetch_events` rows exist with `body_id IS NULL` and
+`fetch_outcome = 'DENIED'`, and no body, artifact or claim is created.
+*Protects:* "we tried and were refused" must be distinguishable from "we never
+looked".
+
+### A12 [MUST] — One source serves two research runs without losing provenance
+**Given** a trade-association page already fetched for company A
+**When** company B's research discovers the same URL a year later
+**Then** one `research_sources` row is reused, two
+`research_source_discoveries` rows exist naming different attempts, and each
+company's evidence traces to its own fetch event.
+*Protects:* revision 1's `discovered_by_run_id` could record only the first.
+
+### A13 [MUST] — One source discovered by two methods records both
+**Given** a page found via the sitemap and independently via a search provider
+**When** both discoveries are recorded
+**Then** two `research_source_discoveries` rows exist with different
+`discovery_method` values, and one source row.
+
+### A14 [MUST] — A redirect learned later mutates nothing
+**Given** a source created six months ago with no known redirect
+**When** a later fetch observes a 301 to a new location
+**Then** a `REDIRECTS_TO` edge is appended, the source row is byte-identical to
+before, and a subsequent change of redirect target appends a **second** edge
+without removing the first.
 
 ---
 
@@ -153,18 +201,42 @@ discouraged.
 **Then** two claims exist, both linking the same artifact version at different
 locators.
 
-### C7 [MUST] — The same claim from two sources is kept twice
+### C7 [MUST] — Two independent lineages produce two claims
 **Given** two independent sources both stating "24/7 emergency service"
 **When** both are extracted
-**Then** **two** claims exist, not one.
-*Protects:* independent corroboration is the strongest state M3 reaches and
-must be representable.
+**Then** **two** claims exist with different `lineage_key` values and therefore
+different assertion fingerprints, and the profile reports
+`corroborating_lineage_count = 2`.
+*Protects:* the two claims may differ in fact type, confidence, source trust
+and source date; merging them would destroy all four.
 
-### C8 [MUST] — The same claim from one source twice is kept once
-**Given** one extraction rerun at the same extractor version over one artifact
-version
+### C8 [MUST] — The same lineage asserted twice produces one claim
+**Given** one extraction rerun at the same extractor version over one text
+derivation
 **When** assertion runs again
-**Then** no duplicate claim is created.
+**Then** no duplicate claim is created, because the assertion fingerprint is
+identical.
+
+### C8a [MUST] — A newer extractor over the same lineage does not double-count
+**Given** a claim asserted from lineage L by extractor v1
+**When** extractor v2 reads the same lineage and produces the **same** value
+**Then** **no second claim is created**; a new `claim_evidence_links` row is
+appended to the existing claim naming the v2 extraction, and
+`corroborating_lineage_count` remains 1.
+*Protects:* revision 1 created a new claim per extractor version, so
+re-extracting one page three times looked like threefold corroboration.
+
+### C8b [MUST] — A newer extractor disagreeing with itself creates a claim
+**Given** the same lineage L and extractor v2 producing a **different** value
+**When** assertion runs
+**Then** a second claim exists — a real disagreement within one lineage — and
+the projection reports a contradiction.
+
+### C8c [MUST] — One assertion may need several spans
+**Given** an inference drawn from three job postings and a services page
+**When** it is asserted
+**Then** **one** claim exists with four `claim_evidence_links` rows, each with
+its own locator, and `corroborating_lineage_count` counts one lineage.
 
 ### C9 [MUST] — Absence is never false
 **Given** a complete research run that found no ERP evidence
@@ -211,12 +283,13 @@ blog post
 **Then** no claim is created; a review candidate and an
 `INSUFFICIENT_EVIDENCE` gap are.
 
-### D4 [MUST] — Re-extraction under a new extractor adds, never rewrites
-**Given** an artifact version already extracted at extractor version 1
-**When** extractor version 2 runs over the same version
-**Then** a new extraction and new claims exist, the version-1 extraction and
-its claims are byte-identical to before, and the profile prefers the newer
-extractor.
+### D4 [MUST] — Re-extraction adds evidence, never rewrites, never duplicates
+**Given** a text derivation already extracted at extractor version 1
+**When** extractor version 2 runs over the same derivation
+**Then** a new `research_extractions` row exists, the version-1 extraction is
+byte-identical to before, and for every value both versions agree on, the
+existing claim gains an evidence link rather than a twin (C8a). Values only
+v2 produces become new claims.
 
 ### D5 [MUST] — Re-running the same extractor version is a no-op
 **Given** an extraction at `(artifact_version, extractor, version, prompt)`
@@ -284,15 +357,20 @@ with its original `observed_at`, and only its staleness changes.
 **Then** it states insufficient evidence and never asserts the company lacks
 the capability.
 
-### F3 [MUST] — Never-looked is distinguishable from looked-and-failed
+### F3 [MUST] — Eleven attempts leave the gap parent byte-identical
 **Given** one attribute never attempted and one attempted across eleven sources
 **When** both gaps are read
-**Then** `attempted_source_count` distinguishes them.
+**Then** eleven `operational_research_gap_events` rows of kind `ATTEMPTED`
+exist for the second, the derived `attempted_source_count` distinguishes them,
+and **both gap parent rows are byte-identical to when they were raised**.
+*Protects:* revision 1 put a changing counter on a row it declared
+append-only.
 
-### F4 [MUST] — A gap closes by resolution, not deletion
+### F4 [MUST] — A gap closes by an event, with zero UPDATE to the parent
 **Given** an open gap later satisfied by a claim
-**When** the gap is resolved
-**Then** the row persists with a resolution event and the closing claim id.
+**When** it is resolved
+**Then** a `RESOLVED` event is appended carrying the closing claim id, the
+derived status becomes resolved, and the gap parent row is unchanged.
 
 ### F5 [MUST] — Coverage excludes non-applicable attributes from both sides
 **Given** an attribute the policy marks not-applicable for this vertical
@@ -365,6 +443,42 @@ against its own source.
 *Protects:* M2 shipped the opposite defect once.
 
 ---
+
+## G-bis. Logical runs and execution attempts
+
+### G11 [MUST] — A PARTIAL attempt is never reopened
+**Given** an attempt that ended `PARTIAL`
+**When** research is retried
+**Then** a **new** attempt with `attempt_number + 1` is created on the same
+run, the `PARTIAL` attempt is byte-identical to before, and any attempt to
+transition it out of a terminal state is rejected by the trigger.
+*Protects:* revision 1 called `PARTIAL` terminal and simultaneously had retry
+reopen it.
+
+### G12 [MUST] — Evidence remembers which attempt captured it
+**Given** evidence captured by an attempt that later failed
+**When** the evidence is read
+**Then** its fetch events, discoveries and extractions still name that attempt.
+
+### G13 [MUST] — A different target attribute set is a different run
+**Given** a completed run for company X under policy `v2` across 18 attributes
+**When** research is requested for the same company and policy across 19
+attributes
+**Then** `target_set_hash` differs, a **new** logical run is created, and the
+original run and its attempts are untouched.
+*Protects:* revision 1 asserted this in prose while leaving the target set out
+of the run key.
+
+### G14 [MUST] — The same question reuses the run
+**Given** the same company, policy version and target set
+**When** research is requested again
+**Then** the existing run is reused and a new attempt executes it.
+
+### G15 [MUST] — Only one attempt may be live per run
+**Given** a run with a live attempt
+**When** a second attempt is requested
+**Then** it is refused by the partial unique index, and the caller receives a
+domain error rather than an `IntegrityError`.
 
 ## H. Firewalls
 
@@ -476,5 +590,10 @@ deleted; only body columns are nulled.
 * At least one fixture provider exists per artifact kind: HTML, PDF, JSON and
   job posting.
 * Migrations verified from an empty database, and `db check --strict` clean.
+* An append-only audit test: for every table declared append-only in the schema
+  graph, an UPDATE to any column other than a documented one-way prune is
+  rejected by the database.
+* A terminal-state test: no attempt may transition out of `COMPLETED`,
+  `PARTIAL` or `FAILED`.
 
-**Scenario count: 67 (all MUST)** — A:9, B:5, C:11, D:6, E:6, F:6, G:10, H:7, I:3, J:4.
+**Scenario count: 80 (all MUST)** — A:14, B:5, C:14, D:6, E:6, F:6, G:15, H:7, I:3, J:4.
