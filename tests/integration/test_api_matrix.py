@@ -333,3 +333,76 @@ def test_uuid_of_the_right_shape_but_no_row_is_never_confused_with_success(popul
     ):
         response = populated.get(path.format(id=ABSENT_UUID))
         assert response.status_code == 404, path
+
+
+# --- the OpenAPI document as a contract ------------------------------------
+
+
+def test_openapi_documents_the_error_envelope_everywhere_it_can_occur(populated):
+    """A generated client must know the failure cases are structured.
+
+    25 operations could return 404 without declaring it, so a client built
+    from the document would treat a 404 body as undefined.
+    """
+    spec = populated.get("/api/v1/openapi.json").json()
+    assert "ErrorEnvelope" in spec["components"]["schemas"]
+
+    missing_404, missing_500 = [], []
+    for path, operations in spec["paths"].items():
+        for method, operation in operations.items():
+            if method not in {"get", "post", "put", "patch", "delete"}:
+                continue
+            responses = operation.get("responses", {})
+            if "500" not in responses:
+                missing_500.append(f"{method.upper()} {path}")
+            has_path_param = any(
+                p.get("in") == "path" for p in operation.get("parameters", [])
+            )
+            if has_path_param and "404" not in responses:
+                missing_404.append(f"{method.upper()} {path}")
+    assert missing_404 == []
+    assert missing_500 == []
+
+
+def test_openapi_has_unique_operation_ids_and_no_broken_refs(populated):
+    spec = populated.get("/api/v1/openapi.json").json()
+    schemas = spec.get("components", {}).get("schemas", {})
+
+    ids = [
+        operation["operationId"]
+        for operations in spec["paths"].values()
+        for method, operation in operations.items()
+        if method in {"get", "post", "put", "patch", "delete"}
+    ]
+    assert len(ids) == len(set(ids)), "duplicate operationId"
+
+    def refs(node):
+        if isinstance(node, dict):
+            if isinstance(node.get("$ref"), str):
+                yield node["$ref"]
+            for value in node.values():
+                yield from refs(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from refs(value)
+
+    broken = [
+        ref
+        for ref in refs(spec)
+        if ref.startswith("#/components/schemas/")
+        and ref.rsplit("/", 1)[1] not in schemas
+    ]
+    assert broken == []
+
+
+def test_the_documented_404_body_is_the_body_actually_returned(populated):
+    """Documenting a shape the server does not send would be worse than silence."""
+    spec = populated.get("/api/v1/openapi.json").json()
+    declared = spec["components"]["schemas"]["ErrorEnvelope"]
+    required = set(declared["properties"]["error"]["required"])
+
+    response = populated.get(f"/api/v1/companies/{ABSENT_UUID}")
+    assert response.status_code == 404
+    body = response.json()
+    assert set(body) == {"error"}
+    assert required <= set(body["error"])

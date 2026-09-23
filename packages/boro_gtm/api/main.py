@@ -142,7 +142,85 @@ def create_app() -> FastAPI:
     app.include_router(mi_router, prefix=API_PREFIX)
     app.include_router(strategy_router, prefix=API_PREFIX)
     app.include_router(discovery_router, prefix=API_PREFIX)
+    _document_error_responses(app)
     return app
+
+
+#: The one error shape the whole API uses. Declared once so a generated client
+#: knows the failure cases are structured, not free-form text.
+ERROR_ENVELOPE_SCHEMA = {
+    "title": "ErrorEnvelope",
+    "type": "object",
+    "required": ["error"],
+    "properties": {
+        "error": {
+            "type": "object",
+            "required": ["code", "message", "details"],
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Stable machine-readable code, e.g. NOT_FOUND.",
+                },
+                "message": {"type": "string"},
+                "details": {"type": "object", "additionalProperties": True},
+            },
+        }
+    },
+}
+
+
+def _document_error_responses(app: FastAPI) -> None:
+    """Declare the error envelope on every operation that can return one.
+
+    Done centrally rather than route by route: 25 operations could already
+    return 404 without saying so, and listing it by hand on each one would
+    mean the next route added quietly reintroduces the gap.
+    """
+    base_openapi = app.openapi
+
+    def openapi() -> dict[str, Any]:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = base_openapi()
+        schema.setdefault("components", {}).setdefault("schemas", {})[
+            "ErrorEnvelope"
+        ] = ERROR_ENVELOPE_SCHEMA
+        reference = {
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorEnvelope"}
+                }
+            }
+        }
+        for path_item in schema.get("paths", {}).values():
+            for method, operation in path_item.items():
+                if method not in {"get", "post", "put", "patch", "delete"}:
+                    continue
+                responses = operation.setdefault("responses", {})
+                has_path_param = any(
+                    parameter.get("in") == "path"
+                    for parameter in operation.get("parameters", [])
+                )
+                if has_path_param:
+                    responses.setdefault(
+                        "404",
+                        {"description": "The named resource does not exist.", **reference},
+                    )
+                responses.setdefault(
+                    "500",
+                    {"description": "Unexpected failure.", **reference},
+                )
+                # FastAPI documents 422 itself; point it at the same envelope,
+                # since that is what the handler actually returns.
+                if "422" in responses:
+                    responses["422"] = {
+                        "description": "The request was not valid.",
+                        **reference,
+                    }
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = openapi
 
 
 app = create_app()

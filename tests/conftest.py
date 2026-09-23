@@ -58,13 +58,40 @@ def database_url() -> str:
     return url
 
 
+#: Any 64-bit constant. Two pytest sessions sharing one test database would
+#: each drop and recreate its schema underneath the other, producing deadlocks
+#: and failures that do not reproduce in isolation. This makes that collision
+#: an immediate, self-explaining error instead.
+_TEST_DB_ADVISORY_LOCK = 0x60_70_6D_5F_71_61
+
+
 @pytest.fixture(scope="session")
 def migrated_engine(database_url: str):
-    """A clean database with the Alembic migrations applied."""
+    """A clean database with the Alembic migrations applied.
+
+    Holds an advisory lock for the whole session, so a second concurrent test
+    run against the same database fails fast and says why.
+    """
     from alembic import command
     from alembic.config import Config
 
     engine = create_engine(database_url, pool_pre_ping=True)
+    guard = engine.connect()
+    acquired = guard.execute(
+        text("SELECT pg_try_advisory_lock(:key)"), {"key": _TEST_DB_ADVISORY_LOCK}
+    ).scalar_one()
+    if not acquired:
+        guard.close()
+        engine.dispose()
+        pytest.exit(
+            f"Another pytest session is already using {database_url}. "
+            "Two runs would drop and recreate the schema underneath each "
+            "other, which shows up as deadlocks and failures that do not "
+            "reproduce in isolation. Wait for the other run, or point "
+            "GTM_TEST_DATABASE_URL at a different database.",
+            returncode=1,
+        )
+
     with engine.begin() as conn:
         conn.execute(text("DROP SCHEMA public CASCADE"))
         conn.execute(text("CREATE SCHEMA public"))
@@ -74,8 +101,14 @@ def migrated_engine(database_url: str):
     cfg.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(cfg, "head")
 
-    yield engine
-    engine.dispose()
+    try:
+        yield engine
+    finally:
+        guard.execute(
+            text("SELECT pg_advisory_unlock(:key)"), {"key": _TEST_DB_ADVISORY_LOCK}
+        )
+        guard.close()
+        engine.dispose()
 
 
 #: Truncated in dependency-free order at the start of every `session` test.
