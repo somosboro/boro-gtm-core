@@ -76,6 +76,11 @@ jobs:
           PGPASSWORD=gtm psql -h localhost -U gtm -d gtm_core -tAc \
             "SELECT 'append-only triggers: ' || count(*) FROM pg_trigger WHERE NOT tgisinternal;"
 
+      - name: Schema matches the ORM, and migrations are unedited
+        run: |
+          python -m boro_gtm.cli db check --strict
+          echo "schema parity and migration integrity OK"
+
       - name: Import snapshot
         run: python -m boro_gtm.cli market-intelligence import ./data/boro_market_intelligence_top50.json
 

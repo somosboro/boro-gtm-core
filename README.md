@@ -258,6 +258,7 @@ uvicorn boro_gtm.api.main:app --reload --port 8000
 | Rebuild projections | `python -m boro_gtm.cli discovery project` |
 | M1 write fingerprint | `python -m boro_gtm.cli discovery firewall` |
 | Tests | `pytest -q` |
+| Schema / migration health | `python -m boro_gtm.cli db check` |
 | Lint | `ruff check packages tests migrations` |
 
 The import command is idempotent and transactional: re-running it returns the
@@ -321,13 +322,28 @@ honest result.
 ## Testing and reproducibility
 
 ```bash
-pytest -q          # 402 tests (283 M0/M1, 119 M2)
+pytest -q          # 474 tests
 ruff check packages tests migrations
 ```
 
 Integration tests run the real Alembic migrations against a live PostgreSQL
 database, so "migrations work from an empty database" is exercised on every
-run rather than asserted once. No test reaches the network.
+run rather than asserted once. No test reaches the network, and a second
+concurrent run against the same test database exits immediately rather than
+dropping the schema underneath the first.
+
+The schema is checked against the ORM, not just against the migration head:
+
+```bash
+python -m boro_gtm.cli db check
+```
+
+An Alembic revision records only *that* a migration ran, never what it did, so
+a database can report the current head while its physical schema differs from
+the migration as it now ships. The API verifies this at startup and refuses to
+serve a database that does not match the build; `migrations/MANIFEST.json`
+records each migration's SHA-256 so an already-released migration cannot be
+edited unnoticed.
 
 Release acceptance is reproducible from an empty database: migrate → import →
 re-import (no-op) → seed → reference reproduction → native recalculation →
