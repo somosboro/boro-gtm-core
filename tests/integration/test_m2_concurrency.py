@@ -221,3 +221,167 @@ def test_a_second_worker_finds_the_entity_already_resolved(committed):
         audit.close()
         a.close()
         b.close()
+
+
+# --- job queue, on genuinely separate connections --------------------------
+
+
+def test_skip_locked_hands_one_job_to_exactly_one_worker(committed_sessions):
+    """Two *connections*, not two calls on one session.
+
+    Claiming twice from a single session proves nothing: the first claim has
+    already set the row to RUNNING inside that transaction, so the second
+    would skip it even without ``FOR UPDATE SKIP LOCKED``. The lock only does
+    work when another transaction holds it.
+    """
+    from boro_gtm.discovery.services import jobs
+
+    setup = committed_sessions()
+    setup.execute(text(f"TRUNCATE {_ALL_TABLES} RESTART IDENTITY CASCADE"))
+    jobs.enqueue(setup, "FETCH", {"n": 1})
+    setup.commit()
+    setup.close()
+
+    worker_a = committed_sessions()
+    worker_b = committed_sessions()
+    claimed_a = jobs.claim(worker_a, limit=1)     # holds the row lock, uncommitted
+    assert len(claimed_a) == 1
+
+    result: dict[str, int] = {}
+    error: list[BaseException] = []
+
+    def second_worker() -> None:
+        try:
+            result["b"] = len(jobs.claim(worker_b, limit=1))
+            worker_b.commit()
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert
+            error.append(exc)
+
+    thread = threading.Thread(target=second_worker)
+    thread.start()
+    thread.join(timeout=30)
+
+    assert not thread.is_alive(), "the second worker blocked instead of skipping"
+    assert not error, f"claim raised: {error}"
+    assert result["b"] == 0, "a locked job must be skipped, not waited on or duplicated"
+
+    worker_a.commit()
+    audit = committed_sessions()
+    try:
+        rows = audit.execute(text("SELECT status, attempts FROM discovery_jobs")).all()
+        assert rows == [("RUNNING", 1)], rows
+    finally:
+        audit.close()
+
+
+def test_two_workers_draining_a_queue_never_double_claim(committed_sessions):
+    from boro_gtm.discovery.services import jobs
+
+    setup = committed_sessions()
+    setup.execute(text(f"TRUNCATE {_ALL_TABLES} RESTART IDENTITY CASCADE"))
+    for n in range(8):
+        jobs.enqueue(setup, "FETCH", {"n": n})
+    setup.commit()
+    setup.close()
+
+    claimed: dict[str, list] = {"a": [], "b": []}
+    errors: list[BaseException] = []
+
+    def drain(label: str) -> None:
+        session = committed_sessions()
+        try:
+            while True:
+                batch = jobs.claim(session, limit=1)
+                session.commit()
+                if not batch:
+                    return
+                claimed[label].append(batch[0].id)
+                for job in batch:
+                    jobs.complete(session, job)
+                session.commit()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=drain, args=(k,)) for k in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert all(not t.is_alive() for t in threads)
+    assert not errors, f"{errors}"
+    ids_a, ids_b = claimed["a"], claimed["b"]
+    assert set(ids_a) & set(ids_b) == set(), "a job was claimed by both workers"
+    assert len(ids_a) + len(ids_b) == 8
+    assert len(set(ids_a + ids_b)) == 8
+
+
+# --- ingestion races -------------------------------------------------------
+
+
+def test_two_workers_ingesting_the_same_record_create_one_entity(committed):
+    """Provider entity, semantic version and byte body are all insert-or-ignore.
+
+    A SELECT-then-INSERT would duplicate here; the unique constraints are what
+    actually make this safe.
+    """
+    from sqlalchemy import func
+
+    from boro_gtm.discovery.domain.models import (
+        ProviderRecordBody,
+        ProviderRecordVersion,
+    )
+
+    factory, ids = committed
+    _, _, provider_id = ids
+
+    record = json_record(
+        {"legal_name": "Race Ingest GmbH", "website_domain": "race-ingest.de"},
+        external_id="RACE-INGEST",
+    )
+    outcomes: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def ingest(label: str) -> None:
+        session = factory()
+        try:
+            provider = session.get(DiscoveryProvider, provider_id)
+            query = session.scalars(select(DiscoveryQuery)).first()
+            outcomes[label] = ingest_record(
+                session, FixtureJsonDirectoryAdapter(), provider, record, query
+            )
+            session.commit()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=ingest, args=(k,)) for k in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert all(not t.is_alive() for t in threads)
+    assert not errors, f"an ingest race escaped as an exception: {errors}"
+
+    audit = factory()
+    entity_id = outcomes["a"].provider_entity_id
+    assert outcomes["b"].provider_entity_id == entity_id
+    assert outcomes["a"].version_id == outcomes["b"].version_id
+    assert audit.scalar(
+        select(func.count()).select_from(ProviderEntity).where(
+            ProviderEntity.provider_external_id == "RACE-INGEST"
+        )
+    ) == 1
+    assert audit.scalar(
+        select(func.count()).select_from(ProviderRecordVersion).where(
+            ProviderRecordVersion.provider_entity_id == entity_id
+        )
+    ) == 1
+    assert audit.scalar(
+        select(func.count()).select_from(ProviderRecordBody).where(
+            ProviderRecordBody.provider_record_version_id == outcomes["a"].version_id
+        )
+    ) == 1
+    audit.close()

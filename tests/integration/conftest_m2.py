@@ -123,12 +123,16 @@ def committed_sessions(migrated_engine):
     try:
         yield make_session
     finally:
+        # Close first, truncate second. A session left holding an open read
+        # transaction keeps an AccessShareLock, and TRUNCATE needs
+        # AccessExclusiveLock — truncating first hangs the teardown forever
+        # instead of failing, which is far harder to diagnose.
+        for session in handed_out:
+            session.close()
         cleanup = factory()
         try:
             cleanup.execute(text(f"TRUNCATE {_ALL_TABLES} RESTART IDENTITY CASCADE"))
             cleanup.commit()
         finally:
             cleanup.close()
-        for session in handed_out:
-            session.close()
         engine.dispose()
