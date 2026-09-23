@@ -2,7 +2,9 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased] — M2 Company Discovery and Entity Resolution
+## [0.2.0] — 2026-09-23
+
+**M2 Company Discovery and Entity Resolution.**
 
 **M2.** Given noisy, overlapping, partially wrong records from several
 providers, maintain a defensible registry of commercial organizations with
@@ -192,5 +194,6 @@ M2 Company Discovery is **designed but not implemented**. There is no company
 table, provider adapter, discovery job, enrichment, people/buyer, campaign or
 CRM code in this release. See [`docs/M2_COMPANY_DISCOVERY_DESIGN.md`](docs/M2_COMPANY_DISCOVERY_DESIGN.md).
 
+[0.2.0]: https://github.com/somosboro/boro-gtm-core/releases/tag/v0.2.0
 [0.1.1]: https://github.com/somosboro/boro-gtm-core/releases/tag/v0.1.1
 [0.1.0]: https://github.com/somosboro/boro-gtm-core/releases/tag/v0.1.0
