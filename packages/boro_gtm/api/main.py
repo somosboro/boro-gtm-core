@@ -7,6 +7,8 @@ response models.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -29,7 +31,21 @@ def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_json)
 
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        """Refuse to serve a database that does not match this build.
+
+        Catching drift at boot turns an intermittent 500 on whichever endpoint
+        happens to touch the missing column into one clear message, once.
+        """
+        if settings.schema_check_on_startup:
+            from boro_gtm.core.schema_check import assert_schema_matches
+
+            assert_schema_matches(get_engine())
+        yield
+
     app = FastAPI(
+        lifespan=lifespan,
         title="BoRo GTM Core",
         version=__version__,
         description=(
@@ -73,6 +89,26 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.exception_handler(Exception)
+    async def unhandled_error_handler(_: Request, exc: Exception) -> JSONResponse:
+        """Unexpected failures still answer in the documented envelope.
+
+        The detail is logged, never returned: a database error message can
+        carry schema and query internals. The client gets a stable code it can
+        branch on instead of the bare string ``Internal Server Error``.
+        """
+        logger.exception("Unhandled error: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": "INTERNAL_ERROR",
+                    "message": "The request could not be completed.",
+                    "details": {},
+                }
+            },
+        )
+
     @app.get(f"{API_PREFIX}/health", tags=["health"])
     def health() -> dict[str, Any]:
         database = "ok"
@@ -82,10 +118,20 @@ def create_app() -> FastAPI:
         except Exception as exc:  # pragma: no cover - depends on env
             logger.warning("Health check database probe failed: %s", exc)
             database = "unavailable"
+        schema = "unknown"
+        if database == "ok":
+            from boro_gtm.core.schema_check import check_schema
+
+            try:
+                schema = "ok" if check_schema(get_engine()).ok else "drift"
+            except Exception as exc:  # pragma: no cover - depends on env
+                logger.warning("Schema probe failed: %s", exc)
+        healthy = database == "ok" and schema == "ok"
         return {
-            "status": "ok" if database == "ok" else "degraded",
+            "status": "ok" if healthy else "degraded",
             "version": __version__,
             "database": database,
+            "schema": schema,
             "app": settings.app_name,
         }
 

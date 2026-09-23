@@ -40,6 +40,13 @@ class Settings(BaseSettings):
 
     sql_echo: bool = False
 
+    #: Verify at startup that the database schema matches the ORM. An Alembic
+    #: revision records only *that* a migration ran, so a database can report
+    #: the current head while its physical schema differs from the migration
+    #: as it now ships. Booting into guaranteed 500s is worse than refusing to
+    #: boot with a clear message, so this defaults on.
+    schema_check_on_startup: bool = True
+
     @property
     def data_dir(self) -> Path:
         return REPO_ROOT / "data"

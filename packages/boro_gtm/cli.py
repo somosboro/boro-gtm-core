@@ -27,9 +27,11 @@ app = typer.Typer(help="BoRo GTM Core — working codename", no_args_is_help=Tru
 mi_app = typer.Typer(help="Market intelligence commands", no_args_is_help=True)
 strategy_app = typer.Typer(help="Strategy registry commands", no_args_is_help=True)
 discovery_app = typer.Typer(help="Company discovery commands", no_args_is_help=True)
+db_app = typer.Typer(help="Database health commands", no_args_is_help=True)
 app.add_typer(mi_app, name="market-intelligence")
 app.add_typer(strategy_app, name="strategy")
 app.add_typer(discovery_app, name="discovery")
+app.add_typer(db_app, name="db")
 
 
 def _bootstrap() -> None:
@@ -274,6 +276,61 @@ def discovery_firewall() -> None:
 
     with session_scope() as session:
         _echo(m1_write_fingerprint(session))
+
+
+@db_app.command("check")
+def db_check(
+    strict: bool = typer.Option(
+        False, help="Also report columns the database has and the ORM does not."
+    ),
+) -> None:
+    """Verify the database schema matches the ORM this build expects.
+
+    An Alembic revision records *that* a migration ran, never what it did, so
+    a database can report the current head while its physical schema differs
+    from the migration as it now ships. This is the check that catches that.
+    """
+    _bootstrap()
+    from boro_gtm.core.db import get_engine
+    from boro_gtm.core.schema_check import check_migration_integrity, check_schema
+
+    report = check_schema(get_engine(), strict_extra=strict)
+    integrity = check_migration_integrity()
+    payload = {
+        "schema_matches_orm": report.ok,
+        "problems": report.problems(),
+        "migration_files_intact": not integrity,
+        "migration_problems": integrity,
+    }
+    _echo(payload)
+    if not report.ok or integrity:
+        raise typer.Exit(code=1)
+
+
+@db_app.command("record-migrations")
+def db_record_migrations() -> None:
+    """Record the current migration digests in migrations/MANIFEST.json.
+
+    Run this when adding a migration. Running it to silence a failure on an
+    *existing* migration would defeat the guard, so the message says so.
+    """
+    _bootstrap()
+    from boro_gtm.core.schema_check import check_migration_integrity, write_manifest
+
+    before = check_migration_integrity()
+    changed = [p for p in before if "content changed" in p]
+    if changed:
+        typer.echo(
+            "Refusing to re-record: these migrations changed after they were "
+            "first recorded, which is the condition the manifest exists to "
+            "detect. Add a corrective migration instead, or pass them through "
+            "review deliberately.",
+            err=True,
+        )
+        for problem in changed:
+            typer.echo(f"  {problem}", err=True)
+        raise typer.Exit(code=1)
+    _echo({"recorded": sorted(write_manifest())})
 
 
 if __name__ == "__main__":
