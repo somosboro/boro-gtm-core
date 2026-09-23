@@ -10,16 +10,16 @@ These describe the system **as built**.
 | [SCORING.md](SCORING.md) | Scoring models, percentile convention, confidence, ranking, both score modes |
 | [DESIGN_NOTE_market_gtm_profiles.md](DESIGN_NOTE_market_gtm_profiles.md) | Why `market_gtm_profiles` was removed and where GTM context lives instead |
 
-## M2 design (not implemented)
+## M2 — Company Discovery (implemented)
 
 | Document | What it covers |
 | --- | --- |
 | [M2_COMPANY_DISCOVERY_DESIGN.md](M2_COMPANY_DISCOVERY_DESIGN.md) | Identity anchors vs projections, provider versioning and capability, the attribute registry, entity resolution, run lifecycle, domain policy, temporal relationships |
-| [M2_SCHEMA_GRAPH.md](M2_SCHEMA_GRAPH.md) | Proposed table graph, ownership, cardinality and indexes |
-| [M2_ACCEPTANCE_CRITERIA.md](M2_ACCEPTANCE_CRITERIA.md) | Scenarios M2 must satisfy before it is considered done |
-| [M2_ADRS.md](M2_ADRS.md) | Decisions taken during M2 design, including revision-2 corrections |
+| [M2_SCHEMA_GRAPH.md](M2_SCHEMA_GRAPH.md) | The table graph as built: ownership, cardinality and indexes |
+| [M2_ACCEPTANCE_CRITERIA.md](M2_ACCEPTANCE_CRITERIA.md) | The scenarios M2 satisfies, each naming the test that executes it |
+| [M2_ADRS.md](M2_ADRS.md) | 34 decision records, including every correction found while implementing |
 
-The design is at **revision 3**.
+The design is at **revision 6**, and the code implements it.
 
 * **Revision 1 → 2** corrected internal contradictions: an impossible
   provider-record constraint, append-only tables that required updates,
@@ -29,11 +29,17 @@ The design is at **revision 3**.
   versus truncatable projections, concurrent resolution-chain roots, raw-payload
   fidelity, providers without stable external ids, temporal relationships, and
   a typed attribute registry in place of untyped EAV.
+* **Revision 3 → 4** removed the last two sources of non-determinism from
+  projections and made cross-entity supersession unrepresentable.
+* **Revision 4 → 5** put the canonicalization contract into version identity
+  and made market presence temporal.
+* **Revision 5 → 6** records what *building* it proved: thirteen defects the
+  specification could not have revealed on paper, from a resolvability gate
+  that a later pipeline stage silently overwrote, to a collision flag stored on
+  an append-only table where it could never be set.
 
 Superseded reasoning is retained in the ADRs rather than deleted, so the trail
 from each contradiction to its resolution stays readable.
-
-No M2 code, migrations or tables exist in this repository.
 
 ## `implementation-pack/` — preserved source material
 

@@ -2,6 +2,81 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] — M2 Company Discovery and Entity Resolution
+
+**M2.** Given noisy, overlapping, partially wrong records from several
+providers, maintain a defensible registry of commercial organizations with
+traceable evidence for every claim. M0/M1 are unchanged: their suite passes
+untouched and a discovery run writes nothing into them.
+
+### Added
+
+* **Four-tier storage.** A durable identity anchor (`companies`, never
+  truncated), append-only evidence (provider entities, versions, byte bodies,
+  sightings, normalizations, claims, resolution decisions), truncatable derived
+  projections keyed only by natural keys, and configuration/operational tables.
+* **Provider abstraction** with three declared identity capabilities —
+  `NATIVE_EXTERNAL_ID`, `DERIVED_STABLE_KEY`, `CONTENT_ONLY` — and a versioned,
+  per-provider canonicalization strategy that participates in version identity.
+  Three **fixture** adapters exercise all three, one per media type. **No
+  production provider has been selected or implemented**, and no shipped
+  adapter can reach the network.
+* **Versioned attribute registry** (12 attributes) defining value kind, type,
+  units, permitted fact types, cardinality, conflict and projection strategy.
+  Typed shadows are derived by a single extractor, so a claim's JSON value and
+  its indexed shadow cannot disagree.
+* **Entity resolution** in three tiers — deterministic identity-domain match,
+  weighted candidate scoring, new identity — with an `AMBIGUOUS` review queue
+  that creates and merges nothing. Chains are linear by construction: two
+  partial unique indexes, a composite self-FK and a CHECK make a second root,
+  a fork, a cross-entity supersession and a self-supersession unrepresentable.
+* **Deterministic projections.** Every derived table rebuilds byte-identically
+  from evidence alone, reads no clock, and cites the claim ids behind each row.
+* **Temporal history** for market presence and relationships: intervals, not
+  overwrites. Provider silence never closes an interval; only a positive
+  assertion or a retraction does.
+* **M1 firewall.** Discovery counts are provider-biased and are not market
+  density. There is no promotion path; the one named function raises 501. A
+  test asserts M0/M1 row counts are identical across a full discovery run.
+* 19 read/write API paths (46 total), a `discovery` CLI group, and a
+  PostgreSQL `SKIP LOCKED` job queue.
+
+### Changed
+
+* `tests/integration/test_end_to_end.py::test_no_m2_tables_exist` becomes
+  `test_no_m3_tables_exist`: `companies` is now legitimately present as M2's
+  identity anchor, while people, outbound and CRM tables remain forbidden.
+
+### Design corrections found by implementing the design
+
+Revision 6 of `docs/M2_COMPANY_DISCOVERY_DESIGN.md` records thirteen defects
+that building the specification exposed in it. The consequential ones:
+
+* The gate on canonical writes could not be the run's `status` column, because
+  `normalize_run` overwrites it — a failed fetch was laundered into a
+  resolvable run by normalizing it. The gate is now the durable
+  `fetch_completed_at` (M2-ADR-031).
+* `provider_entities.identity_collision` was specified as stored state on an
+  append-only table, so it could never be set once the second version arrived.
+  It was always `false` and both branches reading it were dead code. Collision
+  is now a derived predicate, and it blocks **creation** as well as matching —
+  the previous condition let a colliding key mint a company (M2-ADR-034).
+* The domain identity policy was enforced only on the read path, so the
+  projection stored `IDENTITY` for shared hosting domains (M2-ADR-032).
+* A record the adapter could not interpret aborted the whole page and discarded
+  the raw evidence of every record after it (M2-ADR-033).
+* Nullable `JSONB` columns stored Python `None` as the JSON value `null` rather
+  than SQL `NULL`, making an absence claim unrepresentable under its own CHECK
+  constraint.
+* A run's versions were attributed through the query that first created them,
+  so a second run over unchanged records resolved nothing and a run that died
+  after fetching stranded its evidence for good. Attribution now goes through
+  `provider_record_sightings`, which is what that table is for — and with that
+  fixed, two further defects became reachable: a re-run reported `created`
+  having created nothing, and it appended a duplicate set of claims.
+
+Test count is now 402 (283 M0/M1, unchanged; 119 new for M2).
+
 ## [0.1.1] — 2026-09-22
 
 Packaging fix. No behavioural change to the engine.

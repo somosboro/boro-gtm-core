@@ -100,5 +100,47 @@ jobs:
           print(f\"reference reproduction exact: delta={c['max_score_delta']} mismatches=0\")
           "
 
+      - name: M1 fingerprint before discovery
+        run: python -m boro_gtm.cli discovery firewall > /tmp/m1_before.json
+
+      - name: Seed discovery registry and fixture providers
+        run: python -m boro_gtm.cli discovery seed
+
+      - name: Discovery run against fixtures (no network)
+        run: |
+          python -m boro_gtm.cli discovery run \
+            --provider fixture_json_directory \
+            --fixture ./data/fixtures/discovery_sample.json --market DE \
+            | python -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          assert d['status'] == 'COMPLETED', d
+          assert d['record_errors'] == 0, d
+          print(f\"discovery OK: {d['entities']} entities, {d['claims']} claims\")
+          "
+
+      - name: Projections rebuild byte-identically
+        run: |
+          python -m boro_gtm.cli discovery project > /tmp/proj1.json
+          python -m boro_gtm.cli discovery project > /tmp/proj2.json
+          python -c "
+          import json
+          a = json.load(open('/tmp/proj1.json'))['content_digests']
+          b = json.load(open('/tmp/proj2.json'))['content_digests']
+          assert a == b, (a, b)
+          print('projection rebuild is deterministic')
+          "
+
+      - name: M1 is untouched by discovery
+        run: |
+          python -m boro_gtm.cli discovery firewall > /tmp/m1_after.json
+          python -c "
+          import json
+          before = json.load(open('/tmp/m1_before.json'))
+          after = json.load(open('/tmp/m1_after.json'))
+          assert before == after, {k: (before[k], after[k]) for k in before if before[k] != after[k]}
+          print('M1 firewall holds: every protected table unchanged')
+          "
+
       - name: Tests
         run: pytest -q

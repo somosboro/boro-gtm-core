@@ -13,11 +13,13 @@ measured, and tell the difference between *bad* and *unknown*.
 > | --- | --- | --- |
 > | **M0** | Market Intelligence Foundation | **Implemented** |
 > | **M1** | Contextual Market Intelligence | **Implemented** |
-> | M2 | Company Discovery + Entity Resolution | Designed, **not implemented** |
+> | **M2** | Company Discovery + Entity Resolution | **Implemented** |
 > | M3+ | Operational research, qualification, experiments, revenue | Roadmap only |
 >
-> There is no company discovery, scraping, enrichment, outbound or CRM code in
-> this repository. M2 exists as [design documents](docs/) only.
+> M2 discovers and resolves **companies**. There is no people, enrichment,
+> outbound or CRM code in this repository. The three provider adapters that
+> ship are **fixtures**: they read local files, no production provider has been
+> selected, and no test or adapter can reach the network.
 
 ---
 
@@ -232,7 +234,7 @@ existing snapshot and writes nothing.
 
 ## API
 
-All endpoints under `/api/v1`; OpenAPI at `/api/v1/openapi.json`. 27 operations.
+All endpoints under `/api/v1`; OpenAPI at `/api/v1/openapi.json`. 46 paths, 47 operations.
 
 **Market intelligence** — `/health`, `/market-intelligence/snapshots[/{key}]`,
 `/markets`, `/markets/{iso2}`, `/markets/{iso2}/observations`,
@@ -246,6 +248,22 @@ All endpoints under `/api/v1`; OpenAPI at `/api/v1/openapi.json`. 27 operations.
 **Strategy and context (M1)** — `/verticals`, `/icps`, `/offers`, `/channels`,
 `/markets/{iso2}/verticals[/{vertical_key}]`, `/research-gaps`,
 `POST /contextual-rankings`, `POST /research-gaps/{id}/status`
+
+**Companies (M2)** — `/companies[/{id}]`, `/companies/{id}/claims`,
+`/companies/{id}/locations`, `/companies/{id}/market-presences`,
+`/companies/{id}/verticals`, `/companies/{id}/relationships`
+
+**Discovery and resolution (M2)** — `/discovery-providers`,
+`/attribute-registry`, `/discovery-runs[/{id}]`, `/discovery-runs/{id}/queries`,
+`/discovery-runs/{id}/versions`, `/provider-entities/{id}/versions`,
+`/provider-entities/{id}/resolution-chain`,
+`/entity-resolution/decisions`, `/entity-resolution/ambiguous`,
+`POST /entity-resolution/decisions`, `/projections/runs`,
+`POST /projections/rebuild`
+
+Every claim carries `availability`, `fact_type` and `confidence` separately,
+and names both the provider record version it came from and the resolution
+decision that attributed it.
 
 One error shape throughout:
 
@@ -341,7 +359,7 @@ infrastructure:
 ```
 Market Intelligence                      ← M0  implemented
 Market × Vertical × ICP × Channel × Ticket ← M1  implemented
-Company Discovery                        ← M2  designed, not implemented
+Company Discovery                        ← M2  implemented
 Operational Research                     ← M3  roadmap
 Evidence                                 ← M3  roadmap
 Explainable Qualification                ← M4  roadmap
@@ -351,13 +369,16 @@ Pipeline / Revenue                       ← M7  roadmap
 Market Learning                          ← M8  roadmap
 ```
 
-Only M0 and M1 are implemented. Everything below them is design or intent.
+M0, M1 and M2 are implemented. Everything below them is design or intent.
 
 A boundary already designed for: **company discovery counts must never silently
 become factual vertical market density.** Provider coverage, indexing and query
 strategy introduce bias, so discovery output may only ever enter M1 as a
 `PROXY` carrying methodology, provider, query definition, retrieval date and
-calibration. See [the M2 design](docs/M2_COMPANY_DISCOVERY_DESIGN.md).
+calibration. That promotion path is **not implemented**: the one function
+named for it raises `501 DENSITY_PROMOTION_NOT_IMPLEMENTED`, and a test asserts
+M0/M1 row counts are byte-identical before and after a full discovery run. See
+[the M2 design](docs/M2_COMPANY_DISCOVERY_DESIGN.md).
 
 ## Documentation
 
@@ -365,7 +386,8 @@ calibration. See [the M2 design](docs/M2_COMPANY_DISCOVERY_DESIGN.md).
   the percentile convention, native-recalculation honesty, evidence semantics
   and ranking ties
 * [Scoring reference](docs/SCORING.md)
-* [M2 design](docs/M2_COMPANY_DISCOVERY_DESIGN.md) ·
+* [M2 design](docs/M2_COMPANY_DISCOVERY_DESIGN.md) — revision 6 records the
+  thirteen defects that implementing revision 5 exposed in it ·
   [M2 schema graph](docs/M2_SCHEMA_GRAPH.md) ·
   [M2 acceptance criteria](docs/M2_ACCEPTANCE_CRITERIA.md) ·
   [M2 ADRs](docs/M2_ADRS.md)

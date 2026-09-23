@@ -1,11 +1,12 @@
 # M2 — Architecture Decision Records
 
-**Status:** design only, revision 4. None is implemented. Numbered in their own
+**Status:** revision 5 (final). Implementation authorized. None is implemented. Numbered in their own
 `M2-` series so they cannot be confused with the accepted ADR-001 … ADR-020
 governing shipped code.
 
 M2-ADR-001 … 009 were written for revision 1, 010 … 017 for revision 2,
-018 … 023 for revision 3, and 024 … 027 for revision 4. Superseded decisions are marked and cross-referenced;
+018 … 023 for revision 3, 024 … 027 for revision 4, and 028 … 030 for
+revision 5. Superseded decisions are marked and cross-referenced;
 originals are retained rather than rewritten, so the reasoning trail survives.
 
 ---
@@ -808,3 +809,297 @@ every record it touches.
   question 9, and retained bodies are what make re-canonicalization possible.
 * The strategy is stamped on the version, so a hash computed under an old
   strategy stays interpretable after the strategy changes.
+
+
+---
+
+# Revision 5 decisions
+
+## M2-ADR-028 — The canonicalization contract is part of version identity
+
+**Status:** Accepted · resolves invariant 13
+
+### Context
+M2-ADR-027 made canonicalization per-provider and versioned, stamping
+`canonicalization_strategy` and `canonicalization_version` on every version. But
+version identity remained `(provider_entity_id, canonical_payload_hash)`.
+
+A canonical hash is only meaningful relative to the algorithm that produced it,
+so that key was under-specified in two directions:
+
+* a strategy migration might **not** produce a new version, if the new algorithm
+  happened to yield the same digest — contradicting ADR-027's promise that a
+  strategy change is a visible, dated event;
+* two different strategies colliding on one hash would be **silently merged**
+  into one version, making the stored strategy stamp false for at least one of
+  them.
+
+### Decision
+```sql
+UNIQUE (provider_entity_id,
+        canonicalization_strategy,
+        canonicalization_version,
+        canonical_payload_hash)
+```
+
+| Same entity, and… | Result |
+| --- | --- |
+| same strategy + version, same semantic payload | No new version; sighting recorded |
+| same strategy + version, semantic mutation | New version |
+| different strategy or version | **Distinct version**, even if the hash is equal |
+
+### Consequences
+* A strategy migration is guaranteed to produce new versions, at the database
+  level rather than by convention.
+* Historical versions stay interpretable: each carries the contract under which
+  its hash was computed, so an old digest is never re-read under a newer
+  algorithm.
+* Retained bodies (ADR-026) remain what makes re-canonicalization possible.
+
+---
+
+## M2-ADR-029 — Market presence is temporal
+
+**Status:** Accepted · extends M2-ADR-002 and M2-ADR-021 · resolves invariant 14
+
+### Context
+Revision 4 fixed temporality for relationships but left
+`company_market_presences` timeless, so "we no longer operate in Ireland" was
+unsayable. Carrying that as an open question was acceptable while presence was
+notional; it is not acceptable once presence is a durable projection that M1
+contexts and M3 research both consume.
+
+### Decision
+Presence follows the relationship pattern exactly: an append-only claim shape
+carrying `valid_from` / `valid_to` / `assertion`, a deterministic interval
+projection, and a `current_company_market_presences` view applying
+`CURRENT_DATE`.
+
+The projection key is
+`(company_id, market_id, presence_type, effective_from)` — the interval start is
+**in the key**, so a company that leaves a market and later re-enters has two
+rows rather than one overwritten row. Re-entry is a new interval, not a
+correction.
+
+A presence-type change (`SERVES_REMOTELY` → `BRANCH`) closes one interval and
+opens another; it is never an in-place edit, which would destroy the history of
+how the market was previously served.
+
+**Silence is not exit.** An `effective_to` is written only from a claim that
+positively asserts an end, or from a human decision. A provider that stops
+returning a company has said nothing about that company — it may have changed
+its index, its coverage or simply failed.
+
+### Consequences
+* Enter, exit, re-enter and presence-type change are all representable without
+  `UPDATE`.
+* `?as_of=DATE` reproduces exactly what the current view returned on that day.
+* The "absence of evidence is not evidence of absence" rule now holds in M2
+  exactly as it holds in M0, where a missing value never becomes a zero.
+
+---
+
+## M2-ADR-030 — The rebuild contract is row-set equality; digests are telemetry
+
+**Status:** Accepted · refines M2-ADR-024 · resolves invariant 15
+
+### Context
+M2-ADR-024 illustrated the rebuild equality check with
+`md5(string_agg(t::text, ...))`. Convenient for eyeballing a table by hand, but
+unfit as a durable contract: `::text` rendering is PostgreSQL-version-dependent,
+and MD5 is unsuitable for anything that must survive.
+
+### Decision
+* **The contract is exact normalized row-set equality.** Acceptance tests
+  compare the rows of two rebuilds directly, not a hash of them — so a failure
+  reports *which row differs*, not merely that something did.
+* **A digest exists separately as operational telemetry**, computed as SHA-256
+  over a canonical row serialization and recorded per table per rebuild in
+  `projection_runs`, so production drift is detectable without storing a second
+  copy of the data.
+* Nothing in the domain or on the wire may depend on any particular digest
+  algorithm.
+
+### Consequences
+* Determinism failures are diagnosable, not just detectable.
+* The digest algorithm can change without touching the contract.
+* The canonical serialization reuses M0's discipline for snapshot identity
+  rather than inventing a second one.
+
+
+---
+
+## M2-ADR-031 — The gate on canonical writes is a durable fact, not a status column
+
+**Status:** accepted (revision 6, found during implementation)
+
+### Context
+
+Revision 5 gated canonical writes on `discovery_runs.status ∈ {FETCHED,
+NORMALIZING, RESOLVING}`. An acceptance test for "a partial fetch writes
+nothing canonical" passed when run against a freshly failed run and *failed*
+when the pipeline ran normally, because `normalize_run` sets
+`status = NORMALIZING`. Normalizing a failed run therefore promoted it into the
+resolvable set. The guard protected against nothing that the pipeline itself
+did not undo one step later.
+
+This is the general failure mode of gating on a mutable status column: the
+column is owned by whichever stage last wrote it, so a guard reading it trusts
+every later stage to preserve a meaning it never agreed to.
+
+### Decision
+
+`discovery_runs.fetch_completed_at` is set **only** when a fetch reaches its
+end without raising. It is never cleared and never set by another stage. The
+resolvability guard reads it, not `status`.
+
+`RESOLVABLE_STATUSES` is renamed `POST_FETCH_STATUSES` and demoted to
+documentation, so no future reader mistakes it for the guard.
+
+The same reasoning applies to the resolution race: a worker that mints a
+company and then loses the race on `uq_resolution_root` deletes that company on
+the conflict path. Its existence was speculative and uncommitted, so nothing
+could reference it; leaving it behind would put an identity in the registry
+that no evidence and no decision points at.
+
+### Consequences
+
+* An incomplete fetch cannot be laundered into a complete one by any
+  subsequent stage.
+* `status` is free to be purely descriptive, which is what it is good at.
+* A losing racer leaves no trace: one entity, one company, one decision.
+
+---
+
+## M2-ADR-032 — The domain identity policy is enforced where the projection is written
+
+**Status:** accepted (revision 6, found during implementation)
+
+### Context
+
+§8 states that a shared hosting domain (`wixsite.com`, `business.site`, …)
+never carries identity. Revision 5 enforced this in `_deterministic_match` —
+the read path. The projection was free to write `domain_role = 'IDENTITY'` for
+such a domain, and did.
+
+Nothing merged incorrectly, because the only reader re-applied the policy. That
+is precisely the problem: the invariant held by convention across every future
+reader rather than by construction in the stored data. The second reader to
+forget would produce a false merge, and the stored data would have justified it.
+
+### Decision
+
+The policy is applied at write time, in two places:
+
+1. `write_claims_for_candidate` authors the domain claim with
+   `role = IDENTITY` only when `is_identity_domain` holds, and `GROUP`
+   otherwise.
+2. `_project_domains` applies the same test again, regardless of what the claim
+   asserted, before writing `company_domains`.
+
+The projection is the authoritative gate; the claim-level test only keeps the
+evidence honest.
+
+### Consequences
+
+* `company_domains` cannot contain a blocklisted domain marked `IDENTITY`,
+  whatever a provider claimed.
+* The domain still appears as `GROUP`, so it remains a weak corroborating
+  signal and is not silently discarded.
+* A future reader that forgets the policy cannot produce a false merge from
+  stored data, because the stored data no longer supports one.
+
+---
+
+## M2-ADR-033 — A record that cannot be interpreted is still evidence
+
+**Status:** accepted (revision 6, found during implementation)
+
+### Context
+
+`ingest_record` ran the adapter's pure stage — parse, normalize, canonicalize —
+before touching the database. A `normalize` that raised therefore aborted the
+record, and because `fetch` wrapped the whole page in one `try`, it also
+discarded every record after it on that page. One malformed row cost an entire
+paid page of raw evidence.
+
+Worse, when the record *was* stored, resolution re-derived the candidate by
+calling `normalize` again, which raised again.
+
+### Decision
+
+Normalization failure is data, not an exception path:
+
+* `ingest_record` catches it, stores the bytes, the parsed payload and the
+  version as usual, and writes `provider_record_normalizations.error` with an
+  empty normalized payload.
+* `fetch` isolates each record in a savepoint, so a record that cannot be
+  stored at all costs only itself; the count surfaces as
+  `FetchReport.record_errors`.
+* `_candidate_from_version` returns an empty candidate for a version already
+  known to be uninterpretable, rather than re-raising.
+* Resolution parks an empty candidate as `AMBIGUOUS` with
+  `reason = no_identifying_attributes` instead of minting an anonymous company.
+
+### Consequences
+
+* Raw evidence survives adapter bugs, and a later `normalizer_version` can
+  re-derive it — which is the entire point of storing bytes.
+* A company is never created from a record nobody can read.
+* The failure is visible: it is a stored error string and a counter, not a
+  silently dropped row.
+
+
+---
+
+## M2-ADR-034 — Derived-key collision is a predicate, not a column
+
+**Status:** accepted (revision 6, found during implementation)
+
+### Context
+
+Revision 5 specified `provider_entities.identity_collision` as stored state,
+set when more than one version under a derived entity showed materially
+disagreeing identity fields.
+
+Implementing it exposed a contradiction with two other accepted decisions.
+`provider_entities` is append-only (M2-ADR-018's rejection trigger), and a
+collision becomes visible only when the **second** version lands — after the
+entity row exists. The flag could therefore never be set at the moment it
+became true. In the shipped code it was written once, as `false`, and the two
+branches that read it were unreachable. The guarantee A10 promised did not
+exist.
+
+### Decision
+
+Collision is computed, not stored:
+
+```
+has_identity_collision(entity) :=
+    entity.external_id_kind = 'DERIVED'
+    AND count(DISTINCT normalize_name(legal_name)) > 1
+        over the entity's successful normalizations
+```
+
+Only `DERIVED` entities qualify. A native id is the provider's own assertion
+that these payloads describe one object — disagreeing names there are a rename
+or a data error, not an identity collision. A content hash makes every
+differing payload its own entity, so a collision is unrepresentable.
+
+A colliding entity resolves to `AMBIGUOUS` **unconditionally**: it may neither
+auto-match nor create. Revision 5's implementation only blocked matching, so an
+entity with no retrieval candidates fell through and created a company —
+minting a canonical identity for whichever of the two firms happened to be
+queried first, which is exactly the false-identity outcome A10 exists to
+prevent.
+
+### Consequences
+
+* The guarantee is enforced by the code path that resolves, not by a flag some
+  earlier writer had to remember to set.
+* It costs one indexed query per resolution of a derived entity, which is the
+  same order as the candidate retrieval already performed.
+* A future collision signal (disagreeing postal codes, registry ids) extends
+  the predicate without a migration.
+* The predicate is monotone in evidence: it can only become true as versions
+  accumulate, and it is re-evaluated on every resolution rather than frozen.

@@ -1,0 +1,20 @@
+[
+  {"external_id": "FX-001", "payload": {
+    "legal_name": "Schmidt Kältetechnik GmbH",
+    "website_domain": "schmidt-kaelte.de",
+    "trading_names": ["Schmidt Kälte"],
+    "employees": {"min": 40, "max": 60},
+    "founded": 1994,
+    "legal_form": "GmbH",
+    "categories": ["refrigeration"],
+    "location": {"country": "DE", "city": "München", "postal_code": "80331"}}},
+  {"external_id": "FX-002", "payload": {
+    "legal_name": "Nowak Elektro Sp. z o.o.",
+    "website_domain": "nowak-elektro.pl",
+    "employees": {"min": 8, "max": 12},
+    "location": {"country": "PL", "city": "Kraków"}}},
+  {"external_id": "FX-003", "payload": {
+    "legal_name": "Bäckerei Krause",
+    "website_domain": "krause.wixsite.com",
+    "location": {"country": "DE", "city": "Leipzig"}}}
+]

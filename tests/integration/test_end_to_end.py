@@ -107,8 +107,13 @@ def test_full_pipeline_from_empty_database(session) -> None:
     )
 
 
-def test_no_m2_tables_exist(session) -> None:
-    """M1 must not leak company/people/outbound persistence (06 — F)."""
+def test_no_m3_tables_exist(session) -> None:
+    """Scope guard: M2 persists companies and nothing downstream of them.
+
+    People, outbound and CRM synchronisation are M3. ``companies`` is no
+    longer forbidden — it is M2's identity anchor — but everything that would
+    hang off a contact still is.
+    """
     rows = session.execute(
         text(
             "SELECT table_name FROM information_schema.tables "
@@ -116,7 +121,8 @@ def test_no_m2_tables_exist(session) -> None:
         )
     ).scalars().all()
     forbidden = {
-        "companies", "people", "contacts", "emails", "campaigns",
-        "messages", "replies", "sequences", "crm_sync", "opportunities",
+        "people", "contacts", "emails", "campaigns", "messages", "replies",
+        "sequences", "crm_sync", "opportunities", "email_accounts",
+        "inbox_messages", "person_claims",
     }
     assert forbidden.isdisjoint(set(rows))

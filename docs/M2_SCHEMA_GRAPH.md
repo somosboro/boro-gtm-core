@@ -1,6 +1,6 @@
 # M2 — Schema Graph
 
-**Status:** design only, revision 4. No migrations. Read alongside
+**Status:** design, revision 5 (final). Implementation authorized. No migrations. Read alongside
 [M2_COMPANY_DISCOVERY_DESIGN.md](M2_COMPANY_DISCOVERY_DESIGN.md).
 
 ---
@@ -61,8 +61,9 @@ different truncation rules.
                                    ▼
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║ VIEWS — may legitimately vary with wall-clock time                        ║
-║   current_company_relationships · company_relationships_bidirectional     ║
-║   company_claims_effective · current_entity_resolutions                   ║
+║   current_company_relationships · current_company_market_presences        ║
+║   company_relationships_bidirectional · company_claims_effective          ║
+║   current_entity_resolutions                                              ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
 ╔═══════════════════════════════════════════════════════════════════════════╗
@@ -117,10 +118,10 @@ Asserted by acceptance scenarios B3 and B3d–B3f.
 | Table | Owns | Cardinality | Key constraint |
 | --- | --- | --- | --- |
 | `discovery_providers` | Registry, capabilities, trust tier, `identity_capability`, `key_fields`, `key_algorithm_version` | — | `UNIQUE (provider_key)` |
-| `discovery_runs` | One execution in one M1 context, lifecycle state, `allow_partial_resolution` | provider 1:N | — |
+| `discovery_runs` | One execution in one M1 context, lifecycle state, `allow_partial_resolution`, and `fetch_completed_at` — the durable gate on canonical writes (M2-ADR-031) | provider 1:N | — |
 | `discovery_queries` | Exact query, params, cursor, page, result count | run 1:N | — |
-| `provider_entities` | Provider-side identity, `external_id_kind`, `identity_collision` | provider 1:N | **`UNIQUE (provider_id, provider_external_id)`** |
-| `provider_record_versions` | Immutable **semantic** observation: `parsed_payload`, `canonical_payload_hash`, `canonicalization_strategy` + `_version`, `retrieved_at` | entity 1:N · query 1:N | **`UNIQUE (provider_entity_id, canonical_payload_hash)`** |
+| `provider_entities` | Provider-side identity, `external_id_kind`, `key_algorithm_version`. Collision is derived, never stored (M2-ADR-034) | provider 1:N | **`UNIQUE (provider_id, provider_external_id)`** |
+| `provider_record_versions` | Immutable **semantic** observation: `parsed_payload`, `canonical_payload_hash`, `canonicalization_strategy` + `_version`, `retrieved_at` | entity 1:N · query 1:N | **`UNIQUE (provider_entity_id, canonicalization_strategy, canonicalization_version, canonical_payload_hash)`** |
 | `provider_record_bodies` | Distinct **byte** representations of one semantic version: `raw_body`, `raw_body_sha256`, `content_type`, `retrieved_at`, `discovery_query_id` | version **1:N** | **`UNIQUE (provider_record_version_id, raw_body_sha256)`** |
 | `provider_record_normalizations` | Normalizer output per version | version 1:N | `UNIQUE (version_id, normalizer_version)` |
 | `provider_record_sightings` | "Re-confirmed unchanged on date Y" | version 1:N | `UNIQUE (version_id, discovery_query_id)` |
@@ -137,7 +138,7 @@ Asserted by acceptance scenarios B3 and B3d–B3f.
 | `company_names` | Name variants and types | company 1:N | `UNIQUE (company_id, name_normalized, name_type)`; trigram index for retrieval |
 | `company_domains` | Domains and roles | company 1:N | **`UNIQUE (domain_normalized) WHERE domain_role = 'IDENTITY'`** |
 | `company_locations` | Physical/registered places only | company 1:N · market 1:N | `INDEX (market_id)` |
-| `company_market_presences` | Operating geography | company N:N market | `UNIQUE (company_id, market_id, presence_type)` |
+| `company_market_presences` | Operating geography with **validity intervals** — never a `now()`-filtered snapshot | company N:N market | PK `(company_id, market_id, presence_type, effective_from)` — interval start is in the key so leave-and-re-enter is two rows |
 | `company_verticals` | Vertical membership with evidence | company N:N vertical | `UNIQUE (company_id, vertical_id)` |
 | `company_relationships` | Effective, non-retracted relationships with **validity intervals** (`effective_from`, `effective_to`) — never a `now()`-filtered snapshot | company N:N | PK `(from_company_id, to_company_id, relationship_type)` |
 | `entity_resolution_heads` | O(1) head lookup cache | entity 1:1 | PK `provider_entity_id` |
@@ -195,6 +196,15 @@ keeps the density boundary enforceable.
 | **No surrogate keys** in the derived tier | A generated UUID differs on every rebuild |
 | `fk_supersedes_same_entity` **added** | Nothing previously stopped entity B superseding entity A's decision |
 
+## 5b. Changes in revision 5
+
+| Change | Reason |
+| --- | --- |
+| Version identity gains `canonicalization_strategy` + `_version` | A canonical hash is meaningless without the algorithm that produced it. Keying on the hash alone could silently merge two strategies, or fail to create a version on a strategy migration |
+| `company_market_presences` gains `effective_from` / `effective_to`, with the interval start in the key | A company must be able to leave a market, and to leave and re-enter |
+| `current_company_market_presences` view added | The date predicate belongs in a view |
+| `md5(string_agg(...))` demoted to telemetry | The contract is normalized row-set equality; the digest is SHA-256 over canonical row serialization, for drift detection only |
+
 ## 6. Tables removed or never created
 
 | Table | Fate | Reasoning |
@@ -211,8 +221,8 @@ keeps the density boundary enforceable.
 companies                      INDEX  (lifecycle_status) WHERE lifecycle_status <> 'ACTIVE'
 
 provider_entities              UNIQUE (provider_id, provider_external_id)
-                               INDEX  (identity_collision) WHERE identity_collision
-provider_record_versions       UNIQUE (provider_entity_id, canonical_payload_hash)
+provider_record_versions       UNIQUE (provider_entity_id, canonicalization_strategy,
+                                       canonicalization_version, canonical_payload_hash)
                                INDEX  (discovery_query_id)
                                INDEX  (provider_entity_id, retrieved_at DESC)
 provider_record_bodies         UNIQUE (provider_record_version_id, raw_body_sha256)
@@ -251,8 +261,10 @@ company_names                  UNIQUE (company_id, name_normalized, name_type)
                                INDEX  gin_trgm_ops (name_normalized)   -- retrieval only
 company_domains                UNIQUE (domain_normalized) WHERE domain_role = 'IDENTITY'
                                INDEX  (domain_normalized)              -- candidate lookup
-company_market_presences       UNIQUE (company_id, market_id, presence_type)
+company_market_presences       PRIMARY KEY (company_id, market_id, presence_type,
+                                            effective_from)
                                INDEX  (market_id, presence_type)
+                               INDEX  (effective_from, effective_to)
 company_verticals              UNIQUE (company_id, vertical_id)
 company_relationships          PRIMARY KEY (from_company_id, to_company_id, relationship_type)
                                INDEX  (effective_from, effective_to)   -- view predicate

@@ -85,7 +85,17 @@ _ALL_TABLES = (
     "market_competition_assessments, market_size_estimates, market_deep_dives, "
     "market_vertical_profiles, research_gaps, scoring_model_components, "
     "scoring_models, market_snapshots, markets, sources, verticals, icps, "
-    "offers, channels, market_categories"
+    "offers, channels, market_categories, "
+    # M2 discovery
+    "entity_resolution_heads, entity_resolution_candidates, "
+    "entity_resolution_decisions, company_relationship_claims, company_claims, "
+    "provider_record_sightings, provider_record_normalizations, "
+    "provider_record_bodies, provider_record_versions, discovery_queries, "
+    "provider_entities, discovery_runs, company_verticals, "
+    "company_relationships, company_profiles, company_names, "
+    "company_market_presences, company_locations, company_domains, "
+    "projection_runs, discovery_providers, discovery_jobs, companies, "
+    "attribute_definitions"
 )
 
 
@@ -148,3 +158,15 @@ def api_client(migrated_engine, database_url, monkeypatch):
 
     core_db.reset_engine()
     get_settings.cache_clear()
+
+
+# --- M2 fixtures -----------------------------------------------------------
+from tests.integration.conftest_m2 import (  # noqa: E402,F401
+    committed_sessions,
+    m2_session,
+    make_query,
+    now,
+    provider_csv,
+    provider_json,
+    provider_scrape,
+)

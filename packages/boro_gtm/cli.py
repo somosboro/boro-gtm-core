@@ -4,6 +4,10 @@
     python -m boro_gtm.cli market-intelligence recalculate \
         --snapshot MI-2026-09-21-V1 --model market-attractiveness:1.0
     python -m boro_gtm.cli strategy seed
+    python -m boro_gtm.cli discovery seed
+    python -m boro_gtm.cli discovery run --provider fixture_json_directory \
+        --fixture ./data/fixtures/discovery_sample.json
+    python -m boro_gtm.cli discovery project
 """
 
 from __future__ import annotations
@@ -22,8 +26,10 @@ from boro_gtm.core.logging import configure_logging
 app = typer.Typer(help="BoRo GTM Core — working codename", no_args_is_help=True)
 mi_app = typer.Typer(help="Market intelligence commands", no_args_is_help=True)
 strategy_app = typer.Typer(help="Strategy registry commands", no_args_is_help=True)
+discovery_app = typer.Typer(help="Company discovery commands", no_args_is_help=True)
 app.add_typer(mi_app, name="market-intelligence")
 app.add_typer(strategy_app, name="strategy")
+app.add_typer(discovery_app, name="discovery")
 
 
 def _bootstrap() -> None:
@@ -143,6 +149,131 @@ def version() -> None:
     from boro_gtm import __version__
 
     _echo({"name": get_settings().app_name, "version": __version__})
+
+
+
+# ---------------------------------------------------------------------------
+# Discovery (M2)
+# ---------------------------------------------------------------------------
+
+
+@discovery_app.command("seed")
+def discovery_seed() -> None:
+    """Seed the attribute registry and the fixture providers (idempotent)."""
+    _bootstrap()
+    from boro_gtm.discovery import seeds
+
+    with session_scope() as session:
+        summary = seeds.seed_all(session)
+    _echo(summary)
+
+
+@discovery_app.command("run")
+def discovery_run(
+    provider: str = typer.Option(..., help="Provider key, e.g. fixture_json_directory"),
+    fixture: Path = typer.Option(
+        ..., exists=True, readable=True,
+        help="JSON file holding the records this fixture provider will return.",
+    ),
+    market: str | None = typer.Option(None, help="M1 market ISO2 code for context."),
+    allow_partial: bool = typer.Option(
+        False, help="Permit canonical writes from a run that never completed its fetch."
+    ),
+) -> None:
+    """Fetch, normalize and resolve one run against a fixture provider.
+
+    No production provider exists, so this only ever reads a local file. The
+    network is never touched.
+    """
+    _bootstrap()
+    from sqlalchemy import select
+
+    from boro_gtm.discovery.domain.models import DiscoveryProvider
+    from boro_gtm.discovery.providers.base import RawRecord
+    from boro_gtm.discovery.providers.fixtures import FIXTURE_ADAPTERS
+    from boro_gtm.discovery.services import runs
+    from boro_gtm.market_intelligence.domain.models import Market
+
+    adapter_cls = FIXTURE_ADAPTERS.get(provider)
+    if adapter_cls is None:
+        raise typer.BadParameter(
+            f"Unknown fixture provider {provider!r}. "
+            f"Known: {', '.join(sorted(FIXTURE_ADAPTERS))}"
+        )
+
+    payload = json.loads(Path(fixture).read_text(encoding="utf-8"))
+    records = [
+        RawRecord(
+            body=json.dumps(item["payload"]).encode("utf-8"),
+            content_type=item.get("content_type", "application/json"),
+            native_external_id=item.get("external_id"),
+        )
+        for item in payload
+    ]
+
+    try:
+        with session_scope() as session:
+            row = session.scalar(
+                select(DiscoveryProvider).where(
+                    DiscoveryProvider.provider_key == provider)
+            )
+            if row is None:
+                raise GtmError(
+                    f"Provider {provider!r} is not seeded. Run: discovery seed"
+                )
+            market_id = None
+            if market:
+                market_id = session.scalar(
+                    select(Market.id).where(Market.iso2 == market.upper()))
+                if market_id is None:
+                    raise GtmError(f"No M1 market with iso2 {market!r}")
+
+            adapter = adapter_cls(records)
+            run = runs.create_run(session, row, market_id=market_id,
+                                  allow_partial_resolution=allow_partial)
+            report = runs.fetch(session, run, adapter, {"source": str(fixture)})
+            normalized = runs.normalize_run(session, run, adapter)
+            stats = runs.resolve_run(session, run, adapter)
+            _echo({
+                "run_id": str(run.id), "status": run.status,
+                "records": report.records,
+                "versions_created": report.versions_created,
+                "bodies_created": report.bodies_created,
+                "record_errors": report.record_errors,
+                "normalization_errors": report.normalization_errors,
+                "normalizations_added": normalized,
+                **stats,
+            })
+    except GtmError as exc:
+        typer.echo(f"{exc.code}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@discovery_app.command("project")
+def discovery_project(
+    triggered_by: str = typer.Option("cli", help="Recorded on the projection run."),
+) -> None:
+    """Rebuild every derived projection from evidence."""
+    _bootstrap()
+    from boro_gtm.discovery.services.projection import rebuild_projections
+
+    with session_scope() as session:
+        run = rebuild_projections(session, triggered_by=triggered_by)
+        _echo({
+            "projection_run_id": str(run.id),
+            "row_counts": run.row_counts,
+            "content_digests": run.content_digests,
+        })
+
+
+@discovery_app.command("firewall")
+def discovery_firewall() -> None:
+    """Print the M1 write fingerprint — row counts of every protected table."""
+    _bootstrap()
+    from boro_gtm.discovery.services.firewall import m1_write_fingerprint
+
+    with session_scope() as session:
+        _echo(m1_write_fingerprint(session))
 
 
 if __name__ == "__main__":

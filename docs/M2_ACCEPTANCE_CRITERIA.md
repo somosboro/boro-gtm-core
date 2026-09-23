@@ -1,6 +1,6 @@
 # M2 — Acceptance Criteria
 
-**Status:** design only, revision 4. These scenarios are specified *before*
+**Status:** revision 5 (final). Implementation authorized. These scenarios are specified *before*
 implementation, as M0/M1 were. None is implemented as a test yet.
 
 Each states a **Given / When / Then** and the invariant it protects. An
@@ -8,7 +8,8 @@ implementation is not done until every scenario passes against live PostgreSQL
 from an empty schema.
 
 Scenarios marked **[r2]** were added in revision 2, **[r3]** in revision 3 and
-**[r4]** in revision 4, each covering the invariants resolved in that revision.
+**[r4]** in revision 4 and **[r5]** in revision 5, each covering the
+invariants resolved in that revision.
 
 ---
 
@@ -73,6 +74,38 @@ second body.
 **Then** `canonical_payload_hash`, `parsed_payload`, sightings, decisions and
 claims are all unchanged, and the version still resolves to the same company.
 
+### A16 [r5] — Strategy and version participate in version identity
+**When** the schema is inspected
+**Then** the version uniqueness key is
+`(provider_entity_id, canonicalization_strategy, canonicalization_version,
+canonical_payload_hash)` — not the hash alone.
+
+### A17 [r5] — Same strategy, same payload → no new version
+**Given** entity `E` with a version under `JSON_CANONICAL_V1`
+**When** the identical semantic payload is ingested under the same strategy and
+version
+**Then** no new version is created and a sighting is recorded.
+
+### A18 [r5] — Same strategy, semantic mutation → new version
+**Given** the same entity and strategy
+**When** the semantic payload changes
+**Then** a new version is created under the same entity.
+
+### A19 [r5] — Different strategy version → distinct version even on hash equality
+**Given** entity `E` with a version whose `canonical_payload_hash = H` under
+strategy version `1`
+**When** the same payload is ingested under strategy version `2` and the
+canonicalization happens to produce the **identical hash `H`**
+**Then** a **second, distinct version** exists, differing only in
+`canonicalization_version`.
+*Protects:* the revision-4 key, under which a strategy migration could silently
+fail to create a version, or two strategies could be merged into one.
+
+### A20 [r5] — Historical versions remain interpretable
+**Given** versions written under two different strategy versions
+**Then** each carries the strategy and version under which its hash was
+computed, so an old digest is never re-interpreted under a newer algorithm.
+
 ### A13 [r4] — Canonicalization strategy is declared and stamped
 **Given** a JSON provider and a CSV provider
 **Then** each declares its own `canonicalization_strategy` and version; every
@@ -122,9 +155,13 @@ provider identifier.
 **Given** two genuinely different organizations producing the same derived key
 **When** their versions land under one provider entity with materially
 disagreeing non-key identity fields
-**Then** the entity is flagged `identity_collision = true` and resolution routes
-it to `AMBIGUOUS` — it may never auto-match.
+**Then** `has_identity_collision` holds for the entity and resolution routes it
+to `AMBIGUOUS` with `signals.reason = "identity_collision"` — it may neither
+auto-match **nor create**.
 *Protects:* a colliding derived key is weaker evidence than no key at all.
+*Revised in r6:* the predicate is derived rather than stored, and blocking
+creation is part of the guarantee — see revision 6, items 26–27.
+*Test:* `test_a_colliding_derived_key_blocks_auto_matching`.
 
 ### A11 [r3] — Changed key fields create a new entity, not a mutated one
 **Given** a `DERIVED_STABLE_KEY` entity whose participating fields change
@@ -201,9 +238,13 @@ effective `MERGED` / `SPLIT` decision.
 ### B3d [r4] — Two rebuilds at different wall-clock times are identical
 **Given** a populated registry with unchanged evidence
 **When** every derived projection is rebuilt, the clock is advanced (by days,
-across a relationship's `effective_to` boundary), and it is rebuilt again
-**Then** the per-table content digests from both rebuilds are **identical**.
-*Protects:* the determinism contract — a projection may not read the clock.
+across a relationship's and a presence's `effective_to` boundary), and it is
+rebuilt again
+**Then** the two rebuilds are compared by **exact normalized row-set equality**
+— row for row, not by hash — and are identical.
+*Protects:* the determinism contract. A digest is recorded in
+`projection_runs` as telemetry, but the assertion is on the rows, so a failure
+names the differing row (M2-ADR-030).
 
 ### B3e [r4] — A date-filtered view may legitimately change
 **Given** the same unchanged projection
@@ -652,6 +693,58 @@ claims
 **Then** it is byte-identical, containing exactly the effective, non-retracted,
 currently-valid relationships.
 
+## K. Temporal market presence
+
+### K1 [r5] — A company enters a market
+**Given** a claim asserting `OPERATES` in DE from 2024-01-01
+**Then** `company_market_presences` holds one row with
+`effective_from = 2024-01-01`, `effective_to IS NULL`, and the current view
+includes it.
+
+### K2 [r5] — A company exits a market
+**Given** a claim asserting the DE presence ended 2027-06-30
+**Then** the projection row carries `effective_to = 2027-06-30`; the current
+view excludes it after that date; and no row was deleted.
+
+### K3 [r5] — A company leaves and later re-enters
+**Given** DE presence from 2024-01-01 to 2026-01-01, then again from 2027-01-01
+**Then** **two** rows exist for the same `(company_id, market_id,
+presence_type)`, distinguished by `effective_from` — re-entry is a new
+interval, not a correction of the old one.
+*Protects:* the reason `effective_from` is part of the primary key.
+
+### K4 [r5] — Presence type changes are two intervals
+**Given** a company that served IE remotely from 2024-01-01 and opened a branch
+on 2026-06-01
+**Then** one row has `SERVES_REMOTELY` with `effective_to = 2026-06-01` and a
+second has `BRANCH` with `effective_from = 2026-06-01`; `presence_type` was
+never edited in place.
+
+### K5 [r5] — An as-of query reproduces prior state
+**Given** the history above
+**When** queried with `?as_of=2025-01-01`
+**Then** the answer equals what the current view returned on that date.
+
+### K6 [r5] — CURRENT_DATE influences only the view
+**Given** unchanged evidence
+**When** the projection is rebuilt before and after an `effective_to` boundary
+passes
+**Then** `company_market_presences` is row-for-row identical both times, while
+`current_company_market_presences` returns fewer rows after the boundary.
+
+### K7 [r5] — Provider silence never closes a presence
+**Given** a company with an open DE presence
+**When** a later discovery run returns no record for that company at all
+**Then** the presence remains open, no `effective_to` is written, and no
+negative claim is created.
+*Protects:* absence of evidence is not evidence of absence — the same rule that
+stops a missing value becoming a zero in M0.
+
+### K8 [r5] — The presence projection is rebuildable
+**Given** a populated registry
+**When** `company_market_presences` is truncated and rebuilt
+**Then** it is row-for-row identical, intervals included.
+
 ## Definition of done for M2
 
 * Every scenario above passes against live PostgreSQL from an empty schema.
@@ -675,3 +768,67 @@ currently-valid relationships.
 * B3d–B3i run in CI, including a rebuild with the clock advanced across a
   relationship boundary, so determinism is proven rather than asserted.
 * C11b is exercised through raw SQL, not only through application code.
+* A19 and K3 are exercised, since both encode a key that would otherwise look
+  redundant.
+
+
+---
+
+## Revision 6 — scenarios added after implementation
+
+Each of these exists because implementing revision 5 produced a wrong result
+that no revision-5 scenario would have caught. They are listed with the test
+that executes them; all run against real PostgreSQL and none touches the
+network.
+
+### L. Run completion is durable
+
+| # | Scenario | Expected | Test |
+| --- | --- | --- | --- |
+| L1 | A run fails mid-fetch, is then normalized, and resolution is requested | `PARTIAL_FETCH_NOT_RESOLVABLE` (409). Normalizing must not make an incomplete fetch resolvable | `test_a_partial_run_refuses_to_write_anything_canonical` |
+| L2 | The same run, created with `allow_partial_resolution=true` | Resolution proceeds | `test_partial_resolution_is_possible_only_when_explicitly_opted_into` |
+| L3 | A failed fetch | Evidence already fetched is retained; nothing canonical is written | `test_a_failed_fetch_keeps_the_evidence_it_paid_for` |
+| L4 | A page is fetched twice (interrupted run resumed) | No duplicate query row, version or body; second fetch creates nothing | `test_a_resumed_fetch_does_not_duplicate_evidence` |
+| L5 | One provider's run fails | Another provider's run is unaffected | `test_one_provider_failing_does_not_affect_another` |
+| L6 | A second run fetches the same unchanged records | It still *sees* them (via sightings) and reports `unchanged`, not `created`; no new decision and no duplicate claim is written | `test_a_second_run_sees_the_same_records_and_changes_nothing` |
+| L7 | A run fetches, then the worker dies before resolving | A later run over the same records resolves that evidence rather than stranding it | `test_a_run_that_died_before_resolving_can_be_resolved_later` |
+
+### M. Uninterpretable records
+
+| # | Scenario | Expected | Test |
+| --- | --- | --- | --- |
+| M1 | One record on a page cannot be normalized | The other records on that page are stored normally; the failure is recorded on `provider_record_normalizations.error` with a null payload | `test_a_bad_record_does_not_abort_normalization_of_the_rest` |
+| M2 | The same run is then resolved | The uninterpretable record resolves to `AMBIGUOUS`, not to a new company | same test |
+| M3 | A candidate with neither name nor domain | `AMBIGUOUS` with `reason = no_identifying_attributes`; no company is created | same test |
+
+### N. Domain policy is enforced on write
+
+| # | Scenario | Expected | Test |
+| --- | --- | --- | --- |
+| N1 | Two unrelated firms on `*.wixsite.com` | Two companies; the shared domain is projected as `GROUP` for both and `IDENTITY` for neither | `test_shared_platform_domain_does_not_merge_distinct_companies` |
+| N2 | The blocklist, exhaustively | No blocklisted host is an identity domain; a real domain is | `test_hosting_domains_never_carry_identity` |
+
+### O. Concurrency on real connections
+
+| # | Scenario | Expected | Test |
+| --- | --- | --- | --- |
+| O1 | Two workers resolve the same unresolved entity concurrently | One decision, one company, no orphan company from the loser; both callers see the same decision id | `test_two_workers_racing_to_create_produce_one_company` |
+| O2 | Two reviewers supersede the same head concurrently | One supersession survives; the loser is refused with `IntegrityError`, not silently re-parented | `test_two_reviewers_racing_to_supersede_produce_one_chain` |
+| O3 | A second worker resolves an already-resolved entity | Nothing new is written | `test_a_second_worker_finds_the_entity_already_resolved` |
+
+### P. Registry and null semantics
+
+| # | Scenario | Expected | Test |
+| --- | --- | --- | --- |
+| P1 | A `vertical` claim typed `FACT` | Rejected: a classification is an interpretation, never an observation | `test_registry_rejects_a_fact_type_the_attribute_does_not_allow` |
+| P2 | A `NOT_AVAILABLE` claim | Stored with SQL `NULL` value, null fact type, null confidence; satisfies `ck_company_claims_availability_consistency`; projects nothing | `test_a_not_available_claim_is_not_a_fact` |
+| P3 | The M1 firewall allowlist | Covers every M0/M1 table, including `observation_sources` | `test_the_firewall_watches_every_m1_evidence_table` |
+
+### Q. Derived-key collisions (A10, re-specified)
+
+| # | Scenario | Expected | Test |
+| --- | --- | --- | --- |
+| Q1 | Two firms with different names on one corporate domain, under a `DERIVED_STABLE_KEY` provider | One entity, two versions, `AMBIGUOUS` with `reason = identity_collision`, **zero** companies created | `test_a_colliding_derived_key_blocks_auto_matching` |
+| Q2 | The same name seen twice under one derived key | Not a collision; resolves normally | `test_one_derived_entity_with_a_renamed_record_is_not_a_collision` |
+| Q3 | Two different names under one **native** provider id | Not a collision: the provider asserted they are one object | `test_a_native_id_entity_cannot_collide_this_way` |
+| Q4 | An unchanged `AMBIGUOUS` entity re-resolved | No new decision; the chain does not grow | `test_re_resolving_an_ambiguous_entity_does_not_grow_the_chain` |
