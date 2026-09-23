@@ -2,6 +2,104 @@
 
 All notable changes to this project are documented here.
 
+## [0.2.1] — 2026-09-23
+
+**Hardening and bug-fix patch.** No new milestone, no new capability. Every
+change here came out of a full-system QA campaign that exercised the product
+through its public interfaces — API, CLI and a fresh database — rather than by
+re-running the existing suite. Seven defects were found, five of them only by
+using the thing rather than testing it.
+
+**M0 scoring semantics are unchanged. M1 semantics are unchanged. M2 domain
+semantics are unchanged apart from the bug fixes below. M3 remains roadmap
+only.** Reference reproduction is still exact: `max_score_delta` 0.0,
+`rank_mismatches` 0. `ENGINE_VERSION` is deliberately **not** bumped — it
+records which scoring engine produced a score run, no scoring code changed,
+and stamping a new engine version would assert a change that did not happen.
+
+### Fixed
+
+* **A database could report the correct Alembic revision while its physical
+  schema differed from the shipped migration.** `alembic current` and
+  `alembic heads` both said `0003_m2`, every migration was "applied", and
+  `GET /api/v1/discovery-runs` returned 500 because
+  `discovery_runs.fetch_completed_at` did not exist. An Alembic revision
+  records only *that* a migration ran, never what it did, so a migration
+  edited after it has already run leaves that database permanently
+  inconsistent with the code and nothing notices until a request touches the
+  missing column. Three guards now exist, none of which mutate anything:
+  * `boro_gtm.core.schema_check.check_schema` compares SQLAlchemy metadata
+    against the live PostgreSQL catalog — missing tables and columns, stale
+    extra columns, nullability drift, missing indexes and constraints.
+    Indexes and constraints are compared structurally, by the columns they
+    cover, never by name: a generated name over PostgreSQL's 63-character
+    limit is shortened with a hash suffix, and name comparison reported every
+    long foreign key as missing.
+  * The API verifies parity at startup and **refuses to serve** a database
+    that does not match the build. Booting into guaranteed 500s is worse than
+    one clear message at boot. `GTM_SCHEMA_CHECK_ON_STARTUP=false` opts out.
+  * `migrations/MANIFEST.json` records each migration's SHA-256, and a test
+    fails if a recorded migration's bytes change. This guards the cause
+    rather than the symptom: the fix for a shipped migration is a new
+    corrective migration, never an edit to the old one.
+* **Unhandled exceptions returned the bare string `Internal Server Error`**,
+  not the documented error envelope. A 500 now answers
+  `{"error": {"code": "INTERNAL_ERROR", ...}}`, with the detail logged and
+  never returned — a database error message can carry schema internals.
+  `/api/v1/health` reports schema parity, so drift shows as `degraded`
+  instead of as a healthy service that 500s.
+* **Four subresources returned `200 []` for a parent that does not exist**
+  (`/discovery-runs/{id}/queries`, `/discovery-runs/{id}/versions`,
+  `/provider-entities/{id}/versions`,
+  `/provider-entities/{id}/resolution-chain`). The company subresources
+  already returned 404, so the API contradicted itself, and a typo'd id was
+  indistinguishable from a run with no queries yet. All four now 404.
+* **Eight list endpoints silently returned `[]` for a filter value outside
+  its closed vocabulary** — `lifecycle_status`, `status`, `decision`,
+  `method`, `priority`, `kind` and `fact_type`. On the research-gap and
+  ambiguous-decision queues a typo read as "nothing to review", which is the
+  wrong answer to give quietly: those queues exist so work is not missed.
+  Invalid values are refused with 422 naming the field and listing what is
+  allowed. Matching is case-insensitive but returns the vocabulary's own
+  spelling, because these enums are not uniformly upper-case.
+* **The CLI printed a traceback for ordinary user mistakes.**
+  `market-intelligence import` on a non-JSON file raised
+  `json.JSONDecodeError` through Typer. It now reports the file, the reason
+  and the line and column. Non-UTF-8 bytes and a JSON document that is not an
+  object are refused the same way. `discovery run --market ZZ` reported
+  `INTERNAL_ERROR`, which is what a bug looks like; it and the unseeded
+  provider case are now `NOT_FOUND` with structured details.
+* **25 operations could return 404 without declaring it in OpenAPI**, and no
+  operation documented 500. A client generated from the document would treat
+  those bodies as undefined. `ErrorEnvelope` is now a component schema
+  applied centrally, so a route added later cannot quietly reintroduce the
+  gap.
+
+### Added
+
+* `python -m boro_gtm.cli db check` — schema parity and migration integrity,
+  with `--strict` also reporting columns the database has and the ORM does
+  not. CI runs it against the freshly migrated database before any data is
+  loaded.
+* An OpenAPI-driven API smoke matrix, generated from the document rather than
+  hand-picked, probing every GET with a valid id, an absent id and a
+  malformed one. It also asserts referential consistency: every id a list
+  endpoint returns must resolve on its detail route and on every subresource.
+  Verified for companies, discovery runs, provider entities and all 63
+  markets.
+* Concurrency tests that use genuinely separate connections. The previous
+  job-queue test claimed twice from one session, which proves nothing —
+  `FOR UPDATE SKIP LOCKED` only does work when another transaction holds the
+  lock. Three new tests hold one: one job and two workers, eight jobs drained
+  by two threads, and two workers ingesting the same provider record at once.
+* A pytest session guard. Two concurrent runs against one test database each
+  drop and recreate its schema underneath the other, which surfaces as
+  deadlocks and as failures that do not reproduce in isolation. The session
+  holds a PostgreSQL advisory lock and a second run exits immediately saying
+  so.
+
+Test count is now 474 (402 before this release), all passing, none skipped.
+
 ## [0.2.0] — 2026-09-23
 
 **M2 Company Discovery and Entity Resolution.**
@@ -194,6 +292,7 @@ M2 Company Discovery is **designed but not implemented**. There is no company
 table, provider adapter, discovery job, enrichment, people/buyer, campaign or
 CRM code in this release. See [`docs/M2_COMPANY_DISCOVERY_DESIGN.md`](docs/M2_COMPANY_DISCOVERY_DESIGN.md).
 
+[0.2.1]: https://github.com/somosboro/boro-gtm-core/releases/tag/v0.2.1
 [0.2.0]: https://github.com/somosboro/boro-gtm-core/releases/tag/v0.2.0
 [0.1.1]: https://github.com/somosboro/boro-gtm-core/releases/tag/v0.1.1
 [0.1.0]: https://github.com/somosboro/boro-gtm-core/releases/tag/v0.1.0
