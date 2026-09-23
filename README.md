@@ -146,9 +146,10 @@ A modular monolith with worker-ready boundaries — no microservices, no Kafka,
 no Kubernetes.
 
 ```
+── M0 / M1 · Market intelligence ─────────────────────────────────
 Source JSON
    ↓ canonical hash, schema + semantic validation
-Immutable MarketSnapshot          ← append-only, content-addressed
+Immutable MarketSnapshot           ← append-only, content-addressed
    ↓
 Market registry · Source catalog · Observations (typed, dated, sourced)
    ↓
@@ -159,6 +160,32 @@ ScoreRun → MarketScore → MarketScoreComponent
 Contextual run: market × vertical × ICP × offer × channel × ticket
    ↓
 score + confidence + coverage + explanations + research gaps
+
+   ↓ a chosen context decides where to look, and nothing more
+
+── M2 · Company discovery and entity resolution ──────────────────
+DiscoveryRun (provider × M1 context)  ← fixture adapters only;
+   ↓                                    no production provider exists
+ProviderEntity + ProviderRecordVersion
+   ↓                                  ← append-only; bodies byte-faithful
+Normalization (pure, versioned)
+   ↓
+Entity resolution ──→ AMBIGUOUS review queue (creates and merges nothing)
+   ↓
+Company                            ← canonical identity anchor,
+   ↓                                  durable, never truncated
+CompanyClaim (availability · fact_type · confidence · provenance)
+   ↓                                  append-only
+Deterministic projections: profile · names · domains · locations ·
+verticals · market presence · relationships   ← rebuilt from claims alone
+
+── M1 ⇄ M2 firewall ──────────────────────────────────────────────
+provider discovery counts   ≠   factual market density
+        (coverage- and query-biased)      (observed, dated, sourced)
+
+Nothing promotes M2 output into M1. The function named for it raises
+501, and the row counts of every M0/M1 table are asserted unchanged
+across a full discovery run.
 ```
 
 Snapshots are content-addressed by a **canonical** digest, so reindenting or
