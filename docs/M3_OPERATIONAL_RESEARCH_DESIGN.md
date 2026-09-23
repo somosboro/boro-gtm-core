@@ -1,6 +1,6 @@
 # M3 — Operational Research
 
-**Status:** design, revision 2. **Not implemented.** No M3 runtime code,
+**Status:** design, revision 3. **Not implemented.** No M3 runtime code,
 migrations or tables exist in this repository.
 
 **Milestone position.** M1 answers *which market × vertical × ICP × channel
@@ -100,7 +100,7 @@ schedule and cannot share a row.
 
 | Layer | Table | Identity | Answers |
 | --- | --- | --- | --- |
-| **A. Retrieval** | `research_fetch_events` | none — every retrieval is an event | *When did we look, and what happened?* |
+| **A. Retrieval** | `research_fetch_events` | none — every retrieval is an event | *When did we look, from where, and what happened?* |
 | **B. Bytes** | `research_artifact_bodies` | `UNIQUE (raw_body_sha256)`, global | *What exact octets exist?* |
 | **C. Semantics** | `research_artifacts`, joined by `research_artifact_derivations` | `(strategy, strategy_version, canonical_hash)` | *What does this mean, under which contract?* |
 | **D. Text** | `research_text_derivations` | `(body, text_policy_version)` | *What readable text do extractions and locators use?* |
@@ -217,11 +217,11 @@ Eleven failed attempts are eleven events with `body_id IS NULL`, which is how
 
 | Question | Answered by |
 | --- | --- |
-| Where did this claim come from? | `claim → link → extraction → text derivation → body → fetch event → source` |
+| Where did this claim come from? | The link names one extraction **and** one fetch event; composite FKs prove both name the same body, so the walk is single-valued |
 | What exact content was observed? | `research_artifact_bodies.raw_body` (or its hash after pruning) |
 | When did we retrieve it — every time? | `research_fetch_events`, one row per retrieval |
 | What did the source itself date? | `research_artifacts.source_published_at` + granularity, NULL when unstated |
-| What content type? | `research_fetch_events`, declared and sniffed |
+| What content type? | `research_fetch_events.declared_content_type`; sniffed type in `research_body_classifications` under a versioned classifier |
 | What extraction read it? | `research_extractions`, with model and prompt version |
 | Has the live page changed? | A later fetch event yielding a different body; a different artifact only if the change was semantic |
 | Which exact span supported the claim? | `claim_evidence_links.locator` (§8) |
@@ -443,10 +443,13 @@ observed facts filters `fact_type = 'FACT'` and gets a defensible set.
 **The walk is always possible:**
 
 ```
-claim → claim_evidence_links → research_extractions → research_text_derivations
-      → research_artifact_bodies → research_fetch_events → research_sources
-                                 ↘ research_artifact_derivations
-                                   → research_artifacts  (semantic identity)
+claim → claim_evidence_links ─┬─▶ research_extractions
+                              │       → research_text_derivations → body
+                              ├─▶ research_fetch_events → research_sources
+                              └─▶ research_artifacts   (semantic identity)
+
+every hop single-valued; composite FKs force the extraction and the fetch
+event to name the same body
 ```
 
 ---
@@ -596,7 +599,7 @@ selector does; the selector survives copy edits better. Keeping both is cheap.
 ## 9. Extraction, including model-assisted
 
 An extraction is a row in `research_extractions`: *this extractor read that
-artifact version and produced these observations*.
+text derivation and produced these observations*.
 
 Every extraction stamps:
 
@@ -630,8 +633,8 @@ produces no claim at all — it produces a research gap and a review candidate.
 ### 9.2 Re-extraction
 
 Re-extraction under a new `extractor_version` is a first-class operation. It
-creates a **new** extraction row against the **same** artifact version, and new
-claims. It never rewrites the old extraction or the old claims. The
+creates a **new** extraction row against the **same** text derivation, and new
+claims where the value differs. It never rewrites the old extraction or the old claims. The
 `operational_research_profiles` projection (§13) prefers the newest extractor
 version by precedence rule, so the current view updates while history survives
 intact — the same shape M2 uses for superseded resolution decisions.
@@ -678,14 +681,49 @@ does not delete the loser.
 
 ---
 
+### 10.1 Independence, and why it is deliberately strict
+
+Corroboration is not "we found it twice". Two lineages corroborate
+independently only when **both** the publisher and the document differ:
+
+| Situation | Independent? |
+| --- | --- |
+| The same page mirrored at two URLs | No — one document, one publisher |
+| `/about` and `/services` on the company site both saying it | No — one publisher saying it twice |
+| Company website **and** a government registry | **Yes** |
+| Company website **and** a third-party scrape of the same exact text | No — identical canonical content is the same document copied, not a second witness |
+
+The last row is why the document test exists. A scraper republishing a
+sentence verbatim yields the *same artifact*, because artifact identity is the
+canonical content hash, so "it is all over the internet" cannot masquerade as
+corroboration.
+
+The policy under-counts rather than over-counts: it will occasionally refuse
+two genuine witnesses who happened to publish identical text. Under-counting is
+recoverable; over-counting inflates confidence in a claim resting on a single
+source, which is the failure this whole system exists to prevent.
+
+### 10.2 Trust must stay explainable
+
+`confidence` is computed from evidence type and source trust. The trust tiers
+are **not calibrated yet**, and that is acceptable. What is not acceptable is a
+persisted confidence nobody can later reconstruct.
+
+Every evidence link therefore freezes the inputs used at assertion time:
+`source_class`, `trust_policy_version` and the `trust_tier` that policy
+assigned. A recalibration ships a new policy version; historical claims keep
+the tier that produced their stored number, and re-asserting under the new
+policy creates new claims. Nothing silently reinterprets a number already
+written.
+
 ## 11. Temporal semantics and staleness
 
 Four distinct times, and conflating any two of them is a defect:
 
 | Field | Lives on | Means |
 | --- | --- | --- |
-| `retrieved_at` | artifact version | when *we* fetched it |
-| `source_published_at` | artifact version | when the *source* says it was published — NULL when unstated |
+| `retrieved_at` | fetch event | when *we* fetched it, once per retrieval |
+| `source_published_at` | artifact | when the *source* says it was published — NULL when unstated |
 | `observed_at` | claim | when the asserted fact was true, per the source |
 | `valid_from` / `valid_to` | claim value (interval attributes) | the window the fact covers |
 
@@ -1105,7 +1143,7 @@ Raw HTML and PDF bodies dominate storage and are the least reusable part.
 
 | Class | Retention | Rationale |
 | --- | --- | --- |
-| Metadata: sources, discoveries, edges, fetch events, derivations, artifacts | **Permanent** | Provenance must outlive bytes |
+| Metadata: sources, discoveries, edges, fetch events, classifications, derivations, artifacts | **Permanent** | Provenance must outlive bytes |
 | `canonical_content_hash`, `raw_body_sha256` | **Permanent** | Identity and later verification |
 | Claims, extractions, evidence links, locators | **Permanent** | The findings themselves |
 | `research_text_derivations.extracted_text` | Default 24 months, configurable | Enough to re-resolve a locator and re-extract |
@@ -1262,6 +1300,44 @@ above: "append-only tables requiring a later UPDATE — found and fixed" was tru
 only for gap and signal status, and missed four further instances; and
 "duplicated evidence under retries — prevented" was false for re-extraction,
 which double-counted corroboration until M3-ADR-017.
+
+### Revision 3 findings
+
+Revision 3 resolved fourteen further structural issues, under a second rule
+added to the first:
+
+> **A globally deduplicated identity row may not carry a fact belonging to one
+> of the many contexts that produced it**, and **every provenance walk must be
+> single-valued.**
+
+| # | Issue | Resolution |
+| --- | --- | --- |
+| 1 | `claim → … → body → fetch event` was one-to-many, so a claim could not name the source that supplied its evidence — breaking trust and independence, both of which are per-source | The link names one extraction **and** one fetch event; two composite FKs prove both name the same body (M3-ADR-020) |
+| 2 | A lineage was artifact ids alone, so two sources serving one artifact collapsed to one claim | Evidence origin is `(source_id, artifact_id)` (M3-ADR-020) |
+| 3 | Independence was undefined, so two mirrors could read as corroboration | Both publisher **and** document must differ (§10.1, M3-ADR-023) |
+| 4 | A reusable extraction carried one `attempt_id`, so a second attempt's reuse was unrecordable | `research_attempt_extractions`, plus an audit of all 20 tables for the pattern (M3-ADR-021) |
+| 5 | Extraction uniqueness omitted model provider, name, version, schema, determinism and temperature while storing them — a model upgrade collided | `extraction_contract_hash` in the key (M3-ADR-022) |
+| 6 | Text-derivation uniqueness omitted `redaction_policy_version` while storing it | `text_derivation_contract_hash` in the key (M3-ADR-022) |
+| 7 | Globally deduplicated bodies carried `declared_content_type` — a per-retrieval fact | Moved to the fetch event (M3-ADR-023) |
+| 8 | …and `sniffed_content_type` — an algorithm's answer with no named algorithm | `research_body_classifications`, keyed by classifier version (M3-ADR-023) |
+| 9 | The immutable run carried `vertical_id` and `seed_inputs` outside its key, so two different questions resolved to one row | `research_plan_hash` over every question-defining input; execution seeds move to the attempt (M3-ADR-025) |
+| 10 | Gap event uniqueness permitted one `ATTEMPTED` per source per attempt, so `last_attempt_at` reported the *first* retrieval while the prose claimed eleven rows | `fetch_event_id` joins the key (M3-ADR-024) |
+| 11 | Identity signals promised evidence and carried none | `identity_review_signal_evidence` (M3-ADR-028) |
+| 12 | Signal statuses had no transition rules, so `ACTIONED → OPEN` was legal | Trigger-enforced graph with terminal states (M3-ADR-027) |
+| 13 | Discovery uniqueness omitted the context, discarding a second search query's provenance | `discovery_context_hash` in the key (M3-ADR-026) |
+| 14 | "Every edge carries its fetch event" was prose while the column was nullable | `edge_origin` + CHECK; `MIRROR_CANDIDATE` is `DERIVED` and carries both observations (M3-ADR-027) |
+
+A fifteenth was found while auditing rather than listed in the brief: **nullable
+columns participating in unique keys had no stated NULL semantics.**
+PostgreSQL treats two NULLs as distinct, which silently disables a constraint
+exactly where duplicates are most likely — a root-level discovery with no
+parent, a signal with no related company, a gap event with no source. Eleven
+keys are now `NULLS NOT DISTINCT`.
+
+Revision 1's review table also needs one further correction: "source conflicts
+overwritten — prevented" was true, but "one claim having only one possible
+source — prevented" was *over*-stated, since until M3-ADR-020 a claim had many
+possible sources and no way to say which.
 
 ---
 

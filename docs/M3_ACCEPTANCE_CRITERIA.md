@@ -1,6 +1,6 @@
 # M3 — Acceptance Criteria
 
-**Status:** design, revision 2. **Not implemented.** No test below exists.
+**Status:** design, revision 3. **Not implemented.** No test below exists.
 
 Scenarios M3 must satisfy before it is considered done. Every scenario marked
 **MUST** runs against real PostgreSQL. No scenario may require public internet
@@ -198,7 +198,7 @@ discouraged.
 ### C6 [MUST] — One artifact, several claims
 **Given** a page stating both emergency service and a service area
 **When** extraction runs
-**Then** two claims exist, both linking the same artifact version at different
+**Then** two claims exist, both linking the same extraction at different
 locators.
 
 ### C7 [MUST] — Two independent lineages produce two claims
@@ -530,15 +530,16 @@ from `extracted_text` with `redaction_policy_version` recorded.
 ## I. Retention
 
 ### I1 [MUST] — A pruned body leaves provenance intelligible
-**Given** an artifact version whose `raw_body` is pruned by policy
+**Given** a `research_artifact_bodies` row whose `raw_body` is pruned by policy
 **When** a claim citing it is read
-**Then** the source, retrieval time, status, both hashes,
-`source_published_at`, `body_retention = 'PRUNED'` and `pruned_at` are all
-present, and the evidence link still carries its quote and quote hash.
+**Then** the body reports its hash, byte length, `body_retention = 'PRUNED'`
+and `pruned_at`; its fetch event still carries the source, the retrieval time
+and the HTTP status; its artifact still carries `source_published_at`; and the
+evidence link still carries its quote and quote hash.
 *Protects:* deletion must not silently invalidate history.
 
 ### I2 [MUST] — Pruning is the only permitted mutation
-**Given** an append-only artifact version
+**Given** an append-only body row
 **When** any UPDATE other than the one-way body prune is attempted
 **Then** the trigger rejects it.
 
@@ -577,6 +578,146 @@ deleted; only body columns are nulled.
 
 ---
 
+## L. Exact provenance, lineage and execution identity (revision 3)
+
+### L1 [MUST] — One body fetched from two sources resolves to one intended source
+**Given** the same PDF fetched from `/docs/maint.pdf` and `/files/maint.pdf`,
+producing one body and two fetch events
+**When** a claim is asserted from the first retrieval
+**Then** its evidence link names exactly one `fetch_event_id` and one
+`source_id`, and the provenance walk returns a **single** source — not both.
+*Protects:* revision 2's walk fanned out across every retrieval of a body.
+
+### L2 [MUST] — A link cannot cite an extraction and a fetch of different bodies
+**Given** an extraction over body X and a fetch event that produced body Y
+**When** an evidence link citing both is inserted
+**Then** the composite foreign keys reject it.
+*Protects:* the binding is proven by the database, not by the writer's care.
+
+### L3 [MUST] — Two sources serving identical bytes do not corroborate
+**Given** a company page and a third-party scrape serving byte-identical text,
+both asserting `emergency_service = true`
+**When** claims are asserted and the profile is built
+**Then** **two claims** exist — the lineages differ by `source_id` — and
+`corroborating_publisher_count` is **1**, because the artifact is the same
+document.
+*Protects:* "it is all over the internet" must not read as corroboration.
+
+### L4 [MUST] — A company page and a registry do corroborate
+**Given** the company site and a government registry stating the same fact in
+different documents
+**When** the profile is built
+**Then** `corroborating_publisher_count` is **2**.
+
+### L5 [MUST] — Two pages on one site do not corroborate
+**Given** `/about` and `/services` both stating the fact
+**When** the profile is built
+**Then** two claims exist and `corroborating_publisher_count` is **1** — one
+publisher saying it twice.
+
+### L6 [MUST] — An extraction reused by a second attempt is not duplicated
+**Given** attempt 1 created extraction E over a text derivation
+**When** attempt 2 needs the identical extraction contract
+**Then** **one** `research_extractions` row exists and **two**
+`research_attempt_extractions` rows exist, with `usage_role` `CREATED` and
+`REUSED`, and "which attempts used E?" returns both.
+*Protects:* revision 2 stored one `attempt_id` on a reusable result.
+
+### L7 [MUST] — A model version change is a distinct extraction contract
+**Given** an extraction at prompt template v3 and model version `2026-01`
+**When** the same prompt runs against model version `2026-06`
+**Then** the `extraction_contract_hash` differs, a second extraction row
+exists, and the first is byte-identical to before — no collision and no UPDATE.
+*Protects:* revision 2's key omitted every model field while storing them.
+
+### L8 [MUST] — A redaction policy upgrade is a distinct text derivation
+**Given** a text derivation at text policy v1 and redaction policy v1
+**When** redaction policy v2 is applied to the same body
+**Then** a second `research_text_derivations` row exists, the first is
+unchanged, and no refetch occurs.
+*Protects:* revision 2 keyed on the text policy alone while storing the
+redaction policy beside it.
+
+### L9 [MUST] — One byte string, two declared content types
+**Given** identical bytes served as `text/plain` by one host and `text/html`
+by another
+**When** both are fetched
+**Then** **one** `research_artifact_bodies` row exists carrying **no** content
+type, and two fetch events carry the two `declared_content_type` values.
+*Protects:* a globally deduplicated row must not hold a per-retrieval fact.
+
+### L10 [MUST] — The sniffed type names its classifier version
+**Given** a body classified under classifier policy v1
+**When** classifier v2 runs over the same body
+**Then** two `research_body_classifications` rows exist and the v1 row is
+unchanged.
+
+### L11 [MUST] — The same question with different execution seeds is one run
+**Given** a run for company X, policy v2, target set T, executed last month
+**When** research runs again with a different projected identity-domain seed
+**Then** the **same** logical run is reused, a new attempt records the new
+`attempt_seed_inputs`, and no immutable run column is overwritten.
+*Protects:* revision 2 kept seeds on the immutable run row outside its key.
+
+### L12 [MUST] — A different vertical is a different question
+**Given** a run for company X, policy v2, target set T, vertical A
+**When** research is requested for the same company and target set under
+vertical B
+**Then** `research_plan_hash` differs and a **new** run is created.
+
+### L13 [MUST] — A source fetched three times in one attempt records three attempts
+**Given** a gap whose source is fetched three times within one attempt
+**When** the gap events are read
+**Then** **three** `ATTEMPTED` events exist, each naming its own
+`fetch_event_id`, `attempt_count` is 3, `attempted_source_count` is 1, and
+`last_attempt_at` is the **third** retrieval's time.
+*Protects:* revision 2's key permitted one event per source per attempt, so
+`last_attempt_at` reported the first.
+
+### L14 [MUST] — A signal with a NULL related company cannot duplicate
+**Given** a `POSSIBLE_CEASED_TRADING` signal with `related_company_id` NULL
+**When** the identical signal is raised on a later attempt
+**Then** one signal row exists, because the unique key is `NULLS NOT
+DISTINCT`.
+
+### L15 [MUST] — New evidence appends to an existing signal
+**Given** an open identity signal with two evidence links
+**When** a later attempt finds a third supporting span
+**Then** a third `identity_review_signal_evidence` row is appended and the
+signal parent row is byte-identical.
+
+### L16 [MUST] — An ACTIONED signal cannot return to OPEN
+**Given** a signal whose latest event is `ACTIONED`
+**When** an `OPEN` event is appended
+**Then** the transition trigger rejects it; revisiting requires a **new**
+signal carrying new evidence.
+
+### L17 [MUST] — Two search queries in one attempt both survive
+**Given** one source found by query "acme hvac technicians" and by query
+"acme mechanical careers" within one attempt
+**When** discoveries are recorded
+**Then** **two** `research_source_discoveries` rows exist with different
+`discovery_context_hash` values.
+*Protects:* revision 2's key omitted the context and discarded the second.
+
+### L18 [MUST] — A machine-observed edge cannot exist without its fetch
+**Given** a `REDIRECTS_TO` edge with `edge_origin = 'FETCH_OBSERVED'` and no
+`observed_by_fetch_event_id`
+**When** it is inserted
+**Then** the CHECK rejects it.
+**And** a `MIRROR_CANDIDATE` edge requires `edge_origin = 'DERIVED'` with
+**both** supporting fetch events present.
+
+### L19 [MUST] — Historical confidence stays explainable after a trust upgrade
+**Given** a claim asserted under `trust_policy_version` v1 with a recorded
+`source_class` and `trust_tier`
+**When** trust policy v2 ships with different tiers
+**Then** the existing claim's `confidence` is unchanged, its evidence links
+still report the v1 policy version and the v1 tier, and the stored number can
+be recomputed exactly from them.
+*Protects:* an uncalibrated trust table is acceptable; an unexplainable
+persisted number is not.
+
 ## K. Definition of done
 
 * Every **MUST** scenario is an executable test against real PostgreSQL.
@@ -596,4 +737,4 @@ deleted; only body columns are nulled.
 * A terminal-state test: no attempt may transition out of `COMPLETED`,
   `PARTIAL` or `FAILED`.
 
-**Scenario count: 80 (all MUST)** — A:14, B:5, C:14, D:6, E:6, F:6, G:15, H:7, I:3, J:4.
+**Scenario count: 99 (all MUST)** — A:14, B:5, C:14, D:6, E:6, F:6, G:15, H:7, I:3, J:4, L:19.

@@ -1,6 +1,6 @@
 # M3 — Architecture Decision Records
 
-**Status:** design, revision 2. **Not implemented.**
+**Status:** design, revision 3. **Not implemented.**
 
 Decisions taken while designing M3 Operational Research. Numbered
 `M3-ADR-NNN`, independent of M0/M1's `ADR-NNN` and M2's `M2-ADR-NNN`.
@@ -671,3 +671,326 @@ most one live attempt per run.
   answerable even for an attempt that later failed.
 * Changing the policy version or the attribute set produces a different run,
   as the design always claimed and the schema now enforces.
+
+
+---
+
+## M3-ADR-020 — Provenance is single-valued, and the database proves it
+
+**Status:** accepted (revision 3)
+
+### Context
+
+Revision 2's walk ran `claim → link → extraction → text derivation → body →
+fetch event → source`. The last hop is one-to-many: a body is reachable from
+every retrieval of those bytes — several URLs, several attempts, several
+companies, several dates. So a claim could not answer *which* source supplied
+its evidence, which also broke source trust and independence counting, both of
+which are per-source.
+
+Revision 2 also defined a lineage as *artifact ids alone*, so source A and
+source B serving artifact X collapsed into one lineage and one claim — merging
+two observations the design elsewhere insists must stay separate.
+
+### Decision
+
+`claim_evidence_links` names **one extraction and one fetch event**, and
+carries `body_id`, `artifact_id` and `source_id`.
+
+Agreement is enforced declaratively. `body_id` appears on the link, on the
+extraction and on the fetch event; two composite foreign keys —
+`(extraction_id, body_id)` and `(fetch_event_id, body_id)` — force all three to
+name the same body. A link citing an extraction over body X and a retrieval of
+body Y is unrepresentable. This is the pattern M2 already uses in
+`fk_supersedes_same_entity`.
+
+An **evidence origin** becomes `(source_id, artifact_id)`, and a lineage is the
+sorted set of distinct origins.
+
+### Consequences
+
+* Every hop of the walk is single-valued.
+* Source trust and independence are computable, because both are properties of
+  a source and the claim now names one.
+* Source A and source B serving the same artifact are two lineages and
+  therefore two claims — which does **not** by itself make them corroborating
+  (M3-ADR-023).
+
+---
+
+## M3-ADR-021 — An extraction result is separate from the executions that use it
+
+**Status:** accepted (revision 3)
+
+### Context
+
+`research_extractions` was keyed on the derivation and the extractor, correctly
+making the result reusable — and simultaneously carried a single `attempt_id`.
+When attempt 2 legitimately reused what attempt 1 produced, the row still
+pointed at attempt 1 and "which attempts used this?" was unanswerable.
+
+### Decision
+
+Drop `attempt_id` from the result. Add `research_attempt_extractions`
+(`attempt_id`, `extraction_id`, `usage_role ∈ {CREATED, REUSED}`) with
+`UNIQUE (attempt_id, extraction_id)`.
+
+Every other table was audited for the same shape. Bodies, artifacts, sources,
+derivations, text derivations and classifications never carried an attempt and
+remain clean; their usage is recoverable through the extractions that read
+them, so a second association table would add rows without adding answers.
+Fetch events, discoveries and gap events keep their `attempt_id`, because each
+**is** an execution event belonging to exactly one attempt.
+
+### Consequences
+
+* One extraction output, many usage records. No duplicated output merely to
+  record that a second attempt reused it.
+* The general rule is now stated once: **an immutable reusable object does not
+  own a single-execution field.**
+
+---
+
+## M3-ADR-022 — Every behaviour-affecting input is inside the contract hash
+
+**Status:** accepted (revision 3)
+
+### Context
+
+`research_extractions` was unique on
+`(text_derivation_id, extractor_id, extractor_version,
+prompt_template_version)` while separately storing `model_provider`,
+`model_name`, `model_version`, `output_schema_version`, `determinism` and
+`temperature` — all of which change the output. A model upgrade under one
+extractor version therefore **collided** with the existing row and was
+representable only by an UPDATE to an append-only table.
+
+`research_text_derivations` had the identical defect: keyed on
+`text_extraction_policy_version` while storing `redaction_policy_version`
+beside it.
+
+### Decision
+
+Explicit contract hashes, and the hash is the key:
+
+```
+extraction_contract_hash      = sha256(extractor kind/id/version,
+                                       model provider/name/version,
+                                       prompt template version,
+                                       output schema version,
+                                       determinism, temperature)
+text_derivation_contract_hash = sha256(text extraction policy version,
+                                       redaction policy version)
+```
+
+The alternative — asserting that `extractor_version` transitively covers the
+model and schema — was rejected. It is a promise no constraint enforces, and
+the fields were stored separately precisely because they vary independently.
+
+### Consequences
+
+* A model upgrade, a schema change or a redaction-policy change each produce a
+  new row and leave the old one untouched. No collisions, no UPDATEs.
+* The stored fields become the *explanation* of the hash rather than
+  decoration.
+
+---
+
+## M3-ADR-023 — Global identity rows hold only global facts; independence is strict
+
+**Status:** accepted (revision 3)
+
+### Context
+
+Two defects with one root — putting context-specific facts on
+context-independent rows.
+
+`research_artifact_bodies` is globally unique on the content hash, yet stored
+`declared_content_type` and `sniffed_content_type`. The identical byte string
+can be served as `text/plain` by one host and `text/html` by another, so the
+row had to pick one and discard the other. And a sniffed type is an
+*algorithm's answer*, which changes as the algorithm improves.
+
+Separately, independence was undefined, so two URLs serving the same document
+could have counted as two corroborating sources.
+
+### Decision
+
+A body holds hash, bytes, byte length and retention state. Nothing contextual.
+
+* **Declared** media type → `research_fetch_events`, one per retrieval.
+* **Sniffed** media type → `research_body_classifications`, keyed
+  `(body_id, classifier_policy_version)`.
+
+Two lineages corroborate independently only when **both** the publisher and the
+document differ. `publisher_key` is derived under a versioned policy — the
+registrable domain unless an override maps it, since a job board or registry is
+a publisher in its own right.
+
+### Consequences
+
+* A page mirrored at two URLs, and a third-party scrape of the same exact text,
+  both fail the document test: identical canonical content is the same document
+  copied, not a second witness.
+* Two pages on one site fail the publisher test.
+* A company site plus a government registry passes both.
+* The policy under-counts rather than over-counts. Under-counting corroboration
+  is recoverable; over-counting inflates confidence in a claim resting on one
+  source, which is the failure this system exists to prevent.
+
+---
+
+## M3-ADR-024 — An attempt event names the retrieval that performed it
+
+**Status:** accepted (revision 3)
+
+### Context
+
+Gap events were unique on `(gap_id, event_kind, attempt_id, source_id)`, which
+permitted exactly one `ATTEMPTED` row per source per execution. Fetching a
+source three times inside one attempt recorded one event, so `last_attempt_at`
+reported the **first** retrieval — while the design claimed eleven attempts
+append eleven rows. The constraint and the prose contradicted each other.
+
+### Decision
+
+`ATTEMPTED` means one concrete evidence-acquisition attempt and names its
+`fetch_event_id`, which joins the key (`NULLS NOT DISTINCT`). `attempt_count`,
+`attempted_source_count` and `last_attempt_at` are then all derived correctly.
+
+Gap events also gain a legal transition graph — `RAISED → ATTEMPTED* →
+RESOLVED | ABANDONED`, with the last two terminal.
+
+### Consequences
+
+* Eleven retrievals genuinely append eleven rows.
+* A gap that later goes stale is a different `gap_kind` and therefore a
+  different gap row, so reopening a terminal gap is never required.
+
+---
+
+## M3-ADR-025 — The research plan hash covers every input that defines the question
+
+**Status:** accepted (revision 3)
+
+### Context
+
+The run was unique on `(company_id, research_policy_version, target_set_hash)`
+while the immutable row also carried `vertical_id` and `seed_inputs`. Two runs
+differing only in vertical resolved to one already-existing immutable row, and
+the second set of values was silently discarded — an immutable column that
+could legitimately differ while its natural key stayed identical.
+
+### Decision
+
+`research_plan_hash` covers company, policy version, sorted target attributes,
+vertical and canonicalized immutable plan inputs, and **is** the natural key.
+
+Discovered or late-arriving seeds — the company's currently projected identity
+domains, a human seed added mid-campaign — are execution inputs and move to the
+attempt as `attempt_seed_inputs`.
+
+### Consequences
+
+* Re-running the same question next month with a different projected domain set
+  is the same run and a new attempt.
+* Changing the vertical, the policy or the attribute set is a different
+  question and a different run.
+* The invariant is now general: **no immutable column may legitimately differ
+  while its natural key stays identical.**
+
+---
+
+## M3-ADR-026 — Discovery context is part of discovery identity
+
+**Status:** accepted (revision 3)
+
+### Context
+
+Discoveries were unique on
+`(source_id, attempt_id, discovery_method, discovered_from_source_id)`. One
+source found by two different search queries in one attempt collapsed to one
+row, discarding the second query — and "which query surfaced this page" is
+exactly what makes a discovery method evaluable.
+
+### Decision
+
+Add `discovery_context_hash` to the key, with `NULLS NOT DISTINCT` throughout.
+
+### Consequences
+
+* Two queries finding one page are two discoveries.
+* The cost is one hash column and some duplicate-looking rows, which is the
+  correct trade for provenance that can answer how a source was reached.
+
+---
+
+## M3-ADR-027 — Edges carry evidence; terminal states are terminal
+
+**Status:** accepted (revision 3)
+
+### Context
+
+Two invariants asserted in prose and unenforced in schema.
+
+Every source edge was said to carry the fetch event that observed it, while
+`observed_by_fetch_event_id` was nullable for every relation type. And
+`MIRROR_CANDIDATE` is an inference over *two* observations that no single fetch
+can witness, so one nullable field could not represent it honestly either.
+
+Identity signal statuses listed four values and no transition rules, so
+`ACTIONED → OPEN` and `DISMISSED → ACKNOWLEDGED` were both legal.
+
+### Decision
+
+`edge_origin ∈ {FETCH_OBSERVED, DERIVED, HUMAN_ASSERTED}` with a CHECK:
+`FETCH_OBSERVED` requires one fetch event, `DERIVED` requires two (and
+`MIRROR_CANDIDATE` must be `DERIVED`), `HUMAN_ASSERTED` requires an actor and a
+rationale.
+
+Signal transitions: `OPEN → ACKNOWLEDGED → ACTIONED | DISMISSED`, `OPEN →
+DISMISSED`, with `ACTIONED` and `DISMISSED` terminal, enforced by trigger.
+
+### Consequences
+
+* "Every edge has evidence" becomes true in the schema, not only in the prose.
+* The two observations behind a mirror are recoverable.
+* Revisiting a closed signal means a **new** signal with new evidence — whose
+  `evidence_digest` differs, so the identity key admits it — rather than
+  resurrecting a closed review and losing the record that it was closed.
+
+---
+
+## M3-ADR-028 — Trust inputs are frozen on the assertion, not looked up later
+
+**Status:** accepted (revision 3)
+
+### Context
+
+`confidence` is computed from evidence type and source trust, and no versioned
+trust input was recorded anywhere. Once the trust table changed, a persisted
+confidence could not be explained or reproduced.
+
+The tiers being uncalibrated is fine and is listed as an open question. A
+persisted number nobody can reconstruct is not.
+
+Separately, identity review signals promised evidence and carried none.
+
+### Decision
+
+Every `claim_evidence_links` row freezes `source_class`,
+`trust_policy_version` and the `trust_tier` in force at assertion time. These
+are facts about an assertion event, so they belong on the append-only link.
+
+`identity_review_signal_evidence` links a signal to the evidence links that
+justify it — a table, not a JSON array on the signal, because a mutable list on
+an identity row is revision 1's gap-counter defect wearing a different hat.
+
+### Consequences
+
+* A recalibration ships a new `trust_policy_version`; historical claims keep
+  the tier that produced their stored confidence, and re-asserting creates new
+  claims. Nothing silently reinterprets a number already written.
+* A reviewer receives an assertion **and** the spans supporting it.
+* New evidence for an existing signal appends a link and leaves the parent
+  untouched.
