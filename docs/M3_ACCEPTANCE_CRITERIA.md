@@ -1,6 +1,6 @@
 # M3 — Acceptance Criteria
 
-**Status:** design, revision 3. **Not implemented.** No test below exists.
+**Status:** design, revision 4 — **implementation ready**. **Not implemented.** No test below exists.
 
 Scenarios M3 must satisfy before it is considered done. Every scenario marked
 **MUST** runs against real PostgreSQL. No scenario may require public internet
@@ -206,7 +206,7 @@ locators.
 **When** both are extracted
 **Then** **two** claims exist with different `lineage_key` values and therefore
 different assertion fingerprints, and the profile reports
-`corroborating_lineage_count = 2`.
+`corroborating_publisher_count = 2`.
 *Protects:* the two claims may differ in fact type, confidence, source trust
 and source date; merging them would destroy all four.
 
@@ -222,7 +222,7 @@ identical.
 **When** extractor v2 reads the same lineage and produces the **same** value
 **Then** **no second claim is created**; a new `claim_evidence_links` row is
 appended to the existing claim naming the v2 extraction, and
-`corroborating_lineage_count` remains 1.
+`corroborating_publisher_count` remains 1.
 *Protects:* revision 1 created a new claim per extractor version, so
 re-extracting one page three times looked like threefold corroboration.
 
@@ -236,7 +236,7 @@ the projection reports a contradiction.
 **Given** an inference drawn from three job postings and a services page
 **When** it is asserted
 **Then** **one** claim exists with four `claim_evidence_links` rows, each with
-its own locator, and `corroborating_lineage_count` counts one lineage.
+its own locator, and `corroborating_publisher_count` counts one lineage.
 
 ### C9 [MUST] — Absence is never false
 **Given** a complete research run that found no ERP evidence
@@ -292,7 +292,7 @@ existing claim gains an evidence link rather than a twin (C8a). Values only
 v2 produces become new claims.
 
 ### D5 [MUST] — Re-running the same extractor version is a no-op
-**Given** an extraction at `(artifact_version, extractor, version, prompt)`
+**Given** an extraction at `(text_derivation, extraction_contract_hash)`
 **When** the identical extraction is run again
 **Then** no new row is created.
 
@@ -458,13 +458,15 @@ reopen it.
 ### G12 [MUST] — Evidence remembers which attempt captured it
 **Given** evidence captured by an attempt that later failed
 **When** the evidence is read
-**Then** its fetch events, discoveries and extractions still name that attempt.
+**Then** its fetch events and discoveries still name that attempt directly, and
+its extractions name it through `research_attempt_extractions` — extractions
+are reusable results and do not own an attempt (M3-ADR-021).
 
 ### G13 [MUST] — A different target attribute set is a different run
 **Given** a completed run for company X under policy `v2` across 18 attributes
 **When** research is requested for the same company and policy across 19
 attributes
-**Then** `target_set_hash` differs, a **new** logical run is created, and the
+**Then** `research_plan_hash` differs, a **new** logical run is created, and the
 original run and its attempts are untouched.
 *Protects:* revision 1 asserted this in prose while leaving the target set out
 of the run key.
@@ -718,6 +720,132 @@ be recomputed exactly from them.
 *Protects:* an uncalibrated trust table is acceptable; an unexplainable
 persisted number is not.
 
+## M. Implementation-readiness lock (revision 4)
+
+### M1 [MUST] — Two research plans for one company coexist
+**Given** company X with plan A (HVAC context, 18 required attributes) and plan
+B (another context, 12 required)
+**When** both are executed and projections rebuilt
+**Then** two `operational_research_plan_profiles` rows exist with different
+coverage, **neither overwrites the other**, and one
+`operational_research_profiles` row holds the merged company-global facts.
+*Protects:* revision 3's `PK (company_id)` could store only one coverage.
+
+### M2 [MUST] — Plan-specific gaps do not collide across plans
+**Given** plan A and plan B both lacking ERP evidence
+**When** gaps are raised
+**Then** two gap rows exist, keyed by their runs — two questions going
+unanswered, not one.
+
+### M3 [MUST] — An identity conflict needs no fabricated claim
+**Given** a page stating "ABC Service is a division of XYZ Holdings", and no
+operational claim yet asserted for ABC
+**When** the conflict is recorded
+**Then** a `research_evidence_items` row exists with its locator and quote, an
+identity signal occurrence references it, **zero `company_claims` rows were
+created**, and a reviewer can read the supporting span.
+*Protects:* revision 3 forced a claim into existence to hold the evidence.
+
+### M4 [MUST] — Evidence names the exact derivation it came from
+**Given** one body derived under `HTML_TEXT_V1` and `HTML_TEXT_V2`
+**When** a claim is asserted from the V2 reading
+**Then** its evidence item names that `artifact_derivation_id`, and the
+artifact reached through it is V2's — not V1's.
+*Protects:* `body_id` alone never determined the artifact.
+
+### M5 [MUST] — Mirrors with different publication metadata stay one artifact
+**Given** the same article on two sites, one stamped "Published March 2026" and
+one undated
+**When** both are captured
+**Then** **one** `research_artifacts` row exists, two derivations exist
+carrying `source_published_at = 2026-03-01` and `NULL` respectively, and
+`corroborating_publisher_count` is **1**.
+*Protects:* folding publication metadata into the canonical hash would have
+split the mirrors and counted them as two independent witnesses.
+
+### M6 [MUST] — A trust policy upgrade can re-assert
+**Given** a claim asserted under `trust_policy_version` v1
+**When** the same value and lineage are re-asserted under v2
+**Then** `assertion_contract_hash` differs, so a **new** claim is created; the
+v1 claim's `confidence` is unchanged and remains recomputable from its own
+links.
+*Protects:* revision 3's fingerprint omitted policy versions, so the partial
+unique index rejected the v2 claim and the documented behaviour was
+unreachable.
+
+### M7 [MUST] — The same number in different units does not collide
+**Given** `technician_count = 40` with unit `PEOPLE` and the same value with a
+different unit
+**When** both are asserted
+**Then** their fingerprints differ and both claims exist.
+
+### M8 [MUST] — Claim confidence reproduces exactly
+**Given** a claim with four evidence links across two independent publishers
+and mixed trust tiers
+**When** confidence is recomputed from the links and the versions named in its
+`assertion_contract_hash`
+**Then** the result equals the persisted value, bit for bit.
+**And** adding a weaker corroborating link never lowers confidence.
+
+### M9 [MUST] — A publisher policy upgrade does not re-score history
+**Given** a projection built under `publisher_policy_version` v1 reporting one
+corroborating publisher
+**When** v2 maps one of the sources to a different publisher
+**Then** the v1 projection's recorded policy version still explains its count,
+and a rebuild under v2 records v2 — the two are distinguishable, not silently
+swapped.
+
+### M10 [MUST] — A 304 validates without fabricating bytes
+**Given** a source previously fetched, yielding body B
+**When** a later request returns 304 Not Modified
+**Then** a fetch event exists with `http_status = 304`, `body_id = B`, the
+validator recorded, and **no new body row**; the event answers "at time T the
+server confirmed B was still current" and freshness reads it.
+*Protects:* revision 3 left 304's body semantics undefined.
+
+### M11 [MUST] — A sampled extraction cannot masquerade as idempotent
+**Given** a `SAMPLED` extraction contract run twice over one text derivation
+**When** both complete
+**Then** two extraction rows exist, distinguished by `sample_execution_id`, and
+**neither asserts a `company_claim` directly**; a claim requires a confirming
+`HUMAN` extraction.
+*Protects:* a UNIQUE key keeping the first sample is a frozen race, not
+idempotency.
+
+### M12 [MUST] — A second attempt may carry different seeds
+**Given** a completed attempt whose `attempt_seed_inputs` recorded two
+projected identity domains
+**When** the same logical run is retried after a third domain is projected
+**Then** the **same run** is reused, attempt 2 records the new seed snapshot
+and its hash, and attempt 1's seeds are byte-identical to before.
+
+### M13 [MUST] — Attempt seeds freeze once the attempt starts
+**Given** an attempt past `PENDING`
+**When** its `attempt_seed_inputs` is updated
+**Then** the trigger rejects it.
+
+### M14 [MUST] — A company-level signal touches no M2 table
+**Given** a `POSSIBLE_CEASED_TRADING` signal with no provider entity
+**When** it is raised with evidence and a reviewer dismisses it
+**Then** an M2 row-count fingerprint is identical throughout, no
+`provider_entities` row is created, and no `entity_resolution_decisions` row is
+written.
+*Protects:* M2's review requires a `ProviderEntity`; routing this through it
+would mean fabricating one.
+
+### M15 [MUST] — New evidence leaves signal identity untouched
+**Given** an open signal occurrence with two evidence items
+**When** a later attempt finds a third supporting span
+**Then** a third `identity_review_signal_evidence` row is appended, and both
+the signal and the occurrence rows are byte-identical.
+*Protects:* an evidence-set hash cannot be an immutable identity key.
+
+### M16 [MUST] — The same concern after a terminal occurrence opens a new one
+**Given** a signal whose occurrence 1 was `DISMISSED`
+**When** the same concern is rediscovered
+**Then** occurrence 2 is created referencing occurrence 1 as its predecessor,
+occurrence 1 stays `DISMISSED`, and the signal row is unchanged.
+
 ## K. Definition of done
 
 * Every **MUST** scenario is an executable test against real PostgreSQL.
@@ -737,4 +865,4 @@ persisted number is not.
 * A terminal-state test: no attempt may transition out of `COMPLETED`,
   `PARTIAL` or `FAILED`.
 
-**Scenario count: 99 (all MUST)** — A:14, B:5, C:14, D:6, E:6, F:6, G:15, H:7, I:3, J:4, L:19.
+**Scenario count: 115 (all MUST)** — A:14, B:5, C:14, D:6, E:6, F:6, G:15, H:7, I:3, J:4, L:19, M:16.

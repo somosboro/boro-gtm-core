@@ -1,6 +1,6 @@
 # M3 — Operational Research
 
-**Status:** design, revision 3. **Not implemented.** No M3 runtime code,
+**Status:** design, **revision 4 — implementation ready**. Not implemented. No M3 runtime code,
 migrations or tables exist in this repository.
 
 **Milestone position.** M1 answers *which market × vertical × ICP × channel
@@ -242,19 +242,18 @@ Revision 2 splits them (M3-ADR-019).
 
 ```
 operational_research_runs
-  UNIQUE (company_id, research_policy_version, target_set_hash)
+  UNIQUE (research_plan_hash)
 ```
 
 *"What do we know about company X's operations, under policy v2, across these
-18 attributes?"* The run carries the sorted target attribute keys and their
-hash, the seed inputs, and nothing else. It has **no status**, no stage
-timestamps and no error.
+18 attributes?"* The run carries the company, the policy version, the vertical, the sorted
+target attribute keys and the canonicalized immutable plan inputs — all of
+which are folded into `research_plan_hash`. It has **no status**, no stage
+timestamps, no error and no execution seeds.
 
-`target_set_hash` is part of the key because revision 1 asserted in prose that
-a different target set means a different run while leaving the target set out
-of the identity entirely. Asking the same question again reuses the run;
-changing the policy version or the attribute set makes it a different question
-and a different run.
+Every input that changes the question is inside the hash. Asking the same
+question again reuses the run; changing the policy, the vertical or the
+attribute set makes it a different question and a different run.
 
 ### 4.2 The attempt is an execution
 
@@ -282,9 +281,16 @@ evidence it captured keeps pointing at it. The partial unique index allows at
 most one live attempt per run, so two workers cannot execute the same question
 concurrently.
 
-Every fetch event, extraction and discovery carries `attempt_id`, so
-"which execution captured this?" is always answerable — including for evidence
-captured by an attempt that later failed.
+The attempt also freezes `attempt_seed_inputs` — the company's projected
+identity domains as of this execution, plus any human seed. Those are
+*execution* inputs: re-running the same question next month with a different
+projected domain set is the same run and a new attempt.
+
+Fetch events, discoveries and gap events carry `attempt_id` directly, because
+each **is** an execution event. Extractions do not: they are reusable results,
+and which attempts used one is recorded in `research_attempt_extractions`
+(M3-ADR-021). "Which execution captured this?" stays answerable either way,
+including for evidence captured by an attempt that later failed.
 
 ### 4.3 The gate on canonical writes
 
@@ -443,13 +449,16 @@ observed facts filters `fact_type = 'FACT'` and gets a defensible set.
 **The walk is always possible:**
 
 ```
-claim → claim_evidence_links ─┬─▶ research_extractions
-                              │       → research_text_derivations → body
-                              ├─▶ research_fetch_events → research_sources
-                              └─▶ research_artifacts   (semantic identity)
+claim → claim_evidence_links → research_evidence_items
+                                   ├─▶ research_extractions
+                                   │      → research_text_derivations → body
+                                   ├─▶ research_fetch_events → research_sources
+                                   └─▶ research_artifact_derivations
+                                          → research_artifacts
+                                          + source_published_at, language, title
 
-every hop single-valued; composite FKs force the extraction and the fetch
-event to name the same body
+every hop single-valued; three composite FKs force the extraction, the fetch
+event and the derivation to name the same body — no trigger
 ```
 
 ---
@@ -629,6 +638,21 @@ and source trust**, exactly as M0 computes it. Extractor confidence is stored
 on the extraction, is visible in the API, and is **not** an input to the
 claim's confidence. An extraction below an extractor-confidence threshold
 produces no claim at all — it produces a research gap and a review candidate.
+
+### 9.3 Deterministic contracts assert; sampled ones do not
+
+A `SAMPLED` extraction contract may produce different output on each run, so a
+UNIQUE key that keeps whichever sample landed first is **not** idempotency — it
+is one arbitrary draw frozen by a race.
+
+* Only a `DETERMINISTIC` extraction may assert a `company_claim` directly.
+* A `SAMPLED` extraction carries a `sample_execution_id` in its identity, so
+  repeated sampling appends rather than colliding, and it reaches a claim only
+  through a `HUMAN` extraction confirming it.
+
+This is the same principle as §9.1 seen from the other side: there, a model's
+confidence could not raise evidential strength; here, a model's *variability*
+cannot be laundered into reproducibility by a constraint.
 
 ### 9.2 Re-extraction
 
@@ -1043,7 +1067,7 @@ Coverage and confidence are exported; their *interpretation* is not.
 | Research gap re-raised | Unique on `(company_id, attribute_key, policy_version, gap_kind)` → no new parent; an `ATTEMPTED` event is appended |
 | Attempt retried | New attempt on the same run; the terminal attempt is untouched |
 | Same question asked again | Same run reused; a new attempt executes it |
-| Different target attribute set | Different `target_set_hash` → **different run** |
+| Different target set, vertical or policy | Different `research_plan_hash` → **different run** |
 
 Three rows carry the weight. Deduplicating identical claims from *different*
 lineages would destroy exactly the signal worth having. *Not* deduplicating a
@@ -1100,42 +1124,87 @@ claims exist and the profile silently lags.
 
 ## 25. API
 
-Read surfaces:
+The surface follows the run/attempt split: a **logical run is a question** and
+has no status, no stage timestamps and no error, so nothing execution-shaped is
+exposed on it. Revision 3's surface filtered runs by status and offered
+per-stage timestamps on a run, both of which became false when the split
+landed; it also offered `/research-artifacts/{id}/versions`, and versions no
+longer exist (M3-ADR-036).
+
+**Research questions and executions**
 
 ```
-GET /companies/{id}/research                 profile + coverage + staleness
-GET /companies/{id}/research/artifacts       sources and versions seen
-GET /companies/{id}/research/claims          claims + evidence links
-GET /companies/{id}/research-gaps            what is unknown, and why
-GET /companies/{id}/research-coverage        coverage, confidence, contradictions
-GET /operational-research/runs               filterable by status and company
-GET /operational-research/runs/{id}          one run, with per-stage timestamps
-GET /research-artifacts/{id}/versions        version history for one artifact
-GET /research-extractions/{id}               extractor provenance + raw output policy
-GET /identity-review-signals                 the queue handed back to M2
+GET  /operational-research/runs                  filter: company, policy, vertical
+GET  /operational-research/runs/{id}             the question + its attempts
+POST /operational-research/runs                  create or reuse by research_plan_hash
+POST /operational-research/runs/{id}/attempts    start an execution
+GET  /operational-research/attempts              filter: status, company, run
+GET  /operational-research/attempts/{id}         stages, timings, error, seed inputs
+POST /operational-research/attempts/{id}/retry   creates attempt n+1 on the same run
 ```
 
-Actions:
+**Evidence, addressable in its own right**
 
 ```
-POST /companies/{id}/research-runs           start a run under a policy version
-POST /operational-research/runs/{id}/retry   advance the same run, never a second
-POST /research-claims/{id}/review            human confirm/reject — appends, never mutates
-POST /identity-review-signals/{id}/status    acknowledge / action / dismiss
+GET  /research-sources/{id}                      locator identity
+GET  /research-sources/{id}/fetch-events         full retrieval history
+GET  /research-sources/{id}/discoveries          how it was found, per attempt
+GET  /research-sources/{id}/edges                redirects, canonicals, mirrors
+GET  /research-artifacts/{id}                    semantic identity
+GET  /research-artifacts/{id}/derivations        contracts applied to bodies
+GET  /research-bodies/{id}                       hash, length, retention state
+GET  /research-extractions/{id}                  extractor + contract provenance
+GET  /research-evidence-items/{id}               one span, with its full walk
 ```
 
-Human evidence review is justified and included: model-assisted extraction below
-threshold produces review candidates rather than claims (§9.1), and that queue
-needs a way to be worked. It appends a `HUMAN` extraction and a new claim; it
-never edits the model's.
+**Company knowledge (global)**
 
-Not exposed: the job queue, fetch internals, raw model output by default (§26),
-locator internals beyond what the claim needs.
+```
+GET  /companies/{id}/research                    projected operational facts
+GET  /companies/{id}/research/claims             claims + their evidence items
+GET  /companies/{id}/research/evidence           evidence items about this company
+```
 
-All responses use the existing error envelope. `404` for an unknown company or
-run; `409` for a run that has not reached a stage that permits assertion.
+**Per-question results (plan-scoped)**
 
----
+```
+GET  /operational-research/runs/{id}/coverage    coverage, confidence, contradictions
+GET  /operational-research/runs/{id}/gaps        what this question could not answer
+```
+
+Coverage and gaps hang off the **run**, never off the company, because both
+depend on the plan's target set, applicability and required/optional split
+(§13, M3-ADR-029). A company-scoped coverage endpoint would have to pick one
+plan arbitrarily, which is the same defect as revision 3's `PK (company_id)`.
+
+**Identity review — an M3-owned queue**
+
+```
+GET  /identity-review-signals                    filter: company, kind, open
+GET  /identity-review-signals/{id}               concern + occurrence history
+GET  /identity-review-signals/{id}/evidence      the spans that justify it
+POST /identity-review-signals/{id}/occurrences/{n}/status
+                                                 acknowledge / action / dismiss
+```
+
+This queue is **not** wired into M2 (§21.1). M3 owns it end to end.
+
+**Human evidence review**
+
+```
+POST /research-claims/{id}/review                confirm or reject — appends
+```
+
+Appends a `HUMAN` extraction and, on confirmation, a new claim. It never edits
+the model's extraction or claim. A `SAMPLED` extraction reaches a canonical
+claim only through this path (§9.3).
+
+Not exposed: the job queue, fetch internals, raw model output by default, and
+locator internals beyond what an evidence item needs.
+
+All responses use the existing error envelope. `404` for an unknown company,
+run, attempt or signal; `409` for an attempt that has not reached a stage
+permitting assertion, and for a second live attempt on one run.
 
 ## 26. Retention
 
@@ -1286,7 +1355,7 @@ being broken: **an append-only row may not contain a value that changes.**
 | 3 | One byte string could point at only one artifact, while acceptance A9 required the same bytes under two canonicalization versions to produce two artifacts | `research_artifact_bodies` → `research_artifact_derivations` → `research_artifacts` (M3-ADR-016) |
 | 4 | `extracted_text` and its policy version sat on the append-only bytes row, so a parser upgrade required an UPDATE | `research_text_derivations`, keyed `(body, text policy version)` (M3-ADR-017) |
 | 5 | The gap row was declared append-only while storing an attempt counter, a last-attempt timestamp and a resolving claim pointer | Identity parent plus `operational_research_gap_events`; all three derived (M3-ADR-018) |
-| 6 | `PARTIAL` was called terminal *and* retry was said to advance the same run; the target attribute set determined run identity in prose but not in the key | Logical run (the question) split from attempts (executions), with `target_set_hash` in the run key (M3-ADR-019) |
+| 6 | `PARTIAL` was called terminal *and* retry was said to advance the same run; the target attribute set determined run identity in prose but not in the key | Logical run (the question) split from attempts (executions), with `target_set_hash` in the run key (M3-ADR-019; superseded in revision 4 by `research_plan_hash`, M3-ADR-025) |
 
 A seventh was found while rechecking, not listed in the brief: **M3-ADR-008
 argued against a separate bodies table, which revision 2 then adopted.** The
@@ -1341,7 +1410,60 @@ possible sources and no way to say which.
 
 ---
 
-## 30. Open questions
+### Revision 4 findings
+
+Revision 4 is the implementation-readiness lock. It resolved fourteen further
+issues under a third rule added to the first two:
+
+> **A derived value may not be keyed more narrowly than the context that
+> determines it**, and **evidence exists independently of whatever consumes
+> it.**
+
+| # | Issue | Resolution |
+| --- | --- | --- |
+| 1 | `operational_research_profiles` had `PK (company_id)` yet stored coverage, whose denominator comes from the plan — two plans for one company could not coexist | Company-global facts stay on the company projection; coverage moves to `operational_research_plan_profiles`, keyed by run (M3-ADR-029) |
+| 2 | Gaps mixed two meanings: global evidence state and plan-specific incompleteness | Gaps are **plan-specific**, keyed by run (M3-ADR-029) |
+| 3 | Evidence hung off `claim_evidence_links`, so an identity conflict found before any claim had nowhere to live — preserving it meant fabricating a claim | `research_evidence_items` is first-class; claims and signals both reference it (M3-ADR-030) |
+| 4 | Evidence named `body_id` and `artifact_id`, but one body has many derivations, so `body_id` never determined the artifact | Evidence names the exact `artifact_derivation_id`; three composite FKs bind all paths to one body, declaratively (M3-ADR-031) |
+| 5 | `source_published_at` sat on the globally deduplicated artifact, forcing publication metadata into the canonical hash — which would have split mirrors into two artifacts and broken independence detection | Publication metadata moves to the derivation that observed it; the hash stays purely semantic (M3-ADR-031) |
+| 6 | The assertion fingerprint omitted every policy version, so re-asserting under trust v2 collided with the v1 claim and the documented behaviour was unreachable | `assertion_contract_hash` joins the fingerprint, and so does `unit` (M3-ADR-032) |
+| 7 | Claim confidence was prose: "computed from evidence type and source trust" | A versioned formula with a stated contract for one link, many links, repeated publishers, independent publishers, mixed tiers and inference (M3-ADR-035) |
+| 8 | `publisher_policy_version` was named and persisted nowhere, so a mapping change would silently re-score historical corroboration | Frozen on the evidence item; recorded on both projections (M3-ADR-033) |
+| 9 | `NOT_MODIFIED` had no defined `body_id` semantics, so a 304 either fabricated bytes or dropped out of provenance | A 304 references the validated body and records the validator; CHECK per outcome (M3-ADR-037) |
+| 10 | A `SAMPLED` contract was treated as idempotent because a UNIQUE key kept the first sample | Deterministic contracts assert; sampled ones carry a sample slot and reach a claim only via human confirmation (M3-ADR-038) |
+| 11 | `attempt_seed_inputs` was promised in prose and in acceptance L11 and never declared | Declared, canonicalized, hashed, frozen at start (M3-ADR-036) |
+| 12 | Docs claimed signals are "consumed by M2's existing human-review path" — **verified false against live code**: `append_human_decision` takes a `ProviderEntity` and `HumanReviewRequest.provider_entity_id` is required, while a company-level signal has none | The queue is M3-owned end to end; the M2 workflow that might consume it is explicitly future work (§21.1) |
+| 13 | `evidence_digest` was an identity key *and* the docs said evidence is appended to an open signal — a hash over a growing set cannot be both | Identity is the semantic concern; review episodes are occurrences (M3-ADR-034) |
+| 14 | Stale revision-2 names survived in live design text and in the API surface | Mechanically swept; historical mentions retained only where labelled |
+
+## 30. Revision 4 freeze criteria
+
+The brief's seven conditions, each checked mechanically rather than asserted:
+
+| # | Criterion | Status |
+| --- | --- | --- |
+| 1 | Every acceptance scenario is representable by the schema | **Met** — every table named in acceptance exists in the graph; 115 scenarios |
+| 2 | Every provenance walk is single-valued | **Met** — evidence names one extraction, one fetch event, one derivation; three composite FKs bind them to one body |
+| 3 | No immutable identity row contains contextual mutable state | **Met** — §5b classifies every object; bodies, artifacts, sources and signals hold only identity |
+| 4 | Plan-specific state cannot overwrite another plan | **Met** — coverage keyed by `run_id`, gaps keyed by `(run_id, attribute, kind)` |
+| 5 | Evidence exists independently of claims and signals | **Met** — `research_evidence_items` is referenced by both and owned by neither |
+| 6 | Persisted confidence and corroboration are reproducible | **Met** — trust inputs frozen on the link, policy versions inside `assertion_contract_hash`, publisher policy frozen on the evidence item and recorded on both projections |
+| 7 | Cross-document mechanical audit returns zero stale live-design references | **Met** — zero; the remaining mentions are labelled prior-revision history |
+
+**M3 DESIGN REVISION 4 — IMPLEMENTATION READY.**
+
+Counts, computed from the documents: **23 tables · 115 acceptance scenarios ·
+38 ADRs.** Three M2 objects are touched, all additively:
+`attribute_definitions.owner_milestone`,
+`company_claims.assertion_fingerprint` with a partial unique index, and a
+deferred constraint trigger on `company_claims`.
+
+## 31. Open questions
+
+These do **not** block implementation. Each is a calibration or a policy table
+to be populated, not a structural unknown — the contracts that consume them are
+versioned, so populating them later is a new policy version rather than a
+schema change.
 
 Listed rather than silently decided:
 
@@ -1363,3 +1485,15 @@ Listed rather than silently decided:
 7. **`markets` reference granularity.** `service_area` as free text vs
    references to M1 markets — a US county has no M1 market row, so free text is
    the interim answer and may not be the right one.
+
+8. **Confidence weights.** The formula and its version are fixed (§4.5 of the
+   schema graph); `base(fact_type)`, the trust tiers, the corroboration
+   saturation curve and the inference penalties are not calibrated. They ship
+   as fixture configuration under `confidence_formula_version` 1.
+9. **Publisher override table.** Which job boards, registries and directories
+   count as publishers in their own right is unpopulated under
+   `publisher_policy_version` 1.
+10. **Signal concern normalization.** `normalized_concern` in the signal
+    fingerprint needs a stated normalization for names like "XYZ Holdings" vs
+    "XYZ Holdings Inc." — currently the same `normalize_name` M2 uses, which
+    may be too aggressive for identity concerns.

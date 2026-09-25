@@ -1,6 +1,6 @@
 # M3 — Architecture Decision Records
 
-**Status:** design, revision 3. **Not implemented.**
+**Status:** design, revision 4 — **implementation ready**. Not implemented.
 
 Decisions taken while designing M3 Operational Research. Numbered
 `M3-ADR-NNN`, independent of M0/M1's `ADR-NNN` and M2's `M2-ADR-NNN`.
@@ -994,3 +994,340 @@ an identity row is revision 1's gap-counter defect wearing a different hat.
 * A reviewer receives an assertion **and** the spans supporting it.
 * New evidence for an existing signal appends a link and leaves the parent
   untouched.
+
+
+---
+
+## M3-ADR-029 — A derived value is keyed by the context that determines it
+
+**Status:** accepted (revision 4)
+
+### Context
+
+`operational_research_profiles` had `PK (company_id)` and stored `coverage`,
+`confidence` and `contradiction_rate`. Revision 3 had already made multiple
+logical research questions per company legal. Coverage's denominator comes from
+the target attribute set, from applicability for the vertical and from the
+policy's required/optional split — all of which are inside
+`research_plan_hash`.
+
+So company X with plan A (HVAC, 18 required, coverage 0.78) and plan B
+(another context, 12 required, coverage 0.92) had one row for two answers. The
+second rebuild would silently overwrite the first.
+
+The same question applies to gaps: is "`erp` is unknown" a fact about the
+company or about a question?
+
+### Decision
+
+Split by context:
+
+* `operational_research_profiles` — **company-global**: projected facts,
+  contradictions, contributing claim ids. No coverage.
+* `operational_research_plan_profiles` — **plan-specific**, keyed by `run_id`:
+  coverage, confidence summary, contradiction rate, attribute counts.
+
+Gaps are **plan-specific**, keyed `(run_id, attribute_key, gap_kind)`. Whether
+an attribute is required, applicable, or sufficiently evidenced all come from
+the plan. The company-global reading — *is there any ERP evidence at all?* — is
+answerable from claims and needs no gap row.
+
+### Consequences
+
+* Two plans coexist without overwriting each other.
+* Projected facts still merge across plans, because a fact is a fact whoever
+  went looking for it.
+* The rule generalises: **no object may be keyed only by company if its value
+  changes when the vertical, target set or policy changes.** §5b of the schema
+  graph classifies every derived object against it.
+
+---
+
+## M3-ADR-030 — Evidence is first-class and owned by nobody
+
+**Status:** accepted (revision 4)
+
+### Context
+
+Locators, quotes and the provenance chain lived on `claim_evidence_links` —
+that is, evidence was a property of a claim. But the M2/M3 firewall requires
+that an identity conflict be **raised and stopped on**, not acted upon. A page
+stating *"ABC Service is a division of XYZ Holdings"* must produce a signal
+before any operational claim exists.
+
+Revision 3 had nowhere to put that observation. Preserving it meant fabricating
+a company claim first — creating a canonical assertion in order to file a doubt
+about identity. And `identity_review_signal_evidence` pointed at
+`claim_evidence_links`, so a reviewer could only be shown evidence some claim
+already owned.
+
+### Decision
+
+`research_evidence_items` becomes the unit: *this extraction, over this
+retrieval, of this body under this contract, contains this span.* It carries
+the locator, quote, hashes and publisher classification.
+
+`claim_evidence_links` becomes thin — claim, evidence item, `support_kind`, and
+the trust metadata frozen for *that* assertion.
+`identity_review_signal_evidence` points at evidence items directly.
+
+### Consequences
+
+* An observation can support a claim, a signal, both, or nothing yet.
+* Locator and quote structures exist once, not in two unrelated tables.
+* Retention never prunes evidence items, so the supporting span survives body
+  pruning — which is what made the retention story coherent in the first place.
+
+---
+
+## M3-ADR-031 — Provenance names the exact derivation; artifacts hold no observation
+
+**Status:** accepted (revision 4)
+
+### Context
+
+Two defects with one root: confusing *the content* with *an observation of the
+content*.
+
+Evidence carried `body_id` and `artifact_id`. One body has many derivations
+under different canonicalization contracts, so `body_id` never determined
+`artifact_id`, and a trigger was keeping them consistent by hand.
+
+Worse, `research_artifacts` — globally deduplicated semantic content — stored
+`source_published_at`, `language` and `title`. To make those fit, revision 3
+required every canonicalization strategy to fold declared publication metadata
+into the canonical form. That "fix" would have broken independence detection:
+an article mirrored on two sites, one stamped "Published March 2026" and one
+undated, would canonicalize to **two artifacts**, and the independence rule
+rests on *same artifact ⇒ same document*. Two mirrors would have counted as two
+independent witnesses — precisely the failure the rule exists to prevent.
+
+### Decision
+
+Evidence items name `artifact_derivation_id` and reach the artifact through it.
+Three composite foreign keys — to `research_extractions (id, body_id)`,
+`research_fetch_events (id, body_id)` and
+`research_artifact_derivations (id, body_id)` — force every path to name the
+same body, declaratively. The trigger is gone.
+
+`source_published_at`, `source_published_granularity`, `language` and `title`
+move to the **derivation**. Publication metadata is **not** in the canonical
+hash.
+
+### Consequences
+
+* Two bodies canonicalizing to one artifact may carry different publication
+  observations, and both survive.
+* The artifact stays one document, so independence detection keeps working.
+* A claim reaches publication metadata through the exact derivation its
+  evidence names — the honest route, since that is where it was observed.
+
+---
+
+## M3-ADR-032 — Assertion identity includes the policy that produced it
+
+**Status:** accepted (revision 4)
+
+### Context
+
+Revision 3 stated that a trust recalibration re-asserts under v2, creating a
+new claim while the v1 claim keeps its confidence. The schema made that
+impossible: `assertion_fingerprint` covered company, attribute, registry
+version, value, fact type, granularity, `observed_at` and lineage — and **no
+policy version**. The same value over the same lineage under trust v2 produced
+an identical fingerprint, and the partial unique index rejected the new claim.
+A documented behaviour was unreachable.
+
+The fingerprint also omitted `unit`.
+
+### Decision
+
+```
+assertion_contract_hash = sha256(assertion_policy_version, trust_policy_version,
+                                 confidence_formula_version,
+                                 fact_type_mapping_version,
+                                 publisher_policy_version, inference_rule_version)
+```
+
+Both `assertion_contract_hash` and `unit` join the fingerprint.
+
+### Consequences
+
+* Re-assertion under a new policy is representable, which is what makes
+  M3-ADR-028's promise real rather than aspirational.
+* `40 PEOPLE` and `40 FTE` no longer collide.
+* The fingerprint still excludes the extractor, so re-reading one page with a
+  better model appends evidence rather than inflating corroboration.
+
+---
+
+## M3-ADR-033 — A projected number names the policy that produced it
+
+**Status:** accepted (revision 4)
+
+### Context
+
+`publisher_key` was derived under `publisher_policy_version`, and that version
+was persisted nowhere. A later mapping change — deciding a directory is its own
+publisher, say — would silently turn one corroborating publisher into two for
+output already written, with no way to tell which answer you were reading.
+
+### Decision
+
+`publisher_key` and `publisher_policy_version` are frozen on the evidence item
+when the observation is recorded. Both projections record the
+`publisher_policy_version` and `assertion_policy_version` they were rebuilt
+under.
+
+### Consequences
+
+* Historical corroboration stays explainable.
+* A rebuild under a new policy is a different projection contract, visible in
+  the row, rather than a silent re-scoring.
+
+---
+
+## M3-ADR-034 — Signal identity is the concern; review is an occurrence
+
+**Status:** accepted (revision 4)
+
+### Context
+
+`identity_review_signals` used `evidence_digest` as part of its identity key
+while the design also said new evidence appends to an open signal. A hash over
+a growing set cannot be an immutable key. The docs simultaneously said a closed
+signal rediscovered later becomes a *new* signal "whose evidence_digest
+differs" — which only worked because the key was already unstable.
+
+### Decision
+
+Identity is the **semantic concern**: company, signal kind, related company,
+normalized concern, policy version. Review episodes are
+`identity_review_signal_occurrences`, at most one open per signal, each with
+its own status chain and an optional link to its predecessor.
+
+### Consequences
+
+* Appending evidence leaves both the signal and the occurrence untouched.
+* A dismissed episode stays dismissed; the same concern resurfacing opens
+  occurrence *n+1* with its history intact.
+* Terminal states stay terminal without needing a mutable key to express it.
+
+---
+
+## M3-ADR-035 — Claim confidence is a versioned formula, not prose
+
+**Status:** accepted (revision 4)
+
+### Context
+
+A claim has one persisted `confidence` and may have many evidence items.
+"Computed from evidence type and source trust" does not say what happens with
+four links in one lineage, or the same publisher repeated, or mixed trust
+tiers.
+
+### Decision
+
+A declared formula — `base(fact_type) × trust_factor × corroboration_factor ×
+inference_penalty` — with every input naming its version, all of which sit
+inside `assertion_contract_hash`. Weights are fixture configuration and are
+**not** calibrated.
+
+`trust_factor` uses the **maximum** tier across the claim's links, not the
+mean: adding a weak corroborating source must never lower confidence.
+`corroboration_factor` is monotone non-decreasing in the count of *independent
+publishers* and saturates.
+
+### Consequences
+
+* A stored confidence is reproducible from its own claim: read the links, read
+  the versions, recompute.
+* The numbers may be wrong until calibrated; they can never be unexplainable.
+
+---
+
+## M3-ADR-036 — Execution inputs are declared, frozen, and API-visible
+
+**Status:** accepted (revision 4)
+
+### Context
+
+Revision 3 moved late-arriving seeds to `attempt_seed_inputs` in prose, and
+acceptance L11 required it — but the attempts table never declared the column.
+
+Separately, the API surface still filtered logical runs by status and offered
+per-stage timestamps on a run, both of which became false when runs and
+attempts split, plus a route to artifact *versions*, which no longer exist.
+
+### Decision
+
+`attempt_seed_inputs` (canonicalized JSONB) and `attempt_seed_inputs_hash` are
+declared on the attempt, written once at `PENDING → DISCOVERING` and frozen by
+the transition trigger.
+
+The API is reorganised around the split: runs are filtered by company, policy
+and vertical; attempts are filtered by status and carry the stages; coverage
+and gaps hang off the run; evidence, sources, derivations and evidence items
+are addressable in their own right.
+
+### Consequences
+
+* An attempt is reproducible, which is the only reason to record its seeds.
+* No execution property is exposed on a logical run.
+* A company-scoped coverage endpoint is deliberately absent: it would have to
+  pick one plan arbitrarily.
+
+---
+
+## M3-ADR-037 — A 304 validates a known body and says which validator proved it
+
+**Status:** accepted (revision 4)
+
+### Context
+
+`fetch_outcome = NOT_MODIFIED` existed with no defined `body_id` semantics. A
+304 returns no bytes, so the options were to fabricate a body reference, or to
+leave it NULL and drop the event out of provenance. The second is worse: a page
+confirmed unchanged is exactly the evidence that a claim is still fresh.
+
+### Decision
+
+Per-outcome CHECK. `OK` requires a body. `NOT_MODIFIED` requires
+`http_status = 304`, the **previously known body it validated**, and the
+validator that was sent (`ETAG` or `LAST_MODIFIED`) with its value. Genuine
+failures require `body_id IS NULL`.
+
+### Consequences
+
+* The event answers "at time T the server confirmed body B was still current",
+  and staleness reads it.
+* No bytes are invented, and the assertion is checkable rather than assumed.
+
+---
+
+## M3-ADR-038 — Deterministic contracts assert; sampled ones are confirmed first
+
+**Status:** accepted (revision 4)
+
+### Context
+
+`extraction_contract_hash` included `determinism` and `temperature`, and
+uniqueness was `(text_derivation_id, extraction_contract_hash)`. If
+`determinism = SAMPLED`, two executions may legitimately differ — so the unique
+key kept whichever sample landed first. That is not idempotency; it is one
+arbitrary draw frozen by a race, presented as a reproducible result.
+
+### Decision
+
+Only a `DETERMINISTIC` extraction may assert a `company_claim` directly. A
+`SAMPLED` extraction must carry a `sample_execution_id`, which joins its
+uniqueness so repeated sampling appends rather than colliding, and it reaches a
+claim only through a confirming `HUMAN` extraction.
+
+### Consequences
+
+* Sampled extraction stays available for experimentation and review without
+  contaminating the canonical ledger.
+* This is M3-ADR-004 from the other side: there, a model's *confidence* could
+  not raise evidential strength; here, its *variability* cannot be laundered
+  into reproducibility by a constraint.

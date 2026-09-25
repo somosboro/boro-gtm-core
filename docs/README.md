@@ -43,18 +43,26 @@ from each contradiction to its resolution stays readable.
 
 ## M3 — Operational Research (design only, not implemented)
 
-The design is at **revision 3**. Revision 2 resolved six structural
-contradictions in revision 1, all instances of an append-only row carrying a
-value that changes. Revision 3 resolved fourteen more under a second rule: a
-globally deduplicated identity row may not carry a fact belonging to one of the
-contexts that produced it, and every provenance walk must be single-valued.
+The design is at **revision 4 — implementation ready**, frozen across four
+passes, each governed by one rule:
+
+1. **Revision 2** — an append-only row may not contain a value that changes.
+2. **Revision 3** — a globally deduplicated identity row may not carry a fact
+   belonging to one of the contexts that produced it, and every provenance walk
+   must be single-valued.
+3. **Revision 4** — a derived value may not be keyed more narrowly than the
+   context that determines it, and evidence exists independently of whatever
+   consumes it.
+
+Thirty-six structural contradictions were found and resolved across the three
+passes. No M3 code, migrations or tables exist.
 
 | Document | What it covers |
 | --- | --- |
 | [M3_OPERATIONAL_RESEARCH_DESIGN.md](M3_OPERATIONAL_RESEARCH_DESIGN.md) | Responsibility and boundaries, source/artifact/version model, the claim-ledger audit, operational attribute taxonomy, extraction and model-assisted evidence, contradictions, temporal semantics, gaps and coverage, fetch policy, firewalls |
 | [M3_SCHEMA_GRAPH.md](M3_SCHEMA_GRAPH.md) | Proposed table graph: ownership, mutability, keys, indexes and what is deliberately *not* created |
-| [M3_ACCEPTANCE_CRITERIA.md](M3_ACCEPTANCE_CRITERIA.md) | 99 Given/When/Then scenarios M3 must satisfy |
-| [M3_ADRS.md](M3_ADRS.md) | 28 decision records, including the one-ledger decision and the M3/M4 boundary |
+| [M3_ACCEPTANCE_CRITERIA.md](M3_ACCEPTANCE_CRITERIA.md) | 115 Given/When/Then scenarios M3 must satisfy |
+| [M3_ADRS.md](M3_ADRS.md) | 38 decision records, including the one-ledger decision and the M3/M4 boundary |
 
 **No M3 code, migrations or tables exist in this repository.** M3 is roadmap
 only; the released milestones are M0, M1 and M2.

@@ -1,18 +1,21 @@
 # M3 — Proposed Schema Graph
 
-**Status:** design, revision 3. **Not implemented.** No table below exists.
+**Status:** design, revision 4 — **implementation ready**. **Not implemented.** No table below exists.
 
 Companion to [M3_OPERATIONAL_RESEARCH_DESIGN.md](M3_OPERATIONAL_RESEARCH_DESIGN.md).
 
 Revision 2 resolved six structural contradictions in revision 1, under the
 rule **an append-only row may not contain a value that changes.**
 
-Revision 3 adds a second rule and applies both uniformly
-(M3-ADR-020 … 028):
+Revision 3 added a second rule: **a globally deduplicated identity row may not
+carry a fact belonging to one of the contexts that produced it**, and every
+provenance walk must be single-valued.
 
-> **A globally deduplicated identity row may not carry a fact that belongs to
-> one of the many contexts that produced it** — and every provenance walk must
-> be single-valued.
+Revision 4 adds the third and final rule (M3-ADR-029 … 038):
+
+> **A derived value may not be keyed more narrowly than the context that
+> determines it** — and **evidence exists independently of whatever consumes
+> it.**
 
 ---
 
@@ -20,7 +23,7 @@ Revision 3 adds a second rule and applies both uniformly
 
 ```
   operational_research_runs            the logical research question
-  (company, policy_version, target_set_hash)   immutable identity
+  UNIQUE (research_plan_hash)          immutable identity
             │
             │ 1:N
             ▼
@@ -57,8 +60,13 @@ Revision 3 adds a second rule and applies both uniformly
             │            composite FKs prove both name the same body
             │                          │
             │                          ▼
-            │            company_claims  (M2-owned ledger)
-            │            + assertion_fingerprint
+            │            research_evidence_items   evidence owned by nobody
+            │              │                  │
+            │              ▼                  ▼
+            │   claim_evidence_links   identity_review_signal_evidence
+            │              │
+            │              ▼
+            │   company_claims (M2-owned ledger) + assertion_fingerprint
             ▼
   operational_research_gaps ──▶ operational_research_gap_events
   (identity only)                (ATTEMPTED names its fetch_event)
@@ -66,12 +74,13 @@ Revision 3 adds a second rule and applies both uniformly
   identity_review_signals ──▶ identity_review_signal_events   (legal transitions)
   (identity only)          └─▶ identity_review_signal_evidence (the promised links)
 
-  operational_research_profiles       PROJECTION, truncatable, no clock
+  operational_research_profiles       PROJECTION  company-global facts
+  operational_research_plan_profiles  PROJECTION  coverage, per plan
 
   discovery_jobs (M2-owned queue) ── reused unchanged, no new queue
 ```
 
-**Twenty new tables.** Three M2 objects are touched, all additively (§5).
+**Twenty-three new tables.** Three M2 objects are touched, all additively (§5).
 
 ---
 
@@ -161,7 +170,17 @@ natural key stays identical.**
 | Temporal | `created_at`, `started_at`, `discovery_completed_at`, `fetch_completed_at`, `extraction_completed_at`, `completed_at` |
 
 Columns: `attempt_number`, `status`, `error`, `failure_stage`,
-`allow_partial_assertion`, `cost_units`.
+`allow_partial_assertion`, `cost_units`, **`attempt_seed_inputs`** (JSONB,
+canonicalized), **`attempt_seed_inputs_hash`**.
+
+`attempt_seed_inputs` is the immutable snapshot of the **execution** inputs:
+the company's projected identity domains as of this execution, any human seed
+supplied for this run, provider credentials scope. Revision 3 promised this
+field in prose and in acceptance L11 and never declared it (M3-ADR-036).
+
+It is written once at `PENDING → DISCOVERING` and frozen by the same trigger
+that enforces the transition graph: an attempt whose seeds changed mid-flight
+would not be reproducible, which is the only reason to record them.
 
 **Legal transitions**, and no others:
 
@@ -308,6 +327,32 @@ claims the bytes are is a property of the HTTP exchange, and the identical byte
 string can be served as `text/plain` by one host and `text/html` by another
 (M3-ADR-023).
 
+**`body_id` semantics per outcome**, which revision 3 left undefined for 304
+(M3-ADR-037):
+
+```sql
+CHECK (
+  (fetch_outcome = 'OK'            AND body_id IS NOT NULL)
+  OR
+  (fetch_outcome = 'NOT_MODIFIED'  AND body_id IS NOT NULL
+                                   AND http_status = 304
+                                   AND validated_by IS NOT NULL)
+  OR
+  (fetch_outcome NOT IN ('OK','NOT_MODIFIED') AND body_id IS NULL)
+)
+```
+
+A 304 returns no bytes but asserts something valuable: *at time T the server
+confirmed body B is still current.* So `body_id` references the **previously
+known body that the request validated**, and `validated_by` records which
+validator was sent (`ETAG` or `LAST_MODIFIED`) together with its value, so the
+claim is checkable rather than assumed.
+
+Without this, a 304 either fabricated bytes it never received or dropped out of
+provenance entirely — and the second is worse, because a page confirmed
+unchanged is precisely the evidence that a claim is still fresh. Freshness
+(§staleness) reads these events.
+
 **This is the table revision 1 promised and never declared.** Acceptance A1
 required that identical bytes produce "one new retrieval event" and no new
 version, but the only place a retrieval time could live was a row unique on
@@ -384,7 +429,21 @@ an artifact derived under the old one remains interpretable.
 | Temporal | `derived_at` |
 
 Columns: `canonicalization_strategy`, `canonicalization_version`,
-`canonical_content_hash`, `derivation_status`, `error`.
+`canonical_content_hash`, `derivation_status`, `error`, and the
+**observational metadata read out of this body under this contract**:
+`source_published_at`, `source_published_granularity`, `language`, `title`.
+
+```sql
+CHECK ((source_published_at IS NOT NULL)
+       = (source_published_granularity <> 'UNDATED'))
+```
+
+Two bodies canonicalizing to one artifact may carry different publication
+metadata — a dated original and an undated mirror — and both observations
+survive, because each belongs to its own derivation. The artifact stays one
+document, which is what independence detection requires.
+
+Additional uniqueness for composite-FK targets: `UNIQUE (id, body_id)`.
 
 **The join that revision 1 lacked.** One body under `HTML_TEXT_V1` and the same
 body under `HTML_TEXT_V2` are two derivations pointing at two artifacts — which
@@ -395,7 +454,7 @@ Reading the other way: two different byte strings that canonicalize to the same
 content are two derivations pointing at **one** artifact, which is how a
 cosmetic edit produces a new body without producing new semantics.
 
-### 3.9 `research_artifacts` — semantic identity
+### 3.9 `research_artifacts` — semantic identity, and nothing observational
 
 | Property | Value |
 | --- | --- |
@@ -408,17 +467,24 @@ cosmetic edit produces a new body without producing new semantics.
 | Temporal | `first_seen_at` |
 
 Columns: `canonical_content_hash`, `canonicalization_strategy`,
-`canonicalization_version`, `language`, `title`, `source_published_at`,
-`source_published_granularity`.
+`canonicalization_version`, `first_seen_at`. **Nothing else.**
 
-`CHECK ((source_published_at IS NOT NULL) = (source_published_granularity <> 'UNDATED'))`
+**`source_published_at`, `source_published_granularity`, `language` and
+`title` moved to `research_artifact_derivations`** (M3-ADR-031). Revision 3
+put them here and, to make them fit, required every canonicalization strategy
+to fold declared publication metadata into the canonical form. That fix broke
+something more valuable than it repaired:
 
-`source_published_at` lives here, not on the fetch event, because it is a
-property of *what the document says about itself*, not of when we collected it.
-Every canonicalization strategy is therefore required to preserve declared
-publication metadata in its canonical form — otherwise two documents differing
-only in publication date would collapse to one artifact. That requirement is
-part of the strategy contract, stated in the design (§3.3).
+> An article mirrored on two sites — one stamped "Published March 2026", one
+> not — would canonicalize to **two different artifacts**. Independence
+> detection (§4.2a) rests on *same artifact ⇒ same document*, so the two
+> mirrors would have counted as two independent witnesses. Exactly the failure
+> the independence rule exists to prevent.
+
+Publication metadata is therefore **not** in the canonical hash, and it is not
+on the artifact. It is an observation about one body under one contract, so it
+lives on the derivation that observed it. A claim reaches it through the exact
+derivation its evidence names (§3.12a).
 
 ### 3.10 `research_text_derivations` — readable text, versioned separately
 
@@ -495,6 +561,25 @@ extraction_contract_hash = sha256(canonical_json({
 }))
 ```
 
+**Determinism is not optional for canonical assertion** (M3-ADR-038). A
+`SAMPLED` contract may legitimately produce different output on each run, so a
+UNIQUE key that keeps whichever sample landed first is not idempotency — it is
+one arbitrary draw frozen by a race.
+
+```sql
+-- a sampled extraction must carry its own execution slot
+CHECK (determinism = 'DETERMINISTIC' OR sample_execution_id IS NOT NULL)
+```
+
+and uniqueness becomes
+`UNIQUE NULLS NOT DISTINCT (text_derivation_id, extraction_contract_hash,
+sample_execution_id)`, so repeated sampling appends rather than colliding.
+
+Only a `DETERMINISTIC` extraction may assert a `company_claim` directly. A
+`SAMPLED` extraction exists for experimentation and review, and reaches a claim
+only through a `HUMAN` extraction that confirms it — which is an ordinary
+evidence item with a human extractor, not a special case.
+
 **No `attempt_id`.** Revision 2 keyed this table on four fields while storing
 one attempt id, so when attempt 2 legitimately reused the extraction attempt 1
 had produced, "which attempts used this?" was unanswerable and the row still
@@ -535,48 +620,78 @@ object was checked for a single-attempt field it should not own:
 | `research_artifact_derivations`, `research_text_derivations`, `research_body_classifications` | Clean; pure functions of `(body, contract)`. Their usage is recoverable through the extractions that read them, so a second association table would add rows without adding answers |
 | `research_fetch_events`, `research_source_discoveries`, `operational_research_gap_events` | Correct as-is: each **is** an execution event and belongs to exactly one attempt |
 
-### 3.12 `claim_evidence_links` — one link, one exact observation
+### 3.12 `research_evidence_items` — evidence, owned by nobody
 
 | Property | Value |
 | --- | --- |
 | Owner | M3 |
 | Mutability | append-only |
 | PK | `id` (uuid) |
-| Natural uniqueness | `UNIQUE (claim_id, extraction_id, fetch_event_id, locator_hash)` |
-| Key FKs | `claim_id → company_claims` (RESTRICT); composite `(extraction_id, body_id) → research_extractions (id, body_id)`; composite `(fetch_event_id, body_id) → research_fetch_events (id, body_id)`; `artifact_id → research_artifacts` (RESTRICT); `source_id → research_sources` (RESTRICT) |
+| Natural uniqueness | `UNIQUE (extraction_id, fetch_event_id, artifact_derivation_id, locator_hash)` |
+| Key FKs | composite `(extraction_id, body_id) → research_extractions (id, body_id)`; composite `(fetch_event_id, body_id) → research_fetch_events (id, body_id)`; composite `(artifact_derivation_id, body_id) → research_artifact_derivations (id, body_id)` |
 | Truncatable | No |
 | Temporal | `created_at` |
 
-Columns: `extraction_id`, `fetch_event_id`, `body_id`, `artifact_id`,
-`source_id`, `locator` (JSONB), `locator_hash`, `quote`, `quote_sha256`,
-`support_kind` (`DIRECT_STATEMENT | DERIVED | CORROBORATING`),
-`source_class`, `trust_policy_version`, `trust_tier` (§4.4).
+Columns: `extraction_id`, `fetch_event_id`, `artifact_derivation_id`,
+`body_id`, `source_id`, `locator` (JSONB), `locator_hash`, `quote`,
+`quote_sha256`, `publisher_key`, `publisher_policy_version`.
 
-**The two composite foreign keys are the fix for revision 2's ambiguous
-provenance.** A body is reachable from many fetch events — several URLs,
-several attempts, several companies, several times — so a walk that went
-`extraction → text derivation → body → fetch events` fanned out to *all*
-retrievals of those bytes and could not say which one supplied the evidence
-(M3-ADR-020).
+One row means exactly: *this extraction, over this retrieval, of this body
+under this canonicalization contract, contains this supporting span.*
 
-The link now names the exact fetch event, and the database proves the two
-halves agree: `body_id` is carried on the link, on the extraction and on the
-fetch event, and both composite FKs force all three to be the same body. A link
-citing an extraction over body X and a retrieval of body Y is unrepresentable
-rather than merely unlikely — the same declarative pattern M2 uses in
-`fk_supersedes_same_entity`.
+**Evidence is now a first-class object rather than a property of a claim.**
+Revision 3 hung locators off `claim_evidence_links`, which forced a
+contradiction: an identity conflict must be raised *before* M3 is allowed to
+assert anything, so
 
-The provenance walk is therefore **single-valued at every hop**:
+> *"ABC Service is a division of XYZ Holdings"*
+
+had nowhere to live. Preserving it required fabricating an operational claim
+first — creating a canonical assertion in order to file a doubt about identity
+(M3-ADR-030). An evidence item can now support a claim, an identity signal,
+both, or nothing yet.
+
+**Three composite foreign keys, one body.** `body_id` appears on the evidence
+item, on the extraction, on the fetch event and on the derivation, and all
+three composite FKs force them to agree. Revision 3 carried `body_id` and
+`artifact_id` and relied on a trigger to keep the artifact consistent — but one
+body has many derivations under different contracts, so `body_id` alone never
+determined `artifact_id` (M3-ADR-031). The derivation is now named directly and
+the artifact is reached through it, declaratively:
 
 ```
-claim → link → extraction → text derivation → body
-             ↘ fetch event → source
-             ↘ artifact  (semantic identity)
+evidence item ─┬─▶ extraction          → text derivation → body
+               ├─▶ fetch event         → source
+               └─▶ artifact derivation → artifact  (+ publication metadata)
 ```
 
-`artifact_id` and `source_id` are denormalised for indexed lineage grouping
-(§4); both are derivable from the composite-FK chain, and a CHECK-equivalent
-trigger verifies they agree with it.
+Every hop single-valued; no trigger required for the binding.
+
+`publisher_key` and `publisher_policy_version` are frozen here because
+independence is judged per observation and must stay reproducible after the
+publisher mapping changes (§4.2a, M3-ADR-033).
+
+### 3.12a `claim_evidence_links` — which evidence supports which assertion
+
+| Property | Value |
+| --- | --- |
+| Owner | M3 |
+| Mutability | append-only |
+| PK | `id` (uuid) |
+| Natural uniqueness | `UNIQUE (claim_id, evidence_item_id)` |
+| Key FKs | `claim_id → company_claims` (RESTRICT), `evidence_item_id → research_evidence_items` (RESTRICT) |
+| Truncatable | No |
+| Temporal | `created_at` |
+
+Columns: `support_kind` (`DIRECT_STATEMENT | DERIVED | CORROBORATING`),
+`source_class`, `trust_policy_version`, `trust_tier`.
+
+Thin by design. The locator, quote and provenance live on the evidence item;
+what lives here is **assertion-specific**: how this evidence supports *this*
+claim, and the trust inputs frozen at the moment *this* assertion was made
+(§4.4). The same evidence item supporting two claims carries two link rows with
+possibly different `support_kind` and, if the policy changed between
+assertions, different trust metadata.
 
 ### 3.13 `operational_research_gaps` — identity only
 
@@ -585,16 +700,28 @@ trigger verifies they agree with it.
 | Owner | M3 |
 | Mutability | **identity** |
 | PK | `id` (uuid) |
-| Natural uniqueness | `UNIQUE (company_id, attribute_key, research_policy_version, gap_kind)` |
-| Key FKs | `company_id → companies` (RESTRICT) |
+| Natural uniqueness | `UNIQUE (run_id, attribute_key, gap_kind)` |
+| Key FKs | `run_id → operational_research_runs` (RESTRICT), `company_id → companies` (RESTRICT, denormalised for indexing) |
 | Truncatable | No |
 | Temporal | `first_raised_at` |
 
-Columns: exactly the key, plus `first_raised_at`.
+Columns: exactly the key, plus `company_id` and `first_raised_at`.
+
+**A gap is research-plan-specific, not company-global** (M3-ADR-029). Whether
+an attribute is *required*, whether it is *applicable* to this vertical, and
+what fact-type floor counts as *sufficient* all come from the plan — so
+"`erp` is unknown" is a statement about a question, not about the company.
+Two plans both lacking ERP evidence raise two gaps, correctly: they are two
+different questions going unanswered. The company-global reading — *is there
+any ERP evidence at all?* — is answerable directly from claims and needs no
+gap row.
+
+`research_policy_version` leaves the key because it is already inside
+`research_plan_hash`, and carrying it twice would let the two disagree.
 
 **No `attempted_source_count`, no `last_attempt_at`, no
 `resolved_by_claim_id`.** All three change, and revision 1 put them on a row it
-declared append-only (M3-ADR-018). They are now derived from §3.14.
+declared append-only (M3-ADR-018). They are derived from §3.14.
 
 ### 3.14 `operational_research_gap_events`
 
@@ -641,44 +768,79 @@ Derived by view, never stored:
 Eleven retrievals now genuinely append eleven rows, and the parent stays
 byte-identical.
 
-### 3.15 `identity_review_signals` — identity only
+### 3.15 `identity_review_signals` — one semantic concern
 
 | Property | Value |
 | --- | --- |
-| Owner | **M3** — written by M3, consumed by M2's review queue |
+| Owner | **M3** — a review queue, **not** an M2 integration (§6) |
 | Mutability | **identity** |
 | PK | `id` (uuid) |
-| Natural uniqueness | `UNIQUE NULLS NOT DISTINCT (company_id, signal_kind, related_company_id, evidence_digest)` |
-| Key FKs | `company_id`, `related_company_id → companies` (RESTRICT) |
+| Natural uniqueness | `UNIQUE (signal_fingerprint)` |
+| Key FKs | `company_id`, `related_company_id → companies` (RESTRICT, related nullable) |
+| Truncatable | No |
+| Temporal | `first_raised_at` |
+
+```
+signal_fingerprint = sha256(canonical_json({
+    company_id, signal_kind, related_company_id,
+    normalized_concern,             -- e.g. the normalized parent name asserted
+    signal_policy_version
+}))
+```
+
+**No `evidence_digest`.** Revision 3 used one as the identity key while also
+saying new evidence appends to an open signal — a hash over a set that grows
+cannot be an immutable key, and the two statements could not both hold
+(M3-ADR-034). Identity is now the *concern*: this company, this kind of doubt,
+about this other party, under this policy.
+
+`related_company_id` is nullable — `POSSIBLE_CEASED_TRADING` names no second
+company — and the fingerprint canonicalizes NULL explicitly, so two such
+signals collide as they should rather than relying on SQL NULL comparison.
+
+### 3.15a `identity_review_signal_occurrences` — one review episode
+
+| Property | Value |
+| --- | --- |
+| Owner | M3 |
+| Mutability | **identity** (state lives in events) |
+| PK | `id` (uuid) |
+| Natural uniqueness | `UNIQUE (signal_id, occurrence_number)`; partial `UNIQUE (signal_id) WHERE` the occurrence is open |
+| Key FKs | `signal_id → identity_review_signals` (RESTRICT), `raised_by_attempt_id → operational_research_attempts` (RESTRICT), `supersedes_occurrence_id → identity_review_signal_occurrences` (RESTRICT, nullable) |
 | Truncatable | No |
 | Temporal | `raised_at` |
 
-### 3.15a `identity_review_signal_evidence` — the evidence the signal promised
+The concern is durable; a **review episode** is not. The same concern
+resurfacing after a reviewer dismissed it opens occurrence *n+1*, linked to its
+predecessor, and the dismissed episode stays dismissed. This is the honest
+reading of "a closed signal rediscovered later becomes a new signal" without
+mutating an identity key to express it.
+
+At most one occurrence may be open per signal, enforced by a partial unique
+index, so a reviewer never sees the same concern queued twice.
+
+### 3.15b `identity_review_signal_evidence`#### The evidence the signal promised
 
 | Property | Value |
 | --- | --- |
 | Owner | M3 |
 | Mutability | append-only |
 | PK | `id` (uuid) |
-| Natural uniqueness | `UNIQUE (signal_id, claim_evidence_link_id)` |
-| Key FKs | `signal_id → identity_review_signals` (RESTRICT), `claim_evidence_link_id → claim_evidence_links` (RESTRICT) |
+| Natural uniqueness | `UNIQUE (signal_occurrence_id, evidence_item_id)` |
+| Key FKs | `signal_occurrence_id → identity_review_signal_occurrences` (RESTRICT), `evidence_item_id → research_evidence_items` (RESTRICT) |
 | Truncatable | No |
 | Temporal | `created_at` |
 
-The design and acceptance H4 both say an identity conflict raises a signal
-**with evidence**; revision 2's schema gave the signal only identity and state
-fields, so a reviewer received an assertion with nothing to check
-(M3-ADR-028).
+It points at **evidence items**, not at claim evidence links. That is the
+whole point of §3.12: an identity conflict is normally found *before* any
+operational claim exists, and revision 3's routing through
+`claim_evidence_links` meant a reviewer could only be shown evidence that a
+claim already owned (M3-ADR-030).
 
-New evidence for an existing signal **appends a link**. Deliberately a table
-rather than a JSON array of ids on the signal: a mutable list on an identity
-row is the same defect as revision 1's gap counters, and a real FK means
-evidence cannot be deleted out from under a signal.
-
-`related_company_id` is nullable — a `POSSIBLE_CEASED_TRADING` signal names no
-second company — so the parent's uniqueness is `NULLS NOT DISTINCT`. Plain
-PostgreSQL uniqueness treats two NULLs as different values, which would have
-let the identical signal be raised on every research run forever.
+New evidence for an open occurrence **appends a row**. Deliberately a table
+rather than a JSON array on the signal: a mutable list on an identity row is
+revision 1's gap-counter defect in a new hat, and a real FK means evidence
+cannot be deleted out from under a review.
 
 ### 3.16 `identity_review_signal_events`
 
@@ -687,8 +849,8 @@ let the identical signal be raised on every research run forever.
 | Owner | M3 |
 | Mutability | append-only |
 | PK | `id` (uuid) |
-| Natural uniqueness | `UNIQUE (signal_id, status, occurred_at)` |
-| Key FKs | `signal_id → identity_review_signals` (RESTRICT) |
+| Natural uniqueness | `UNIQUE (occurrence_id, status, occurred_at)` |
+| Key FKs | `occurrence_id → identity_review_signal_occurrences` (RESTRICT) |
 | Truncatable | No |
 | Temporal | `occurred_at` |
 
@@ -704,29 +866,70 @@ terminal: ACTIONED, DISMISSED — never re-entered
 ```
 
 `ACTIONED → OPEN` and `DISMISSED → ACKNOWLEDGED` are rejected. Revision 2
-listed the four statuses and no invariant, so both were legal. If a signal
-genuinely needs reopening, the answer is a **new signal** carrying the new
-evidence — its `evidence_digest` differs, so the identity key admits it —
-rather than resurrecting a closed review and losing the record that it was
-closed (M3-ADR-027).
+listed the four statuses and no invariant, so both were legal. If a concern
+genuinely needs revisiting, the answer is a **new occurrence** of the same
+durable signal (§3.15a), linked to its predecessor — rather than resurrecting
+a closed review and losing the record that it was closed (M3-ADR-027, refined
+by M3-ADR-034).
 
-### 3.17 `operational_research_profiles`
+### 3.17 `operational_research_profiles` — company-global evidence only
 
 | Property | Value |
 | --- | --- |
 | Owner | M3 |
 | Mutability | **projection** |
 | PK | `company_id` |
-| Natural uniqueness | the PK |
 | Key FKs | `company_id → companies` |
-| Truncatable | **Yes** — truncate and rebuild must reproduce it byte-identically |
-| Temporal | none stored; no clock read during rebuild |
+| Truncatable | **Yes** — rebuilt byte-identically from claims |
+| Temporal | none stored; no clock read |
 
-Columns: projected values and envelopes, `contradiction` flags,
-`derived_from_claim_ids` (sorted), `corroborating_lineage_count` per attribute
-(§4.2), `coverage`, `confidence`, `contradiction_rate`.
+Columns: projected operational values and envelopes, `contradiction` flags,
+`derived_from_claim_ids` (sorted), `assertion_policy_version`,
+`publisher_policy_version`, `corroborating_publisher_count` per attribute.
 
----
+**No `coverage`, no `confidence` summary, no `contradiction_rate`.** Those are
+properties of a research *plan*, not of a company — see §3.18 and
+M3-ADR-029.
+
+What remains is genuinely company-global: *what do we believe about this
+company, from all evidence, regardless of who asked.* Two research plans
+contribute claims to the same company; the projected facts merge, because a
+fact is a fact whoever went looking for it.
+
+The two policy versions are stored because the projected
+`corroborating_publisher_count` and any contradiction resolution are
+*derived under a policy*, and a rebuild under a different policy must be
+distinguishable from the old one rather than silently replacing it
+(M3-ADR-033).
+
+### 3.18 `operational_research_plan_profiles` — coverage, per research question
+
+| Property | Value |
+| --- | --- |
+| Owner | M3 |
+| Mutability | **projection** |
+| PK | `run_id` |
+| Natural uniqueness | the PK — one summary per logical research question |
+| Key FKs | `run_id → operational_research_runs` (RESTRICT) |
+| Truncatable | **Yes** |
+| Temporal | none stored |
+
+Columns: `coverage`, `confidence_summary`, `contradiction_rate`,
+`required_attribute_count`, `covered_attribute_count`,
+`not_applicable_attribute_count`, `open_gap_count`,
+`assertion_policy_version`, `publisher_policy_version`.
+
+Coverage's **denominator** depends on the target attribute set, on
+applicability for the vertical, and on the policy's required/optional split —
+every one of which is part of `research_plan_hash`. Company X can legitimately
+have plan A (HVAC context, 18 required attributes, coverage 0.78) and plan B
+(another context, 12 required, coverage 0.92) at the same time, and revision
+3's `PK (company_id)` could represent only one of them: the second rebuild
+would silently overwrite the first (M3-ADR-029).
+
+The three numbers stay separate here exactly as they did before. Collapsing
+them would produce something that reads like a score, and something that reads
+like a score gets used as one — which is M4's job, not M3's.
 
 ## 4. The unit of a claim
 
@@ -767,13 +970,34 @@ the design elsewhere insists must not be merged (M3-ADR-020).
 ```
 assertion_fingerprint = sha256(canonical_json({
     subject_company_id, attribute_key, attribute_registry_version,
-    value, fact_type, period_granularity, observed_at,
-    lineage_key                 -- sorted [(source_id, artifact_id), …]
+    value, unit, fact_type, period_granularity, observed_at,
+    lineage_key,                 -- sorted [(source_id, artifact_id), …]
+    assertion_contract_hash
+}))
+
+assertion_contract_hash = sha256(canonical_json({
+    assertion_policy_version,     -- the umbrella
+    trust_policy_version,
+    confidence_formula_version,
+    fact_type_mapping_version,
+    publisher_policy_version,
+    inference_rule_version        -- null for non-inferred claims
 }))
 ```
 
 Still excludes the extractor, so a newer extractor agreeing with an older one
 over the same origins appends an evidence link rather than a twin.
+
+Two additions close real holes (M3-ADR-032):
+
+* **`assertion_contract_hash`.** Revision 3 said a trust recalibration
+  re-asserts under v2 and creates a *new* claim while the old one keeps its
+  confidence. It could not: the fingerprint omitted every policy version, so
+  the same value and lineage under trust v2 produced an identical fingerprint
+  and the partial unique index **rejected** the new claim. The documented
+  behaviour was unreachable.
+* **`unit`.** `technician_count = 40 PEOPLE` and a hypothetical `40 FTE` are
+  different assertions; without the unit they collided.
 
 ### 4.2a Independence — deliberately conservative
 
@@ -786,6 +1010,14 @@ Two lineages **corroborate independently** only when both hold:
 (`publisher_policy_version`): the source's registrable domain, unless an
 override maps it — a job board, a registry and a directory are publishers in
 their own right, not the company.
+
+**Both are frozen on the evidence item** (§3.12) at the moment the observation
+is recorded, and the projection records the policy version it rebuilt under
+(§3.17, §3.18). Revision 3 named the policy and persisted it nowhere, so a
+later mapping change would silently turn one corroborating publisher into two
+for output already written — and nobody could tell which answer they were
+looking at (M3-ADR-033). A rebuild under a new policy is now a *different
+projection contract*, visible in the row.
 
 The two rules produce the behaviours the brief requires:
 
@@ -855,6 +1087,46 @@ already written.
 Extractor confidence remains entirely separate and is still not an input
 (M3-ADR-004).
 
+### 4.5 Claim confidence: a versioned formula, not prose
+
+A claim has one persisted `confidence` and may have several evidence items, so
+the aggregation must be specified rather than described (M3-ADR-035). The
+contract is fixed now; the **weights are fixture configuration** and are not
+calibrated.
+
+```
+confidence = clamp01(
+    base(fact_type)                       -- FACT > ESTIMATE > PROXY > …
+  × trust_factor(evidence_links)
+  × corroboration_factor(independent_publisher_count)
+  × inference_penalty(inference_rule_version)   -- 1.0 when not inferred
+)
+```
+
+| Input | Rule | Version |
+| --- | --- | --- |
+| `base(fact_type)` | one value per fact type | `fact_type_mapping_version` |
+| `trust_factor` | the **maximum** `trust_tier` across the claim's evidence links, not the mean — adding a weak corroborating source must never *lower* confidence | `trust_policy_version` |
+| `corroboration_factor` | monotone non-decreasing in the count of **independent publishers** (§4.2a), saturating; 1.0 at one publisher | `publisher_policy_version` |
+| `inference_penalty` | ≤ 1.0, declared per inference rule | `inference_rule_version` |
+
+The required behaviours, stated so an implementation can be checked against
+them:
+
+| Case | Result |
+| --- | --- |
+| One link | `base × trust(that link) × 1.0` |
+| Four links, one lineage, one publisher | Same as one link at the best trust tier — repetition is not corroboration |
+| Same publisher repeated | No corroboration factor |
+| Several independent publishers | Corroboration factor rises, saturating |
+| Mixed trust tiers | The best tier sets `trust_factor`; weaker links still appear as evidence |
+| Inference over several items | All items are links; the penalty applies once |
+
+Every version above is inside `assertion_contract_hash`, so a stored
+confidence is reproducible from its own claim: read the links, read the
+versions, recompute. That is the whole requirement — the numbers may be wrong
+until calibrated, but they can never be unexplainable.
+
 ---
 
 ## 5. Changes to M2-owned objects
@@ -871,6 +1143,62 @@ M3 claims use the existing `subject_company_id` attribution path, which already
 satisfies `exactly_one_attribution_path`.
 
 ---
+
+## 5a. The M2 handoff, described honestly
+
+Earlier revisions said identity signals are *"consumed by M2's existing
+human-review path."* **That integration does not exist**, and the live code
+says so:
+
+```python
+# packages/boro_gtm/discovery/services/resolution.py
+def append_human_decision(session, entity: ProviderEntity, *, decision, ...)
+
+# packages/boro_gtm/discovery/api/schemas.py
+class HumanReviewRequest(BaseModel):
+    provider_entity_id: uuid.UUID      # required, not optional
+```
+
+M2's review is **provider-entity based**. An M3 signal such as
+`POSSIBLE_PARENT`, `POSSIBLE_ACQUISITION` or `POSSIBLE_CEASED_TRADING` is
+**company-and-evidence based** and frequently has no provider entity at all —
+the conflict was found in a web page, not in a provider record. Routing it into
+M2's path would require fabricating a provider entity, which M3 must never do
+(M3-ADR-009).
+
+So the boundary, stated as it actually is:
+
+| M3 may | M3 may not |
+| --- | --- |
+| Create a signal and its occurrences | Merge or split companies |
+| Attach evidence items | Alter any entity-resolution decision |
+| Record acknowledge / action / dismiss | Fabricate a provider entity |
+| Expose the queue over its own API | Write any M2 table |
+
+`identity_review_signals` is a **handoff queue that M3 owns end to end**. A
+future M2 identity-maintenance workflow may consume `ACTIONED` occurrences;
+designing that workflow is M2's work and is **not** part of this revision. No
+M2 runtime change is proposed here.
+
+## 5b. Context classification of every derived object
+
+Rule: **no object may be keyed only by company if its value changes when the
+vertical, the target attribute set or the research policy changes.**
+
+| Object | Context | Why |
+| --- | --- | --- |
+| `company_claims` | **Company-global** | A fact is a fact whoever asked |
+| `research_evidence_items` | Company-global | An observation is not owned by a question |
+| `operational_research_profiles` | **Company-global** | Projected facts merge across plans |
+| `operational_research_plan_profiles` | **Plan-specific** | Coverage's denominator is the plan |
+| `operational_research_gaps` | **Plan-specific** | Required / applicable / sufficient all come from the plan |
+| Staleness | Company-global **input**, plan-specific **verdict** | The horizon is per attribute in the registry, but whether a stale attribute matters depends on whether the plan requires it |
+| `research_fetch_events`, `research_source_discoveries`, gap events | **Attempt-specific** | Each *is* an execution event |
+| `research_extractions`, bodies, artifacts, derivations, sources | Company-global and reusable | Pure functions of content and contract |
+| `research_attempt_extractions` | Attempt-specific | The join that records usage |
+
+Contradiction rate appears **only** on the plan profile, because it is computed
+over the plan's attribute set.
 
 ## 6. Tables deliberately not created
 
@@ -900,26 +1228,22 @@ research_source_discoveries    UNIQUE NULLS NOT DISTINCT
                                       (source_id, attempt_id, discovery_method,
                                        discovered_from_source_id,
                                        discovery_context_hash)
-                               INDEX  (attempt_id)
 
 research_source_edges          UNIQUE NULLS NOT DISTINCT
                                       (from_source_id, to_source_id,
                                        relation_type, observed_by_fetch_event_id)
-                               INDEX  (to_source_id)
 
 research_fetch_events          UNIQUE (id, body_id)          -- composite FK target
                                INDEX  (source_id, retrieved_at DESC)
                                INDEX  (attempt_id)
-                               INDEX  (body_id) WHERE body_id IS NOT NULL
-                               INDEX  (fetch_outcome) WHERE fetch_outcome <> 'OK'
 
 research_artifact_bodies       UNIQUE (raw_body_sha256)
-                               INDEX  (body_retention) WHERE body_retention='RETAINED'
 
 research_body_classifications  UNIQUE (body_id, classifier_policy_version)
 
 research_artifact_derivations  UNIQUE (body_id, canonicalization_strategy,
                                        canonicalization_version)
+                               UNIQUE (id, body_id)          -- composite FK target
                                INDEX  (artifact_id)
 
 research_artifacts             UNIQUE (canonicalization_strategy,
@@ -929,47 +1253,55 @@ research_artifacts             UNIQUE (canonicalization_strategy,
 research_text_derivations      UNIQUE (body_id, text_derivation_contract_hash)
                                UNIQUE (id, body_id)          -- composite FK target
 
-research_extractions           UNIQUE (text_derivation_id, extraction_contract_hash)
+research_extractions           UNIQUE NULLS NOT DISTINCT
+                                      (text_derivation_id, extraction_contract_hash,
+                                       sample_execution_id)
                                UNIQUE (id, body_id)          -- composite FK target
 
 research_attempt_extractions   UNIQUE (attempt_id, extraction_id)
-                               INDEX  (extraction_id)
 
-claim_evidence_links           UNIQUE (claim_id, extraction_id, fetch_event_id,
-                                       locator_hash)
-                               INDEX  (source_id, artifact_id)   -- lineage grouping
-                               INDEX  (extraction_id)
+research_evidence_items        UNIQUE (extraction_id, fetch_event_id,
+                                       artifact_derivation_id, locator_hash)
+                               INDEX  (source_id, artifact_derivation_id)
                                INDEX  (fetch_event_id)
 
-operational_research_gaps      UNIQUE (company_id, attribute_key,
-                                       research_policy_version, gap_kind)
+claim_evidence_links           UNIQUE (claim_id, evidence_item_id)
+                               INDEX  (evidence_item_id)
+
+operational_research_gaps      UNIQUE (run_id, attribute_key, gap_kind)
+                               INDEX  (company_id, gap_kind)
 
 operational_research_gap_events   UNIQUE NULLS NOT DISTINCT
                                          (gap_id, event_kind, attempt_id,
                                           source_id, fetch_event_id)
                                   INDEX  (gap_id, occurred_at DESC)
 
-identity_review_signals        UNIQUE NULLS NOT DISTINCT
-                                      (company_id, signal_kind,
-                                       related_company_id, evidence_digest)
+identity_review_signals        UNIQUE (signal_fingerprint)
+                               INDEX  (company_id, signal_kind)
 
-identity_review_signal_evidence   UNIQUE (signal_id, claim_evidence_link_id)
+identity_review_signal_occurrences  UNIQUE (signal_id, occurrence_number)
+                                    UNIQUE (signal_id) WHERE open
+                                    INDEX  (raised_by_attempt_id)
 
-identity_review_signal_events  UNIQUE (signal_id, status, occurred_at)
-                               INDEX  (signal_id, occurred_at DESC)
+identity_review_signal_evidence     UNIQUE (signal_occurrence_id, evidence_item_id)
 
-operational_research_profiles  PK (company_id)
+identity_review_signal_events  UNIQUE (occurrence_id, status, occurred_at)
+
+operational_research_profiles       PK (company_id)
+operational_research_plan_profiles  PK (run_id)
 
 company_claims (M2)            UNIQUE (assertion_fingerprint)
                                  WHERE assertion_fingerprint IS NOT NULL
 ```
 
-**NULL semantics are explicit everywhere a nullable column participates in a
+**Every composite FK has a matching UNIQUE target.** The three
+`(id, body_id)` keys on `research_extractions`, `research_fetch_events` and
+`research_artifact_derivations` exist solely so `research_evidence_items` can
+bind all three declaratively to one body — no trigger.
+
+**NULL semantics are explicit wherever a nullable column participates in a
 unique key.** PostgreSQL's default treats two NULLs as distinct, which silently
-disables the constraint exactly where duplicates are most likely: a root-level
-discovery with no parent, a signal with no related company, a gap event with no
-source. Every such key is declared `NULLS NOT DISTINCT` (PostgreSQL 15+, and
-this project runs 16).
+disables the constraint exactly where duplicates are most likely.
 
 ## 8. Views
 
@@ -988,30 +1320,33 @@ Everything time-varying or derived-from-events lives in a view.
 
 ## 9. Ownership summary
 
-| Table | Owner | Mutability | Truncatable |
-| --- | --- | --- | --- |
-| `operational_research_runs` | M3 | identity | No |
-| `operational_research_attempts` | M3 | stateful | No |
-| `research_sources` | M3 | identity | No |
-| `research_source_discoveries` | M3 | append-only | No |
-| `research_source_edges` | M3 | append-only | No |
-| `research_fetch_events` | M3 | append-only | No |
-| `research_artifact_bodies` | M3 | append-only + one-way prune | No |
-| `research_body_classifications` | M3 | append-only | No |
-| `research_artifact_derivations` | M3 | append-only | No |
-| `research_artifacts` | M3 | identity | No |
-| `research_text_derivations` | M3 | append-only + one-way prune | No |
-| `research_extractions` | M3 | append-only + one-way prune | No |
-| `research_attempt_extractions` | M3 | append-only | No |
-| `claim_evidence_links` | M3 | append-only | No |
-| `operational_research_gaps` | M3 | identity | No |
-| `operational_research_gap_events` | M3 | append-only | No |
-| `identity_review_signals` | M3 | identity | No |
-| `identity_review_signal_evidence` | M3 | append-only | No |
-| `identity_review_signal_events` | M3 | append-only | No |
-| `operational_research_profiles` | M3 | projection | **Yes** |
-| `companies`, `company_claims`, `company_domains` | M2 | unchanged | per M2 |
-| `attribute_definitions`, `discovery_jobs` | M2 | unchanged | per M2 |
+| Table | Owner | Mutability | Context | Truncatable |
+| --- | --- | --- | --- | --- |
+| `operational_research_runs` | M3 | identity | plan | No |
+| `operational_research_attempts` | M3 | stateful | attempt | No |
+| `research_sources` | M3 | identity | global | No |
+| `research_source_discoveries` | M3 | append-only | attempt | No |
+| `research_source_edges` | M3 | append-only | global | No |
+| `research_fetch_events` | M3 | append-only | attempt | No |
+| `research_artifact_bodies` | M3 | append-only + one-way prune | global | No |
+| `research_body_classifications` | M3 | append-only | global | No |
+| `research_artifact_derivations` | M3 | append-only | global | No |
+| `research_artifacts` | M3 | identity | global | No |
+| `research_text_derivations` | M3 | append-only + one-way prune | global | No |
+| `research_extractions` | M3 | append-only + one-way prune | global | No |
+| `research_attempt_extractions` | M3 | append-only | attempt | No |
+| `research_evidence_items` | M3 | append-only | global | No |
+| `claim_evidence_links` | M3 | append-only | global | No |
+| `operational_research_gaps` | M3 | identity | **plan** | No |
+| `operational_research_gap_events` | M3 | append-only | attempt | No |
+| `identity_review_signals` | M3 | identity | global | No |
+| `identity_review_signal_occurrences` | M3 | identity | global | No |
+| `identity_review_signal_evidence` | M3 | append-only | global | No |
+| `identity_review_signal_events` | M3 | append-only | global | No |
+| `operational_research_profiles` | M3 | projection | **global** | **Yes** |
+| `operational_research_plan_profiles` | M3 | projection | **plan** | **Yes** |
+| `companies`, `company_claims`, `company_domains` | M2 | unchanged | — | per M2 |
+| `attribute_definitions`, `discovery_jobs` | M2 | unchanged | — | per M2 |
 
 ## 10. Terminal states and legal transitions
 
@@ -1025,7 +1360,6 @@ the database, so "terminal" is a property rather than a convention.
 | `identity_review_signal_events` | `OPEN → ACKNOWLEDGED → ACTIONED \| DISMISSED`; `OPEN → DISMISSED` | `ACTIONED`, `DISMISSED` |
 
 Reopening is never the answer. A gap that later goes stale is a different
-`gap_kind` and therefore a different gap row; a signal that needs revisiting
-carries new evidence and therefore a different `evidence_digest`, so the
-identity key admits it as a new signal. In both cases the closed record stays
-closed and the history stays readable.
+`gap_kind` and therefore a different gap row; a signal that needs revisiting opens a **new occurrence** under the same
+durable concern, linked to its predecessor. In both cases the closed record
+stays closed and the history stays readable.
