@@ -515,6 +515,10 @@ class AttributeDefinition(Base):
     attribute_key: Mapped[str] = mapped_column(String(128), nullable=False)
     value_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     value_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: Which milestone owns this attribute. Added by M3 (design §5) so the
+    #: M3 taxonomy is separable from M2's and the evidence trigger can tell
+    #: them apart. Backfilled to 'M2' for the existing registry.
+    owner_milestone: Mapped[str | None] = mapped_column(String(8), nullable=True)
     allowed_units: Mapped[list[str] | None] = mapped_column(NULLABLE_JSONB, nullable=True)
     allowed_fact_types: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     cardinality: Mapped[str] = mapped_column(String(8), nullable=False)
@@ -570,6 +574,12 @@ class CompanyClaim(Base):
             "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
             name="confidence_range",
         ),
+        # M3's assertion dedupe key (design §4.2). Partial, so M2 claims —
+        # which leave it NULL — are wholly unaffected.
+        Index(
+            "uq_claim_assertion_fingerprint", "assertion_fingerprint", unique=True,
+            postgresql_where=sa_text("assertion_fingerprint IS NOT NULL"),
+        ),
         Index("ix_claims_version", "provider_record_version_id"),
         Index("ix_claims_subject", "subject_company_id"),
         Index("ix_claims_attribute", "attribute_key", "observed_at"),
@@ -600,6 +610,9 @@ class CompanyClaim(Base):
     )
     observed_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     period_granularity: Mapped[str] = mapped_column(String(16), nullable=False, default="UNDATED")
+    #: M3 only: the assertion identity that makes a duplicate claim
+    #: unrepresentable. NULL on every M2 claim.
+    assertion_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

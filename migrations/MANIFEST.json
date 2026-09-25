@@ -2,6 +2,7 @@
   "migrations": {
     "0001_m0_m1_initial_schema.py": "29873337302836d2c52fd3a63500ae88e844179c1b8f9b423effdbf4e22c0c73",
     "0002_remediation_semantics.py": "2dadc3543730a7f774b69e80cbf687c289bcc3e357657ca4c477c847e16bface",
-    "0003_m2_company_discovery.py": "cbbccc437509c7fff69419e360104d28b049bb21b315bacb0d7c0df461b5b2eb"
+    "0003_m2_company_discovery.py": "cbbccc437509c7fff69419e360104d28b049bb21b315bacb0d7c0df461b5b2eb",
+    "0004_m3_operational_research.py": "939642be7bbc29fe399caae9f06692122237a3a8ca87cb5024cd62ca9a2420e1"
   }
 }
