@@ -1,6 +1,9 @@
 # M3 — Acceptance Criteria
 
-**Status:** design, revision 4 — **implementation ready**. **Not implemented.** No test below exists.
+**Status:** revision 5 — reconciled with the canonical commercial ontology.
+Sections A–N are implemented as schema-invariant tests; section O covers the
+reconciliation. Scenarios requiring the acquisition and extraction services are
+not yet executable.
 
 Scenarios M3 must satisfy before it is considered done. Every scenario marked
 **MUST** runs against real PostgreSQL. No scenario may require public internet
@@ -864,6 +867,126 @@ mechanical one that cannot.
 **Then** it is exactly the attributes marked required, and a non-applicable
 attribute leaves coverage's numerator **and** denominator untouched.
 
+## O. Canonical commercial alignment (added in revision 5)
+
+Scenarios protecting the boundary between what GTM Core may observe and what
+the canonical commercial ontology alone may decide. See
+`GTM_ACCOUNT_FIELD_OWNERSHIP.md` and `M3_CANONICAL_COMMERCIAL_ALIGNMENT.md`.
+
+### O1 [MUST] — A public fact never becomes a feature requirement
+**Given** an evidence item stating a company uses a named ERP
+**When** the claim is asserted
+**Then** it is recorded as an operational observation with its own fact type,
+and no capability id, module requirement or scope item is written anywhere as a
+consequence. Requirements exist only downstream of an approved architecture.
+
+### O2 [MUST] — Pre-outreach evidence never writes a qualification score
+**Given** a company with the maximum possible M3 coverage
+**When** every attribute is asserted at `FACT`
+**Then** no qualification dimension, no composite qualification score and no
+qualification route exists for that company. The canonical rubric is scored
+after a diagnostic call, which M3 cannot observe.
+
+### O3 [MUST] — Pre-architecture evidence never writes a commercial level
+**Given** a company whose evidence strongly suggests complexity
+**When** the research run completes
+**Then** no classifier dimension and no commercial level — candidate or final —
+is written. The classifier scores an approved architecture, not a website.
+
+### O4 [MUST] — Contract value alone never classifies
+**Given** any evidence bearing a monetary figure
+**When** it is asserted
+**Then** nothing in GTM Core derives a level, tier, price, floor or band from
+it. The canonical anti-rule is carried in the contract and asserted verbatim.
+
+### O5 [MUST] — Every canonical `EV-*` signal has a declared coverage verdict
+**Given** the 18 canonical evidence signals
+**When** the coverage matrix is evaluated
+**Then** each signal maps to exactly one of `DIRECT` or `PARTIAL`, and **no**
+signal maps to `NONE`. A signal with no primitive behind it is a gap, and a
+gap must be visible rather than silently absent.
+
+### O6 [MUST] — Each `EV-*` signal names at least one registry primitive
+**Given** the coverage matrix
+**When** each signal's supporting attribute keys are resolved
+**Then** every key exists in the seeded registry at the current registry
+version. A matrix that cites an attribute nobody seeds is drift, not coverage.
+
+### O7 [MUST] — Process-observation primitives are observational, not judgemental
+**Given** the eleven `PROCESS_OBSERVATION` attributes
+**When** their definitions are validated
+**Then** none is boolean-with-a-verdict, none carries an efficiency,
+maturity, readiness or fit semantic, and each records something a person could
+point at in a source document.
+
+### O8 [MUST] — Inference-only primitives can never be asserted as FACT
+**Given** a `PROCESS_OBSERVATION` attribute whose allowed fact types exclude
+`FACT`
+**When** an assertion attempts `FACT`
+**Then** the registry rejects it. What a company's process *is* cannot be a
+public fact merely because a job ad hints at it.
+
+### O9 [MUST] — Evidence class ceilings bound fact type
+**Given** a claim whose evidence class is `SCRIPT_FINGERPRINT`
+**When** it is asserted above its ceiling
+**Then** validation fails. A fingerprint is at most a hypothesis regardless of
+how confident the extractor is.
+
+### O10 [MUST] — Absence of a signal is `NOT_AVAILABLE`, never negative
+**Given** a company for which no approval-step observation was found
+**When** the Q2 projection is built
+**Then** the signal is reported as unobserved, with a NULL value and NULL fact
+type — never `false`, never `0`, never "no approvals required".
+
+### O11 [MUST] — The Q2 projection carries observation dates, not fetch dates
+**Given** an evidence item fetched today from a page published last year
+**When** the Q2 seven-field projection is built
+**Then** `date_observed` reflects the source's own observation date and is
+**never** substituted with `retrieved_at`. A crawl date is not an event date.
+
+### O12 [MUST] — The Q2 projection refuses to emit an unsupported claim
+**Given** a claim with no surviving supporting evidence item
+**When** the projection is built
+**Then** the claim is excluded and the omission is recorded, rather than
+emitted with an empty provenance list.
+
+### O13 [MUST] — Outbound-safe classing is explicit, not inferred
+**Given** a claim derived from an inference
+**When** its outbound policy class is computed
+**Then** it is not marked quotable in outreach. Only claims whose evidence
+class and fact type both permit it may be referenced to a prospect.
+
+### O14 [MUST] — M3 writes exactly two canonical Q1 fields
+**Given** the 25 canonical Q1 account fields
+**When** the set of fields M3 may write is computed from the ownership map
+**Then** it is exactly `evidence[]` and `evidence_confidence`, and the ten
+explicitly-forbidden fields appear in no M3 write path.
+
+### O15 [MUST] — Milestone ownership covers every canonical field and stage
+**Given** the canonical 25 fields and 14 sales stages
+**When** the ownership documents are parsed
+**Then** every field has exactly one owning milestone and every stage maps to a
+milestone or is explicitly marked as out of GTM Core's scope.
+
+### O16 [MUST] — The canonical contract leaks no economics
+**Given** the committed contract file
+**When** it is loaded
+**Then** no price, floor, margin, cost, discount or rate value is present, and
+the leak guard fails loudly if one is added later. The repository is public.
+
+### O17 [MUST] — Contract and canonical YAML agree on counts and identifiers
+**Given** the canonical price book and the committed contract
+**When** drift validation runs
+**Then** capability ids, evidence signal ids, qualification and classifier
+dimension ids, product ids, intervention modes and FDR ids match exactly, and
+any mismatch fails rather than warns.
+
+### O18 [MUST] — The drift validator fails when sales motion order changes
+**Given** the canonical 14-stage ordered sales motion
+**When** two stages are transposed
+**Then** validation fails. Stage **order** is semantic — it is what makes
+"qualification comes after response" enforceable rather than aspirational.
+
 ## K. Definition of done
 
 * Every **MUST** scenario is an executable test against real PostgreSQL.
@@ -883,4 +1006,5 @@ attribute leaves coverage's numerator **and** denominator untouched.
 * A terminal-state test: no attempt may transition out of `COMPLETED`,
   `PARTIAL` or `FAILED`.
 
-**Scenario count: 115 (all MUST)** — A:14, B:5, C:14, D:6, E:6, F:6, G:15, H:7, I:3, J:4, L:19, M:16.
+**Scenario count: 135 (all MUST)** — A:14, B:5, C:14, D:6, E:6, F:6, G:15, H:7,
+I:3, J:4, L:19, M:16, N:2, O:18.

@@ -41,10 +41,10 @@ The design is at **revision 6**, and the code implements it.
 Superseded reasoning is retained in the ADRs rather than deleted, so the trail
 from each contradiction to its resolution stays readable.
 
-## M3 — Operational Research (design only, not implemented)
+## M3 — Operational Evidence (schema implemented, services pending)
 
-The design is at **revision 4 — implementation ready**, frozen across four
-passes, each governed by one rule:
+The design is at **revision 5**, frozen across five passes, each governed by
+one rule:
 
 1. **Revision 2** — an append-only row may not contain a value that changes.
 2. **Revision 3** — a globally deduplicated identity row may not carry a fact
@@ -53,19 +53,33 @@ passes, each governed by one rule:
 3. **Revision 4** — a derived value may not be keyed more narrowly than the
    context that determines it, and evidence exists independently of whatever
    consumes it.
+4. **Revision 5** — every commercial conclusion must trace back to an
+   observation, and no milestone may write a field it cannot legitimately
+   know. Reconciled GTM Core with the canonical Operations OS commercial
+   ontology; renamed the milestone from "Operational Research", and the layer
+   above it from "Qualification" to "Account Evidence Interpretation".
 
-Thirty-six structural contradictions were found and resolved across the three
-passes. No M3 code, migrations or tables exist.
+Thirty-six structural contradictions were found and resolved across the design
+passes. **The schema is now implemented** on `feat/m3-operational-research`:
+23 tables, migration `0004_m3`, the 42-attribute registry and its seeds. The
+acquisition, extraction, claim and projection services are not built.
 
 | Document | What it covers |
 | --- | --- |
 | [M3_OPERATIONAL_RESEARCH_DESIGN.md](M3_OPERATIONAL_RESEARCH_DESIGN.md) | Responsibility and boundaries, source/artifact/version model, the claim-ledger audit, operational attribute taxonomy, extraction and model-assisted evidence, contradictions, temporal semantics, gaps and coverage, fetch policy, firewalls |
 | [M3_SCHEMA_GRAPH.md](M3_SCHEMA_GRAPH.md) | Proposed table graph: ownership, mutability, keys, indexes and what is deliberately *not* created |
-| [M3_ACCEPTANCE_CRITERIA.md](M3_ACCEPTANCE_CRITERIA.md) | 115 Given/When/Then scenarios M3 must satisfy |
-| [M3_ADRS.md](M3_ADRS.md) | 38 decision records, including the one-ledger decision and the M3/M4 boundary |
+| [M3_ACCEPTANCE_CRITERIA.md](M3_ACCEPTANCE_CRITERIA.md) | 135 Given/When/Then scenarios M3 must satisfy |
+| [M3_ADRS.md](M3_ADRS.md) | 46 decision records, including the one-ledger decision and the M3/M4 boundary |
+| [M3_CANONICAL_COMMERCIAL_ALIGNMENT.md](M3_CANONICAL_COMMERCIAL_ALIGNMENT.md) | How M3 maps to the canonical commercial ontology: the 18-signal coverage matrix, the eleven process-observation primitives, and the firewalls |
+| [GTM_MILESTONE_OWNERSHIP.md](GTM_MILESTONE_OWNERSHIP.md) | The revised milestone roadmap and the 14 canonical sales stages mapped to it |
+| [GTM_ACCOUNT_FIELD_OWNERSHIP.md](GTM_ACCOUNT_FIELD_OWNERSHIP.md) | All 25 canonical account fields: owner, earliest legitimate stage, mutability, who may write |
+| [M3_IMPLEMENTATION_TRACEABILITY.md](M3_IMPLEMENTATION_TRACEABILITY.md) | Which scenarios have executable tests, and the defects implementation found |
 
-**No M3 code, migrations or tables exist in this repository.** M3 is roadmap
-only; the released milestones are M0, M1 and M2.
+**M3 is not released.** Its schema and registry exist on a feature branch; the
+released milestones are M0, M1 and M2. Neither canonical commercial file is in
+this repository — only a redacted contract of identifiers and counts
+(`commercial/CANONICAL_CONTRACT.json`), because the canonical files carry
+internal economics and this repository is public (M3-ADR-041).
 
 ## `implementation-pack/` — preserved source material
 

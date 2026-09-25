@@ -1,6 +1,6 @@
 # M3 — Architecture Decision Records
 
-**Status:** design, revision 4 — **implementation ready**. Not implemented.
+**Status:** design, revision 5 — schema implemented, services pending.
 
 Decisions taken while designing M3 Operational Research. Numbered
 `M3-ADR-NNN`, independent of M0/M1's `ADR-NNN` and M2's `M2-ADR-NNN`.
@@ -1365,3 +1365,199 @@ mechanical, so the two cannot drift again.
   tables. Only the prose was wrong.
 * Generalisable rule: any number a document states about its own contents
   should be derived, and where the contents are a contract, asserted by a test.
+
+---
+
+## M3-ADR-040 — The canonical Price Book outranks GTM Core
+
+**Status:** accepted (revision 5)
+
+### Context
+
+GTM Core was designed before the Operations OS Price Book v2.0 became the
+canonical commercial ontology. Where the two disagree — on what qualification
+means, on when a commercial level may exist, on what a capability is — there
+must be a single answer, or each will quietly teach the other its mistakes.
+
+### Decision
+
+The canonical commercial ontology is authoritative. When GTM Core conflicts
+with it, **GTM Core changes**. Commercial policy is never altered to preserve
+an implementation.
+
+### Consequences
+
+* One conflict was found and resolved in this direction: a test asserted the
+  classifier anti-rule mentioned "price" and "budget"; the canonical wording is
+  narrower. The test changed, not the spec.
+* The reverse move — editing the canonical YAML to match a passing test — is
+  prohibited, and the drift validator makes it visible if attempted.
+
+---
+
+## M3-ADR-041 — The canonical files stay out of this public repository
+
+**Status:** accepted (revision 5)
+
+### Context
+
+The canonical price book carries internal economics: delivery costs, margin
+targets, floors and discount policy. This repository is public. The price book
+itself states that its margin target is an internal management target and not a
+customer-facing claim, which settles the question of whether it was meant to be
+published.
+
+### Decision
+
+Neither canonical file is committed. A **redacted contract**
+(`commercial/CANONICAL_CONTRACT.json`) is committed instead: identifiers,
+counts, ordered stages, rubric dimensions, field names, and a SHA-256 of each
+canonical file. No value that prices anything.
+
+### Consequences
+
+* GTM Core can be validated against the ontology in CI without publishing it.
+* A leak guard rejects any key resembling price, cost, margin, floor, discount
+  or rate, with a reviewed allowlist of two exceptions. It fired on its own
+  contract during development — on `price_book_sha256`, a file hash — which is
+  the desired sensitivity.
+* Anyone holding the canonical files can verify the contract describes them.
+
+---
+
+## M3-ADR-042 — The pre-outreach layer is Interpretation, not Qualification
+
+**Status:** accepted (revision 5); supersedes the informal M4 naming
+
+### Context
+
+The old roadmap named the milestone after M3 "M4 Qualification". Canonical
+qualification is scored **after a diagnostic call** and needs complexity,
+impact, sponsor, trigger and budget. None is publicly observable.
+
+A name is not cosmetic here. Had the layer kept the name, it would eventually
+have acquired a score, and a score computed before any contact with the
+prospect is indistinguishable downstream from one earned in a conversation.
+
+### Decision
+
+M4 becomes **Account Evidence Interpretation**: it derives canonical `EV-*`
+signals and bounded hypotheses from M3 evidence. Qualification moves to **M7**,
+after response. M3 is renamed from "Operational Research" to "Operational
+Evidence" for the same reason.
+
+### Consequences
+
+* `qualification_score` and `qualification_route` have exactly one writer, M7.
+* The rename is documentation only; no table is renamed and no migration is
+  created for a noun.
+
+---
+
+## M3-ADR-043 — Eleven process-observation primitives, no judgement columns
+
+**Status:** accepted (revision 5)
+
+### Context
+
+Nine of the eighteen canonical `EV-*` signals had no supporting primitive in
+the M3 registry. The tempting fix is a column per signal — `has_manual_process`,
+`coordination_maturity` — which is judgement wearing an evidence costume.
+
+### Decision
+
+Add eleven attributes in a new `PROCESS_OBSERVATION` group, each recording
+something a person could point at in a source document: a named responsibility,
+an observed handoff, an approval step, a system touchpoint, re-entry of the
+same data, a source-of-truth statement. None may be asserted as `FACT` where
+the underlying evidence class cannot support one. Signals are **derived** in
+M4 from these observations; they are not stored in M3.
+
+### Consequences
+
+* Coverage of the 18 canonical signals goes from 4 DIRECT / 5 PARTIAL /
+  9 NONE to 7 DIRECT / 11 PARTIAL / **0 NONE**.
+* Every process observation is **evidence-class capped**: these are the
+  attributes most often read out of job ads and page fingerprints, so only an
+  explicit company statement can carry one to `FACT`.
+* The registry grows from 31 to 42 attributes. All eleven are optional, so the
+  required set stays at 16 and coverage denominators are unchanged.
+* No migration: attributes are rows, not columns. This is the payoff of the
+  registry design and the reason ontology growth is cheap.
+
+---
+
+## M3-ADR-044 — Canonical Q1 fields are a projection, not a table
+
+**Status:** accepted (revision 5)
+
+### Context
+
+The canonical account model lists 25 minimum fields spanning discovery through
+go-live. Materialising them as one account row invites defaults, and a default
+in `qualification_score` is indistinguishable from a real score once written.
+
+### Decision
+
+Each field is owned by exactly one milestone
+(`GTM_ACCOUNT_FIELD_OWNERSHIP.md`) and the canonical view is assembled as a
+projection over owners. A field nobody has legitimately written has nothing to
+read, rather than a zero a later reader mistakes for a judgement.
+
+### Consequences
+
+* M3 writes exactly two of the 25: `evidence[]` and `evidence_confidence`.
+* Ten fields are explicitly forbidden to M3, each a plausible-looking mistake.
+* This is the same rule as "absence is `NOT_AVAILABLE`, never false", applied
+  one layer up.
+
+---
+
+## M3-ADR-045 — Q2 evidence projection uses observation dates
+
+**Status:** accepted (revision 5)
+
+### Context
+
+The canonical Q2 evidence record has seven fields including a date. M3 has two
+candidate dates per item: when the source described something, and when we
+fetched it. Substituting the fetch date is the easy implementation and is
+silently wrong — it makes a decade-old page look like today's news.
+
+### Decision
+
+`date_observed` carries the source's own observation date. `retrieved_at` is
+**never** substituted for it. Where the source states no date, the field is
+unavailable rather than backfilled.
+
+### Consequences
+
+* Some evidence will project with no date. That is the honest outcome; a
+  reader can tell "undated" from "recent", which a fetch date destroys.
+
+---
+
+## M3-ADR-046 — Ontology conformance is a CI gate, not a review habit
+
+**Status:** accepted (revision 5)
+
+### Context
+
+The contract can drift from the canonical files it describes, in either
+direction, without anything failing — which is how every count in this design
+drifted before being made mechanical.
+
+### Decision
+
+`validate_yaml_against_contract()` compares capability ids, signal ids, rubric
+dimensions, product ids, modes, FDRs **and the order of the 14 sales stages**
+against the canonical files when they are present, and fails rather than warns.
+Stage order is semantic: it is what makes "qualification comes after response"
+enforceable.
+
+### Consequences
+
+* The gate is skipped, loudly, where the canonical files are absent — they are
+  not in this repository — so it protects the machines that hold them.
+* Consistent with the rule established for counts: any number or ordering a
+  document asserts about a contract should be checked by a test.

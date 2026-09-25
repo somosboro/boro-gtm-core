@@ -7,8 +7,10 @@ Maps each acceptance scenario to the code path, the database invariant that
 enforces it, and the test that executes it. A scenario with no test is listed
 as **not yet executable** rather than quietly assumed.
 
-Design baseline: `c170ce8` (revision 4), amended to revision 4.1 by
-M3-ADR-039 — see §4.
+Design baseline: `c170ce8` (revision 4), amended to revision 4.1 by M3-ADR-039
+and reconciled to **revision 5** against the canonical commercial ontology
+(M3-ADR-040 … 046) — see §4 and
+[M3_CANONICAL_COMMERCIAL_ALIGNMENT.md](M3_CANONICAL_COMMERCIAL_ALIGNMENT.md).
 
 ---
 
@@ -21,7 +23,8 @@ M3-ADR-039 — see §4.
 | Migration `0004_m3` | **Done** | `migrations/versions/0004_m3_operational_research.py` |
 | Database invariants (triggers, composite FKs, partial indexes) | **Done** | migration `0004_m3` |
 | Additive M2 changes | **Done** | `discovery/domain/models.py`, migration |
-| Attribute registry (31 attributes) | **Done** | `research/registry.py` |
+| Attribute registry (42 attributes) | **Done** | `research/registry.py` |
+| Canonical commercial contract + drift gate | **Done** | `commercial/contract.py`, `commercial/CANONICAL_CONTRACT.json` |
 | Registry seeding | **Done** | `research/seeds.py` |
 | Fixture discovery providers | **Not started** | — |
 | Fixture fetcher (11 outcomes) | **Not started** | — |
@@ -71,6 +74,32 @@ PostgreSQL.
 
 **36 tests, 28 distinct scenarios covered.**
 
+### Canonical commercial alignment
+
+`tests/unit/test_commercial_ontology.py` (18 tests) and
+`tests/unit/test_canonical_alignment_docs.py` (12 tests) cover section O:
+
+| Scenario | Test |
+| --- | --- |
+| O1/O3 | `test_m3_defines_no_capability_selection`, `test_m3_cannot_set_a_commercial_level` |
+| O2 | `test_m3_cannot_populate_canonical_qualification` |
+| O4 | `test_price_cannot_flow_backward_into_classification` |
+| O5 | `test_no_canonical_signal_is_left_uncovered` |
+| O6 | `test_the_matrix_cites_only_attributes_that_are_actually_registered` |
+| O7 | `test_process_observations_are_observational_not_judgemental` |
+| O8 | `test_a_process_observation_reaches_fact_only_by_explicit_statement` |
+| O13 | `test_the_outbound_standard_forbids_feature_selling` |
+| O14 | `test_m3_writes_exactly_two_canonical_fields` |
+| O15 | `test_every_canonical_q1_field_has_exactly_one_owning_milestone`, `test_every_canonical_sales_stage_is_mapped_or_explicitly_out_of_scope` |
+| O16 | `test_the_committed_contract_carries_no_commercial_economics` |
+| O17 | `test_the_canonical_yaml_matches_the_committed_contract` |
+| O18 | `test_the_validator_fails_when_the_sales_motion_is_reordered` |
+
+O9–O12 need the extraction and projection services and are **not yet
+executable**.
+
+**66 M3 tests in total.**
+
 ## 3. Scenarios not yet executable
 
 The remaining scenarios depend on services that are not built yet: source
@@ -83,7 +112,15 @@ in `M3_ACCEPTANCE_CRITERIA.md` and are **not** claimed as passing.
 | # | Defect | Classification | Correction |
 | --- | --- | --- | --- |
 | 1 | Revision 4 §7 prose said "twenty-four attributes" while its own tables listed thirty-one | Documentation | Prose corrected to thirty-one; acceptance N1 asserts the seeded registry equals the design table, so the two cannot drift again (M3-ADR-039) |
+| 2 | Nine canonical `EV-*` signals had no M3 primitive; the design had no way to know, because nothing compared the two | Coverage | Eleven `PROCESS_OBSERVATION` attributes added; O5/O6 parse the coverage matrix and fail on an uncovered signal or an unregistered attribute (M3-ADR-043) |
+| 3 | The revision 5 coverage summary said "5 DIRECT · 5 PARTIAL · 8 NONE" while the table above it said 4 · 5 · 9 | Documentation | Counts corrected; `test_coverage_improved_rather_than_being_declared` now counts the table's own rows. Third hand-written count in this milestone to drift, which is the argument for deriving them |
+| 4 | The eleven process observations allowed `FACT` without an evidence-class ceiling, so a job-ad mention could have been asserted as a fact about how a company works | **Invariant** | All eleven made `evidence_class_capped`; only `EXPLICIT_COMPANY_STATEMENT` reaches `FACT` (O8) |
 
-No structural defect has been found. The schema as designed was implementable
+Defect 4 is the only one that could have produced a wrong claim in the
+database. It was found by writing the acceptance test for a property the design
+asserted but the code did not enforce — the registry's ceiling applied only to
+technology attributes, and the new primitives were not marked.
+
+No structural defect has been found in the schema. The schema as designed was implementable
 exactly as written, including the three composite provenance foreign keys,
 which needed no trigger.

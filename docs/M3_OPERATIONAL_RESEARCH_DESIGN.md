@@ -1,7 +1,14 @@
 # M3 — Operational Research
 
-**Status:** design, **revision 4 — implementation ready**. Not implemented. No M3 runtime code,
-migrations or tables exist in this repository.
+**Status:** **revision 5 — reconciled with the canonical commercial ontology.**
+Schema implemented (migration `0004_m3`), registry and seeds implemented,
+acquisition and extraction services pending. See
+[M3_CANONICAL_COMMERCIAL_ALIGNMENT.md](M3_CANONICAL_COMMERCIAL_ALIGNMENT.md)
+for what revision 5 changed and why.
+
+**Naming.** This milestone is now called **M3 Operational Evidence**. The old
+name, "Operational Research", invited the reading that M3 researches
+conclusions; it observes and records (M3-ADR-042). Table names are unchanged.
 
 **Milestone position.** M1 answers *which market × vertical × ICP × channel
 contexts are worth pursuing*. M2 answers *which real commercial organizations
@@ -11,7 +18,11 @@ next question, and only that one:
 > **What do we actually know about how this canonical company operates, and
 > what remains unknown?**
 
-M3 does **not** decide whether BoRo should sell to the company. That is M4.
+M3 does **not** decide whether BoRo should sell to the company. Interpreting
+this evidence into canonical `EV-*` signals and bounded hypotheses is **M4
+Account Evidence Interpretation**; commercial qualification is **M7**, after a
+response, because the canonical rubric is scored after a diagnostic call. See
+[GTM_MILESTONE_OWNERSHIP.md](GTM_MILESTONE_OWNERSHIP.md).
 
 ---
 
@@ -466,14 +477,22 @@ event and the derivation to name the same body — no trigger
 ## 7. The operational attribute taxonomy, v1
 
 Registered in `attribute_definitions` under registry version `M3-1.0`, owned by
-milestone M3. **Thirty-one attributes**, not hundreds — sixteen of them
+milestone M3. **Forty-two attributes**, not hundreds — sixteen of them
 required, the rest optional.
 
 > *Corrected during implementation (revision 4.1).* Revision 4's prose said
 > "twenty-four" while the tables below listed thirty-one. The tables are the
 > contract and the implementation follows them; the prose was a hand-written
 > count that was never mechanically checked. Acceptance N1 now asserts the
-> seeded registry matches this section exactly, so the two cannot drift again. Each is here because a
+> seeded registry matches this section exactly, so the two cannot drift again.
+>
+> *Extended in revision 5.* Eleven `PROCESS_OBSERVATION` attributes were added
+> so that every canonical `EV-*` evidence signal has at least one primitive
+> behind it — coverage went from nine uncovered signals to none. All eleven
+> are **optional**, so the required set stays at sixteen and coverage
+> denominators are unaffected. No migration was needed: attributes are rows.
+> See M3-ADR-043 and the signal matrix in
+> [M3_CANONICAL_COMMERCIAL_ALIGNMENT.md](M3_CANONICAL_COMMERCIAL_ALIGNMENT.md). Each is here because a
 concrete research question for the target profile (§17) needs it and because it
 can be evidenced rather than guessed.
 
@@ -1449,7 +1468,7 @@ The brief's seven conditions, each checked mechanically rather than asserted:
 
 | # | Criterion | Status |
 | --- | --- | --- |
-| 1 | Every acceptance scenario is representable by the schema | **Met** — every table named in acceptance exists in the graph; 115 scenarios |
+| 1 | Every acceptance scenario is representable by the schema | **Met** — every table named in acceptance exists in the graph; 135 scenarios |
 | 2 | Every provenance walk is single-valued | **Met** — evidence names one extraction, one fetch event, one derivation; three composite FKs bind them to one body |
 | 3 | No immutable identity row contains contextual mutable state | **Met** — §5b classifies every object; bodies, artifacts, sources and signals hold only identity |
 | 4 | Plan-specific state cannot overwrite another plan | **Met** — coverage keyed by `run_id`, gaps keyed by `(run_id, attribute, kind)` |
@@ -1457,10 +1476,11 @@ The brief's seven conditions, each checked mechanically rather than asserted:
 | 6 | Persisted confidence and corroboration are reproducible | **Met** — trust inputs frozen on the link, policy versions inside `assertion_contract_hash`, publisher policy frozen on the evidence item and recorded on both projections |
 | 7 | Cross-document mechanical audit returns zero stale live-design references | **Met** — zero; the remaining mentions are labelled prior-revision history |
 
-**M3 DESIGN REVISION 4 — IMPLEMENTATION READY.**
+**M3 DESIGN REVISION 4 — IMPLEMENTATION READY.** Revision 5 added no freeze
+criterion: it changed meaning, not structure.
 
-Counts, computed from the documents: **23 tables · 115 acceptance scenarios ·
-38 ADRs.** Three M2 objects are touched, all additively:
+Counts, computed from the documents at revision 5: **23 tables · 42 registry
+attributes · 135 acceptance scenarios · 46 ADRs.** Three M2 objects are touched, all additively:
 `attribute_definitions.owner_milestone`,
 `company_claims.assertion_fingerprint` with a partial unique index, and a
 deferred constraint trigger on `company_claims`.
@@ -1504,3 +1524,27 @@ Listed rather than silently decided:
     fingerprint needs a stated normalization for names like "XYZ Holdings" vs
     "XYZ Holdings Inc." — currently the same `normalize_name` M2 uses, which
     may be too aggressive for identity concerns.
+
+
+---
+
+## 29. Revision 5 — canonical commercial reconciliation
+
+Revision 5 changed no table and no migration. It changed what M3 is allowed to
+mean.
+
+| # | Change | Where |
+| --- | --- | --- |
+| 1 | Canonical Price Book made authoritative over GTM Core | M3-ADR-040 |
+| 2 | Canonical files kept out of this public repo; redacted contract committed | M3-ADR-041 |
+| 3 | M4 renamed Qualification → Account Evidence Interpretation; qualification moved to M7 | M3-ADR-042, `GTM_MILESTONE_OWNERSHIP.md` |
+| 4 | Eleven `PROCESS_OBSERVATION` primitives added (31 → 42 attributes) | M3-ADR-043, §7 |
+| 5 | All 18 canonical `EV-*` signals now covered; zero `NONE` | `M3_CANONICAL_COMMERCIAL_ALIGNMENT.md` |
+| 6 | Canonical Q1 fields declared a projection with one owner each | M3-ADR-044, `GTM_ACCOUNT_FIELD_OWNERSHIP.md` |
+| 7 | Q2 projection must use observation dates, never `retrieved_at` | M3-ADR-045 |
+| 8 | Ontology conformance made a failing CI gate, stage order included | M3-ADR-046 |
+| 9 | Eighteen acceptance scenarios added as section O | `M3_ACCEPTANCE_CRITERIA.md` |
+
+**What did not change.** The three structural rules from revisions 2–4, all 23
+tables, every trigger, and the M1/M2 firewall. The reconciliation was absorbed
+by the registry, which is what a registry is for.
