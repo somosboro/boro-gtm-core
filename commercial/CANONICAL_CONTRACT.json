@@ -1,0 +1,398 @@
+{
+  "contract_version": "1.0",
+  "canonical_semantic_version": "2.0",
+  "canonical_effective_date": "2026-09-25",
+  "authority": {
+    "semantic": "BORO_OPERATIONS_OS_PRODUCT_SERVICES_PRICE_BOOK_v2.0_CANONICAL.md",
+    "machine_companion": "BORO_OPERATIONS_OS_GTM_SCHEMA_v2.0.yaml",
+    "rule": "The Markdown Price Book is the semantic commercial authority; the YAML is its machine-readable companion. Where GTM Core conflicts with the Price Book, GTM Core changes.",
+    "location": "Held outside this repository. See docs/M3_CANONICAL_COMMERCIAL_ALIGNMENT.md §2.",
+    "not_committed_reason": "Both canonical files carry internal economics — normalized gross margin targets and floor, product price floors, the price-floor formula, discount authority thresholds and founder delivery economics. The Price Book states its margin target 'is an internal management target, not a customer-facing claim'. This repository is public, so neither file is committed."
+  },
+  "source_digests": {
+    "price_book_sha256": "0b211b31ea2e0149ac68bd7155120707cca445f95b3c78810765f99a2f13710f",
+    "gtm_schema_sha256": "a9f531d216c21685ccc152ad6dcb579e03b9b76e3cf9c6583a3c1c080f5ee7c6",
+    "reconciliation_sha256": "8b04292639c91fff408d87aa49962f4578b210ea53f3f80eb1d5d30e0c5a2b87"
+  },
+  "counts": {
+    "capabilities": 43,
+    "sales_motion_stages": 14,
+    "qualification_dimensions": 6,
+    "classifier_dimensions": 12,
+    "account_opportunity_minimum_fields": 25,
+    "evidence_object_fields": 7,
+    "products": 5,
+    "intervention_modes": 4,
+    "founder_decisions_required": 7,
+    "evidence_signals": 18,
+    "commercial_levels": 3,
+    "hard_transformation_overrides": 5
+  },
+  "capability_ids": [
+    "CAP-ADD-WORK",
+    "CAP-ADV-SECURITY",
+    "CAP-ANALYTICS",
+    "CAP-APPROVALS",
+    "CAP-ASSET-HISTORY",
+    "CAP-ASSETS",
+    "CAP-AUDIT",
+    "CAP-AUTOMATION",
+    "CAP-BILLING-READY",
+    "CAP-CHECKLISTS",
+    "CAP-CLOSEOUT",
+    "CAP-COMMERCIAL",
+    "CAP-COMPLETION",
+    "CAP-CONTRACTS",
+    "CAP-CUSTOM-APP",
+    "CAP-CUSTOMER-PORTAL",
+    "CAP-CUSTOMERS",
+    "CAP-DATA-MIGRATION",
+    "CAP-DISPATCH",
+    "CAP-DOCS",
+    "CAP-EST-HANDOFF",
+    "CAP-EVIDENCE",
+    "CAP-EXCEPTIONS",
+    "CAP-FIELD-EXEC",
+    "CAP-IDENTITY",
+    "CAP-INTEGRATIONS",
+    "CAP-INVENTORY",
+    "CAP-INVOICE-HANDOFF",
+    "CAP-MAINT-PLANS",
+    "CAP-MASTER-DATA",
+    "CAP-MGMT-VIS",
+    "CAP-MULTI-BU-GOV",
+    "CAP-NOTIFICATIONS",
+    "CAP-OBSERVABILITY",
+    "CAP-OFFLINE",
+    "CAP-PARTS",
+    "CAP-PROCUREMENT",
+    "CAP-REQUESTS",
+    "CAP-SCHEDULING",
+    "CAP-SITES",
+    "CAP-SUBCONTRACTORS",
+    "CAP-TECH-UX",
+    "CAP-WORK-ORDERS"
+  ],
+  "commercial_levels": [
+    "BORO-OS-C",
+    "BORO-OS-S",
+    "BORO-OS-T"
+  ],
+  "capability_matrix_buckets": [
+    "not_applicable",
+    "possible",
+    "standard",
+    "usually_custom"
+  ],
+  "sales_motion_stages_ordered": [
+    "ACCOUNT_DISCOVERY",
+    "EVIDENCE",
+    "OUTREACH",
+    "RESPONSE",
+    "QUALIFICATION",
+    "DIAGNOSTIC_CALL",
+    "ARCHITECTURE_SPRINT_SALE",
+    "ARCHITECTURE_SPRINT",
+    "IMPLEMENTATION_PROPOSAL",
+    "OPERATIONS_OS_DELIVERY",
+    "GO_LIVE",
+    "HYPERCARE",
+    "BORO_CARE",
+    "EXPANSION"
+  ],
+  "qualification_dimension_ids": [
+    "recurring_operational_complexity",
+    "handoffs_system_fragmentation",
+    "economic_consequence",
+    "executive_sponsorship",
+    "trigger_timing",
+    "budget_procurement_fit"
+  ],
+  "qualification_score_range": [
+    0,
+    2
+  ],
+  "qualification_when_scored": "after a diagnostic call",
+  "qualification_routes": [
+    "AMARU",
+    "BORO_GO",
+    "NO_GO",
+    "NURTURE"
+  ],
+  "classifier_dimension_ids": [
+    "operational_domains",
+    "critical_workflows",
+    "locations_or_business_units",
+    "users_and_change_surface",
+    "integrations",
+    "migration",
+    "custom_interfaces",
+    "systems_replaced",
+    "operational_criticality",
+    "security_compliance",
+    "analytics_automation",
+    "change_management"
+  ],
+  "classifier_score_range": [
+    0,
+    3
+  ],
+  "classifier_rule": "Classify using the approved architecture before quoting the implementation. Never change the class to fit budget.",
+  "classifier_anti_rule": "Never classify from contract value alone.",
+  "core_gates": [
+    "no dimension scores 3",
+    "systems_replaced <= 1",
+    "operational_criticality <= 1",
+    "security_compliance <= 1",
+    "change_management <= 1",
+    "no Transformation override applies"
+  ],
+  "evidence_signal_ids": [
+    "EV-RECURRING-SERVICE",
+    "EV-FIELD-SCALE",
+    "EV-MULTI-HANDOFF",
+    "EV-FRAGMENTED-TOOLS",
+    "EV-MANUAL-APPROVAL",
+    "EV-DUPLICATE-ENTRY",
+    "EV-ASSET-HISTORY",
+    "EV-OWNER-BOTTLENECK",
+    "EV-QUOTE-DELAY",
+    "EV-MISSED-ADDITIONAL-WORK",
+    "EV-FIELD-OFFICE-DISCONNECT",
+    "EV-BILLING-READINESS",
+    "EV-MULTI-LOCATION",
+    "EV-GROWTH",
+    "EV-SYSTEM-MIGRATION",
+    "EV-JOB-POSTING",
+    "EV-24-7",
+    "EV-FABRICATION"
+  ],
+  "evidence_signals": [
+    {
+      "evidence_id": "EV-RECURRING-SERVICE",
+      "name": "Recurring field service or maintenance contracts",
+      "strength": "positive",
+      "supports": [
+        "operational_complexity",
+        "repeatable_workflows"
+      ]
+    },
+    {
+      "evidence_id": "EV-FIELD-SCALE",
+      "name": "10+ field technicians or material field workforce",
+      "strength": "positive",
+      "supports": [
+        "handoff_density",
+        "scheduling_complexity"
+      ]
+    },
+    {
+      "evidence_id": "EV-MULTI-HANDOFF",
+      "name": "Multiple office/field/commercial/finance handoffs",
+      "strength": "positive",
+      "supports": [
+        "fragmentation_risk"
+      ]
+    },
+    {
+      "evidence_id": "EV-FRAGMENTED-TOOLS",
+      "name": "Fragmented systems, spreadsheets, email or messaging dependencies",
+      "strength": "positive",
+      "supports": [
+        "integration_or_process_gap"
+      ]
+    },
+    {
+      "evidence_id": "EV-MANUAL-APPROVAL",
+      "name": "Manual or person-dependent approvals",
+      "strength": "positive",
+      "supports": [
+        "decision_right_bottleneck_hypothesis"
+      ]
+    },
+    {
+      "evidence_id": "EV-DUPLICATE-ENTRY",
+      "name": "Duplicated data entry",
+      "strength": "positive",
+      "supports": [
+        "data_flow_gap"
+      ]
+    },
+    {
+      "evidence_id": "EV-ASSET-HISTORY",
+      "name": "Poor or incomplete asset/service history",
+      "strength": "positive",
+      "supports": [
+        "source_of_truth_gap"
+      ]
+    },
+    {
+      "evidence_id": "EV-OWNER-BOTTLENECK",
+      "name": "Owner/operator required for recurring operational decisions",
+      "strength": "positive",
+      "supports": [
+        "decision_right_dependency"
+      ]
+    },
+    {
+      "evidence_id": "EV-QUOTE-DELAY",
+      "name": "Quote/estimate delays after field findings",
+      "strength": "positive",
+      "supports": [
+        "field_to_commercial_handoff_gap"
+      ]
+    },
+    {
+      "evidence_id": "EV-MISSED-ADDITIONAL-WORK",
+      "name": "Additional work identified but not consistently priced/approved/executed",
+      "strength": "positive",
+      "supports": [
+        "revenue_leakage_hypothesis"
+      ]
+    },
+    {
+      "evidence_id": "EV-FIELD-OFFICE-DISCONNECT",
+      "name": "Disconnected field and office workflows",
+      "strength": "positive",
+      "supports": [
+        "operational_continuity_gap"
+      ]
+    },
+    {
+      "evidence_id": "EV-BILLING-READINESS",
+      "name": "Completed work waits for evidence/administration before invoicing",
+      "strength": "positive",
+      "supports": [
+        "service_to_cash_delay"
+      ]
+    },
+    {
+      "evidence_id": "EV-MULTI-LOCATION",
+      "name": "Multiple locations or operating regions",
+      "strength": "positive",
+      "supports": [
+        "standardization_complexity"
+      ]
+    },
+    {
+      "evidence_id": "EV-GROWTH",
+      "name": "Fast growth, new branch, acquisition or operating scale-up",
+      "strength": "positive",
+      "supports": [
+        "change_trigger"
+      ]
+    },
+    {
+      "evidence_id": "EV-SYSTEM-MIGRATION",
+      "name": "Planned system migration or dissatisfaction with current FSM/ERP",
+      "strength": "positive",
+      "supports": [
+        "architecture_trigger"
+      ]
+    },
+    {
+      "evidence_id": "EV-JOB-POSTING",
+      "name": "Hiring for dispatch/service coordination/operations/admin roles",
+      "strength": "contextual",
+      "supports": [
+        "capacity_or_process_pressure_hypothesis"
+      ]
+    },
+    {
+      "evidence_id": "EV-24-7",
+      "name": "24/7 emergency service",
+      "strength": "contextual",
+      "supports": [
+        "exception_and_dispatch_complexity"
+      ]
+    },
+    {
+      "evidence_id": "EV-FABRICATION",
+      "name": "Field service plus fabrication/repair shop/parts operation",
+      "strength": "contextual",
+      "supports": [
+        "cross_domain_handoff_complexity"
+      ]
+    }
+  ],
+  "account_opportunity_minimum_fields": [
+    "account_id",
+    "market",
+    "vertical",
+    "icp_id",
+    "evidence[]",
+    "evidence_confidence",
+    "operational_hypotheses[]",
+    "buyer_role",
+    "problem_class",
+    "qualification_score",
+    "qualification_route",
+    "trigger",
+    "budget_band",
+    "architecture_status",
+    "sprint_status",
+    "implementation_mode_candidates[]",
+    "commercial_level_candidate",
+    "commercial_level_final",
+    "selected_capabilities[]",
+    "price_floor_usd",
+    "quoted_price_usd",
+    "normalized_delivery_cost_usd",
+    "normalized_gross_margin",
+    "next_step",
+    "care_eligibility"
+  ],
+  "evidence_object_fields": [
+    "source",
+    "source_type",
+    "date_observed",
+    "fact",
+    "confidence",
+    "inference_allowed",
+    "related_hypothesis"
+  ],
+  "evidence_object_rule": "Never store an inference as if it were a fact.",
+  "product_ids": [
+    "BORO-ARCH-01",
+    "BORO-OS-C",
+    "BORO-OS-S",
+    "BORO-OS-T",
+    "BORO-CARE-01"
+  ],
+  "intervention_mode_ids": [
+    "IM-01",
+    "IM-02",
+    "IM-03",
+    "IM-04"
+  ],
+  "founder_decision_ids": [
+    "FDR-01",
+    "FDR-02",
+    "FDR-03",
+    "FDR-04",
+    "FDR-05",
+    "FDR-06",
+    "FDR-07"
+  ],
+  "outbound_rules": [
+    "Observed evidence must be public, customer-provided or otherwise verifiable.",
+    "State the operational consequence as a hypothesis, not a diagnosis.",
+    "Ask how the process works today before naming a solution.",
+    "Do not assume ERP/FSM/CRM stack unless evidenced.",
+    "Do not promise an integration before technical discovery.",
+    "Do not map a pain point directly to a feature, screen, queue, dashboard or automation.",
+    "Do not use “we can build whatever you need.”",
+    "The default CTA is a short diagnostic conversation, not a demo.",
+    "Architecture Sprint is proposed only after a qualified diagnostic confirms an architecture problem."
+  ],
+  "feature_selling_prevention": {
+    "blocked_pattern": "evidence -> feature",
+    "required_pattern": "evidence -> hypothesis -> diagnostic -> architecture -> implementation_decision -> Operations OS",
+    "examples_of_premature_claims": [
+      "We will build an approval queue.",
+      "We will integrate your ERP.",
+      "We will automate this workflow.",
+      "You need a dashboard."
+    ]
+  }
+}
