@@ -129,6 +129,64 @@ def _operating(key: str, values: tuple[str, ...], many: bool = False) -> Researc
     )
 
 
+
+# --- PROCESS_OBSERVATION -------------------------------------------------
+# Added in revision 5 so the canonical EV-* signals have primitives to be
+# derived *from*. Every one records what a source described, never a verdict
+# about it: `handoff_observation` says "the posting describes work passing
+# from the technician to the office", not "the company is fragmented".
+#
+# The naming is deliberate. There is no `fragmentation_score`, no
+# `owner_bottleneck`, no `needs_automation` — those are interpretations, and
+# interpretation belongs to M4, after M3 has said what was observed.
+
+
+#: What a process observation may be asserted as, before the evidence class
+#: narrows it further. These are the attributes most often read out of job ads
+#: and page fingerprints, so every one is evidence-class capped: only an
+#: explicit company statement can carry a process observation to FACT.
+_PROCESS_FACT_TYPES = ("FACT", "PROXY", "INFERENCE", "HYPOTHESIS")
+
+
+def _process(key: str, fact_types: tuple[str, ...] = _PROCESS_FACT_TYPES) -> ResearchAttribute:
+    """An observed step, actor or transfer described by a source."""
+    return ResearchAttribute(
+        key=key, group="PROCESS_OBSERVATION", value_kind="SET", value_type="JSON",
+        cardinality="MANY", allowed_fact_types=fact_types, temporal="INTERVAL",
+        staleness_days=540, required=False, evidence_class_capped=True,
+    )
+
+
+PROCESS_OBSERVATIONS: tuple[ResearchAttribute, ...] = (
+    # Who a source says does what — the primitive under EV-MULTI-HANDOFF and
+    # EV-OWNER-BOTTLENECK, neither of which M3 may conclude.
+    _process("actor_responsibilities"),
+    # A described transfer of work between roles, teams or systems.
+    _process("handoff_observation"),
+    # A described approval step, with the role that performs it.
+    _process("approval_step"),
+    # A system named as used at a described process step.
+    _process("system_touchpoint"),
+    # The same information described as entered more than once.
+    _process("data_reentry_observation"),
+    # The described path from a field finding to the office.
+    _process("field_finding_handoff"),
+    # The described path from a finding to a quote or estimate.
+    _process("estimate_handoff"),
+    # The described path from job completion to invoicing.
+    _process("completion_to_billing_handoff"),
+    # Where a source says a record of truth lives.
+    _process("source_of_truth_observation"),
+    # The described process for work discovered on site beyond the order.
+    _process("additional_work_process"),
+    # Whether in-house fabrication is described as an operation.
+    ResearchAttribute(
+        "fabrication_operation_present", "PROCESS_OBSERVATION", "SCALAR", "BOOLEAN",
+        "ONE", _PROCESS_FACT_TYPES, "DURABLE", 730, required=False,
+        evidence_class_capped=True,
+    ),
+)
+
 RESEARCH_ATTRIBUTES: tuple[ResearchAttribute, ...] = (
     # --- WORKFORCE -------------------------------------------------------
     ResearchAttribute("technician_count", "WORKFORCE", "RANGE", "NUMERIC", "ONE",
@@ -196,7 +254,7 @@ RESEARCH_ATTRIBUTES: tuple[ResearchAttribute, ...] = (
                       _ALL, "INTERVAL", 365, required=False),
     ResearchAttribute("certification", "CHANGE_SIGNALS", "SET", "TEXT", "MANY",
                       ("FACT", "PROXY"), "INTERVAL", 730, required=False),
-)
+) + PROCESS_OBSERVATIONS
 
 _BY_KEY: dict[str, ResearchAttribute] = {a.key: a for a in RESEARCH_ATTRIBUTES}
 

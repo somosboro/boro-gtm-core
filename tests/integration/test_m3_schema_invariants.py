@@ -99,7 +99,7 @@ def test_seeded_registry_matches_the_design_table_exactly(m3):
         ).all()
     )
     assert seeded == {a.key for a in RESEARCH_ATTRIBUTES}
-    assert len(seeded) == 31
+    assert len(seeded) == 42
 
     owners = set(
         m3.scalars(
@@ -124,7 +124,7 @@ def test_seeding_twice_creates_no_duplicates(m3):
             AttributeDefinition.registry_version == RESEARCH_REGISTRY_VERSION
         )
     )
-    assert before == after == 31
+    assert before == after == 42
 
 
 # --- G. attempt lifecycle --------------------------------------------------
