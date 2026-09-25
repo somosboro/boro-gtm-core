@@ -1331,3 +1331,37 @@ claim only through a confirming `HUMAN` extraction.
 * This is M3-ADR-004 from the other side: there, a model's *confidence* could
   not raise evidential strength; here, its *variability* cannot be laundered
   into reproducibility by a constraint.
+
+
+---
+
+## M3-ADR-039 — Counts stated in prose must be mechanically derived
+
+**Status:** accepted (revision 4.1, found during implementation)
+
+### Context
+
+Implementing the attribute registry produced thirty-one attributes. Revision
+4's §7 prose said "twenty-four"; its own tables listed thirty-one. The tables
+were right — every attribute in them is referenced elsewhere in the design and
+in the HVAC pressure test — so the prose was simply a hand-written count that
+was never checked.
+
+This is the same class of error revision 4 already fixed twice for table and
+scenario counts, where the fix was to derive the number from the document
+rather than write it. The attribute count was missed because it lives in prose
+rather than in a summary table.
+
+### Decision
+
+The prose count is corrected to thirty-one, and acceptance N1 asserts that the
+**seeded registry equals the design table**, key for key. The check is
+mechanical, so the two cannot drift again.
+
+### Consequences
+
+* The registry has one source of truth — §7's tables — and a test enforcing it.
+* No attribute was added or removed: the implementation always followed the
+  tables. Only the prose was wrong.
+* Generalisable rule: any number a document states about its own contents
+  should be derived, and where the contents are a contract, asserted by a test.

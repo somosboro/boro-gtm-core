@@ -846,6 +846,24 @@ the signal and the occurrence rows are byte-identical.
 **Then** occurrence 2 is created referencing occurrence 1 as its predecessor,
 occurrence 1 stays `DISMISSED`, and the signal row is unchanged.
 
+## N. Registry fidelity (added during implementation)
+
+### N1 [MUST] — The seeded registry matches the design table exactly
+**Given** the attribute table in `M3_OPERATIONAL_RESEARCH_DESIGN.md` §7
+**When** the M3 registry is seeded
+**Then** the set of seeded `attribute_key` values equals the set of keys in
+that table — no more, no fewer — and every one is `owner_milestone = 'M3'`
+under registry version `M3-1.0`.
+*Protects:* revision 4's prose claimed twenty-four attributes while its own
+tables listed thirty-one. A hand-written count drifted; this test is the
+mechanical one that cannot.
+
+### N2 [MUST] — Required attributes drive coverage's denominator
+**Given** the registry
+**When** the required subset is computed
+**Then** it is exactly the attributes marked required, and a non-applicable
+attribute leaves coverage's numerator **and** denominator untouched.
+
 ## K. Definition of done
 
 * Every **MUST** scenario is an executable test against real PostgreSQL.

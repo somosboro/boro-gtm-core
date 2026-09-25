@@ -466,7 +466,14 @@ event and the derivation to name the same body — no trigger
 ## 7. The operational attribute taxonomy, v1
 
 Registered in `attribute_definitions` under registry version `M3-1.0`, owned by
-milestone M3. **Twenty-four attributes**, not hundreds. Each is here because a
+milestone M3. **Thirty-one attributes**, not hundreds — sixteen of them
+required, the rest optional.
+
+> *Corrected during implementation (revision 4.1).* Revision 4's prose said
+> "twenty-four" while the tables below listed thirty-one. The tables are the
+> contract and the implementation follows them; the prose was a hand-written
+> count that was never mechanically checked. Acceptance N1 now asserts the
+> seeded registry matches this section exactly, so the two cannot drift again. Each is here because a
 concrete research question for the target profile (§17) needs it and because it
 can be evidenced rather than guessed.
 
