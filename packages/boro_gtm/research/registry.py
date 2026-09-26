@@ -1,6 +1,6 @@
 """The M3 operational attribute registry, version ``M3-1.0``.
 
-Twenty-four attributes, not hundreds. Each is here because a concrete research
+Forty-two attributes, not hundreds. Each is here because a concrete research
 question for the target profile needs it *and* because it can be evidenced
 rather than guessed.
 

@@ -127,8 +127,21 @@ _ALL_TABLES = (
     "provider_entities, discovery_runs, company_verticals, "
     "company_relationships, company_profiles, company_names, "
     "company_market_presences, company_locations, company_domains, "
-    "projection_runs, discovery_providers, discovery_jobs, companies, "
-    "attribute_definitions"
+    "projection_runs, discovery_providers, discovery_jobs, "
+    # M3 operational evidence. Listed before `companies`, which they reference,
+    # and before `attribute_definitions`, which the registry seeds.
+    "operational_research_plan_profiles, operational_research_profiles, "
+    "identity_review_signal_events, identity_review_signal_evidence, "
+    "identity_review_signal_occurrences, identity_review_signals, "
+    "operational_research_gap_events, operational_research_gaps, "
+    "claim_evidence_links, research_evidence_items, "
+    "research_attempt_extractions, research_extractions, "
+    "research_text_derivations, research_artifact_derivations, "
+    "research_artifacts, research_body_classifications, "
+    "research_source_edges, research_fetch_events, research_artifact_bodies, "
+    "research_source_discoveries, research_sources, "
+    "operational_research_attempts, operational_research_runs, "
+    "companies, attribute_definitions"
 )
 
 
