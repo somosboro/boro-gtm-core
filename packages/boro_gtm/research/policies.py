@@ -270,6 +270,7 @@ PUBLISHER_BY_DOMAIN: dict[str, Publisher] = {
     "contractordirectory.example": Publisher(
         "contractordirectory", SourceClass.THIRD_PARTY_DIRECTORY.value
     ),
+    "tradepress.example": Publisher("tradepress", SourceClass.NEWS_MEDIA.value),
 }
 
 UNKNOWN_PUBLISHER = Publisher("unknown", SourceClass.UNKNOWN.value)

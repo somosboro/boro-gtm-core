@@ -899,3 +899,141 @@ def test_the_projection_never_manufactures_a_hypothesis(first_run, m3):
             assert record.related_hypothesis is None
             seen += 1
     assert seen > 0
+
+
+# --- source identity and run identity --------------------------------------
+
+
+def test_tracking_parameters_do_not_create_a_second_source(first_run, m3):
+    """A campaign parameter identifies a campaign, not a document (A7)."""
+    from boro_gtm.research.services import acquisition
+
+    before = _count(m3, m.ResearchSource)
+    tagged = acquisition.get_or_create_source(
+        m3, f"{corpus.EMERGENCY_URL}?utm_source=newsletter&gclid=abc123", NOW
+    )
+    m3.flush()
+    assert _count(m3, m.ResearchSource) == before
+    assert tagged.normalized_locator == normalize_locator(corpus.EMERGENCY_URL)
+
+
+def test_a_retry_advances_the_same_question(m3, company, transport):
+    """A second execution is attempt 2 of one run, not a second run (G3)."""
+    from boro_gtm.research.services import pipeline
+
+    first = run_pipeline(m3, company_id=company.id, transport=transport, now=NOW)
+    second = run_pipeline(m3, company_id=company.id, transport=transport, now=LATER)
+
+    assert first.attempt.run_id == second.attempt.run_id
+    assert (first.attempt.attempt_number, second.attempt.attempt_number) == (1, 2)
+    assert _count(m3, m.OperationalResearchRun) == 1
+    assert pipeline.get_or_create_run(m3, company_id=company.id, now=LATER)[1] is False
+
+
+def test_a_different_question_is_a_different_run(m3, company, transport):
+    """Changing the target attributes changes the question (G4)."""
+    from boro_gtm.research.services.pipeline import get_or_create_run
+
+    run_pipeline(m3, company_id=company.id, transport=transport, now=NOW)
+    other, created = get_or_create_run(
+        m3, company_id=company.id, now=LATER,
+        target_attribute_keys=("erp", "crm"),
+    )
+    assert created is True
+    assert _count(m3, m.OperationalResearchRun) == 2
+
+
+def test_a_terminal_attempt_stays_terminal(first_run, m3):
+    """Retry creates attempt n+1; it does not reopen attempt n (G3)."""
+    from sqlalchemy.exc import DBAPIError
+
+    attempt = first_run.attempt
+    assert attempt.status == "PARTIAL"
+    attempt.status = "FETCHING"
+    with pytest.raises(DBAPIError):
+        with m3.begin_nested():
+            m3.flush()
+
+
+# --- claim identity --------------------------------------------------------
+
+
+def test_a_claim_cannot_exist_without_evidence(m3, company):
+    """The deferred trigger, exercised end to end (C4).
+
+    It is `INITIALLY DEFERRED` on purpose -- a claim and its links are written
+    in one transaction, so checking at statement time would reject every legal
+    insert. That means a test must reach the point the real system reaches:
+    here, by making the constraint immediate rather than by committing inside
+    a fixture that must roll back.
+    """
+    from sqlalchemy import text as sql
+    from sqlalchemy.exc import DBAPIError
+
+    m3.execute(sql("SET CONSTRAINTS company_claims_m3_requires_evidence IMMEDIATE"))
+    orphan = CompanyClaim(
+        attribute_key="fleet_presence",
+        attribute_registry_version=RESEARCH_REGISTRY_VERSION,
+        value_jsonb={"value": True}, fact_type="FACT", availability="OBSERVED",
+        subject_company_id=company.id, period_granularity="UNDATED", created_at=NOW,
+    )
+    m3.add(orphan)
+    with pytest.raises(DBAPIError):
+        with m3.begin_nested():
+            m3.flush()
+    m3.rollback()
+
+
+def test_two_independent_lineages_produce_two_claims(first_run, m3):
+    """Different documents, different publishers, two claims -- not a merge (C7)."""
+    rows = m3.scalars(
+        select(CompanyClaim).where(CompanyClaim.attribute_key == "branch_count")
+    ).all()
+    assert len(rows) >= 2
+    fingerprints = {c.assertion_fingerprint for c in rows}
+    assert len(fingerprints) == len(rows)
+
+
+def test_the_same_lineage_asserted_twice_produces_one_claim(m3, company, transport):
+    """Re-running is not new knowledge, and must not read as corroboration (C8)."""
+    run_pipeline(m3, company_id=company.id, transport=transport, now=NOW)
+    before = _count(m3, CompanyClaim)
+    links_before = _count(m3, m.ClaimEvidenceLink)
+
+    fresh = FixtureTransport()  # no ETags remembered, so everything is re-read
+    run_pipeline(m3, company_id=company.id, transport=fresh, now=LATER)
+
+    assert _count(m3, CompanyClaim) == before
+    assert _count(m3, m.ClaimEvidenceLink) == links_before
+
+
+def test_one_assertion_may_cite_several_spans(first_run, m3):
+    """"24/7" appears three times on one page; that is one claim, three spans (C8c)."""
+    claim = m3.scalars(
+        select(CompanyClaim).where(
+            CompanyClaim.attribute_key == "emergency_service",
+            CompanyClaim.value_jsonb["value"].astext == "true",
+            CompanyClaim.fact_type == "FACT",
+        )
+    ).first()
+    locators = m3.scalars(
+        select(m.ResearchEvidenceItem.locator_hash)
+        .join(m.ClaimEvidenceLink,
+              m.ClaimEvidenceLink.evidence_item_id == m.ResearchEvidenceItem.id)
+        .where(m.ClaimEvidenceLink.claim_id == claim.id)
+    ).all()
+    assert len(set(locators)) >= 2
+
+
+def test_an_inference_is_never_a_fact(first_run, m3):
+    """No claim reaches FACT on an attribute whose registry entry forbids it (C3)."""
+    from boro_gtm.research.registry import get_attribute
+
+    rows = m3.execute(
+        select(CompanyClaim.attribute_key, CompanyClaim.fact_type).where(
+            CompanyClaim.attribute_registry_version == RESEARCH_REGISTRY_VERSION
+        )
+    ).all()
+    assert rows
+    for key, fact_type in rows:
+        assert fact_type in get_attribute(key).allowed_fact_types

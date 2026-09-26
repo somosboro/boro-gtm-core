@@ -13,6 +13,7 @@ grading a conclusion the fixture author already wrote.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from boro_gtm.research.policies import PDF_PAGE_BREAK, normalize_locator
@@ -58,7 +59,7 @@ def _html(
         "<style>.nav{color:#123}</style>"
         '<script>window.__build="2026-02-11T04:12:00Z";</script>'
         f"</head><body>{body}</body></html>"
-    ).encode("utf-8")
+    ).encode()
 
 
 # ---------------------------------------------------------------------------
@@ -169,32 +170,35 @@ _MAINTENANCE_PDF = (
     "3.1 The equipment list maintained by Meridian is the record of covered\n"
     "    assets for this agreement.\n"
     "3.2 Meridian retains service tickets for seven years.\n"
-).encode("utf-8")
+).encode()
 
 # ---------------------------------------------------------------------------
 # Third-party sources
 # ---------------------------------------------------------------------------
 
-_JOB_POSTING_JSON = b"""{
-  "job_id": "MMS-2026-0114",
-  "employer": "Meridian Mechanical Services, Inc.",
-  "title": "Service Coordinator",
-  "location": "Columbus, OH",
-  "posted_at": "2026-01-14",
-  "employment_type": "FULL_TIME",
-  "description": "The Service Coordinator receives incoming service requests, schedules technicians on the dispatch board, and follows up on open work orders.",
-  "responsibilities": [
-    "Dispatch technicians and maintain the daily schedule",
-    "Re-key completed paper work orders into the accounting system",
-    "Chase technicians for missing paperwork before invoicing",
-    "Route quotes over threshold to the service manager for approval"
-  ],
-  "requirements": [
-    "Experience with ServiceTitan or a comparable field service platform",
-    "Proficiency with QuickBooks",
-    "Two years of HVAC service coordination experience"
-  ]
-}"""
+_JOB_POSTING_JSON = json.dumps({
+    "job_id": "MMS-2026-0114",
+    "employer": "Meridian Mechanical Services, Inc.",
+    "title": "Service Coordinator",
+    "location": "Columbus, OH",
+    "posted_at": "2026-01-14",
+    "employment_type": "FULL_TIME",
+    "description": (
+        "The Service Coordinator receives incoming service requests, schedules "
+        "technicians on the dispatch board, and follows up on open work orders."
+    ),
+    "responsibilities": [
+        "Dispatch technicians and maintain the daily schedule",
+        "Re-key completed paper work orders into the accounting system",
+        "Chase technicians for missing paperwork before invoicing",
+        "Route quotes over threshold to the service manager for approval",
+    ],
+    "requirements": [
+        "Experience with ServiceTitan or a comparable field service platform",
+        "Proficiency with QuickBooks",
+        "Two years of HVAC service coordination experience",
+    ],
+}, indent=2).encode()
 
 _REGISTRY_JSON = b"""{
   "jurisdiction": "OH",

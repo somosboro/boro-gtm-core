@@ -1561,3 +1561,79 @@ enforceable.
   not in this repository — so it protects the machines that hold them.
 * Consistent with the rule established for counts: any number or ordering a
   document asserts about a contract should be checked by a test.
+
+---
+
+## M3-ADR-047 — Confidence is computed once, because the row is append-only
+
+**Status:** accepted (found during phase-2 implementation)
+
+### Context
+
+`company_claims` is append-only, enforced by a trigger. Confidence is a
+function of a claim's evidence links, and links can be appended after the claim
+exists — that is the whole point of a fingerprint that excludes the extractor.
+
+The first implementation recomputed confidence after linking and wrote it with
+an `UPDATE`. The trigger rejected it, correctly: design rule 1 says an
+append-only row may not contain a value that changes, and this was exactly
+that.
+
+### Decision
+
+Confidence is computed **before** the insert, from the evidence the assertion
+already has, and never rewritten. When evidence is appended to an existing
+claim, the derived value is recomputed and **compared**; a difference raises
+`ConfidenceDivergenceError` rather than being silently kept or silently
+written.
+
+### Consequences
+
+* The stored number is reproducible from the row's own links and policy
+  versions, which is what the design promised it would be.
+* The guard encodes a real claim about the fingerprint: a link may only join a
+  claim whose lineage it already shares, and same lineage plus same publisher
+  set means same confidence. If it ever fires, **the lineage key is too coarse**
+  — the fix belongs to the fingerprint, not to the append-only rule.
+* This is the third time a derived value stored on an immutable row has caused
+  a defect in this project. The rule generalises: derive at read time, or
+  freeze the inputs at write time — never both halfway.
+
+---
+
+## M3-ADR-048 — Independence is connected components, not distinct pairs
+
+**Status:** accepted (found during phase-2 implementation)
+
+### Context
+
+Corroboration multiplies confidence, so what counts as a second voice is
+load-bearing. The rule is that two evidence items are independent only when
+they come from a **different publisher** *and* a **different semantic
+document**.
+
+The first implementation counted distinct `(publisher, document)` pairs. That
+reads the rule as an *or*, and it is wrong in both directions:
+
+* one publisher saying something on two of its own pages counted as two voices,
+  so a company could corroborate itself by adding a page;
+* two publishers serving one mirrored document would have counted as two, which
+  is the inflation the rule exists to prevent.
+
+The fixture corpus hit the first case immediately: "24/7 emergency service"
+appears on both the services page and the emergency page, and the claim's
+confidence came out at 0.9405 instead of 0.855.
+
+### Decision
+
+Two items are the same voice if they share a publisher **or** a document, so
+the number of independent voices is the count of connected components over the
+publisher/document graph.
+
+### Consequences
+
+* Repetition by one publisher, across any number of its own pages, contributes
+  nothing. Adding pages does not raise confidence.
+* A mirror still collapses, now for the structural reason rather than because
+  the fixture maps both domains to one publisher key.
+* The rule reads as written: *different publisher **and** different document*.
