@@ -49,9 +49,30 @@ def _stated(label: str) -> int:
 
 
 def test_the_contract_count_matches_the_acceptance_document(contract_ids):
+    """Live MUST scenarios only. A withdrawn scenario is not coverage to chase."""
+    text = ACCEPTANCE.read_text()
     assert len(contract_ids) == _stated("Scenarios in the contract")
-    assert "**Scenario count: 135 (all MUST)**" in ACCEPTANCE.read_text()
-    assert len(contract_ids) == 135
+
+    withdrawn = re.findall(r"^### ([A-Z]+\d+) \[WITHDRAWN", text, re.M)
+    stated = re.search(
+        r"\*\*Scenario count: (\d+) MUST \+ (\d+) withdrawn = (\d+)\*\*", text
+    )
+    assert stated, "the acceptance document must state its own counts"
+    live, retired, total = (int(g) for g in stated.groups())
+    assert live == len(contract_ids)
+    assert retired == len(withdrawn)
+    assert live + retired == total == 135
+
+
+def test_a_withdrawn_scenario_is_never_claimed_as_covered(contract_ids):
+    withdrawn = set(re.findall(
+        r"^### ([A-Z]+\d+) \[WITHDRAWN", ACCEPTANCE.read_text(), re.M))
+    trace = TRACEABILITY.read_text()
+    for scenario in withdrawn:
+        for line in trace.splitlines():
+            if line.startswith("|"):
+                first = line.strip().strip("|").split("|")[0].strip()
+                assert first != scenario, f"{scenario} is withdrawn but still cited"
 
 
 def test_the_executable_count_matches_the_scenarios_actually_cited(cited_ids):

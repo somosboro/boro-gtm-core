@@ -228,6 +228,8 @@ _NEWS_BODY = """
 <h1>Meridian Mechanical opens Cincinnati branch</h1>
 <p>Meridian Mechanical Services has opened a fourth service location in
 Cincinnati, the company said on Tuesday.</p>
+<p>The contractor provides 24 hours a day, 7 days a week emergency response to
+contract customers.</p>
 <p>The company also said it is migrating from its legacy dispatch software to
 ServiceTitan during 2026.</p>
 """
@@ -243,6 +245,10 @@ ABOUT_MIRROR_URL = "https://meridian-mechanical.net/about"
 JOB_URL = "https://hvacjobsboard.example/api/jobs/MMS-2026-0114"
 REGISTRY_URL = "https://sos.ohio.example/api/entities/0100123"
 DIRECTORY_URL = "https://contractordirectory.example/oh/meridian-mechanical"
+#: A third party republishing the company's emergency page byte for byte. One
+#: body, two sources, and -- because the document is the same -- no second
+#: witness.
+DIRECTORY_COPY_URL = "https://contractordirectory.example/copy/meridian-emergency"
 PDF_URL = "https://www.meridianmechanical.com/docs/maintenance-agreement.pdf"
 NEWS_URL = "https://tradepress.example/2026/meridian-cincinnati"
 SPANISH_URL = "https://www.meridianmechanical.com/es/servicios"
@@ -278,6 +284,10 @@ def build_web() -> dict[str, FixtureResource]:
         EMERGENCY_URL: FixtureResource(
             body=_html("24/7 Emergency Service", _EMERGENCY_BODY, published="2025-06-30"),
             etag='"emergency-v1"',
+        ),
+        DIRECTORY_COPY_URL: FixtureResource(
+            body=_html("24/7 Emergency Service", _EMERGENCY_BODY, published="2025-06-30"),
+            etag='"copy-v1"',
         ),
         SPANISH_URL: FixtureResource(
             body=_html(
@@ -370,7 +380,9 @@ SEARCH_RESULTS: dict[str, tuple[str, ...]] = {
     "meridian mechanical columbus ohio hvac": (
         DIRECTORY_URL, NEWS_URL, "https://contractordirectory.example/premium/meridian",
     ),
-    "meridian mechanical emergency service": (DIRECTORY_URL, EMERGENCY_URL),
+    "meridian mechanical emergency service": (
+        DIRECTORY_URL, EMERGENCY_URL, DIRECTORY_COPY_URL,
+    ),
     "meridian mechanical controls retrofit": (
         "https://www.meridianmechanical.com/services/controls-retrofit",
         "https://contractordirectory.example/slow/meridian",

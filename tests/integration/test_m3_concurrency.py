@@ -19,6 +19,7 @@ from boro_gtm.research.domain import models as m
 from boro_gtm.research.fixtures.transport import DiscoveredLocator
 from boro_gtm.research.seeds import seed_all
 from boro_gtm.research.services import acquisition, gaps, identity
+from boro_gtm.research.services.pipeline import start_attempt
 
 pytestmark = pytest.mark.integration
 
@@ -163,13 +164,28 @@ def test_two_workers_raising_one_concern_open_one_occurrence(two_sessions):
 
 
 def test_only_one_attempt_can_be_live_for_a_question(two_sessions):
-    """Two workers must not execute the same question at the same time."""
+    """G15: the caller gets a domain error, and the index is the backstop.
+
+    Both halves matter. The service refuses first, with a sentence naming the
+    live attempt; the partial unique index still refuses a caller that goes
+    around the service, and that path must not surface a raw `IntegrityError`
+    as the normal outcome.
+    """
     from sqlalchemy.exc import IntegrityError
+
+    from boro_gtm.research.services.pipeline import AttemptAlreadyLiveError
 
     left, right = two_sessions
     company = _company(left)
     run_id, _ = _run_and_attempt(left, company.id)
+    run = left.get(m.OperationalResearchRun, run_id)
 
+    with pytest.raises(AttemptAlreadyLiveError) as raised:
+        start_attempt(left, run=run, now=NOW)
+    assert "still PENDING" in str(raised.value)
+    left.rollback()
+
+    # The index is the backstop for a writer that bypasses the service.
     second = m.OperationalResearchAttempt(
         run_id=run_id, attempt_number=2, status="PENDING",
         allow_partial_assertion=True, created_at=NOW,

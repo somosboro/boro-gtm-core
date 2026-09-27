@@ -161,18 +161,50 @@ def independent_publisher_count(
     return len({find(("publisher", publisher)) for publisher, _ in rows})
 
 
-def lineage_artifact_ids(
+def lineage_evidence_origins(
     session: Session, evidence_item_ids: list[uuid.UUID]
-) -> list[str]:
-    """The sorted distinct semantic documents behind a set of evidence."""
+) -> list[tuple[str, str]]:
+    """The sorted distinct ``(source_id, artifact_id)`` origins behind evidence.
+
+    An **evidence origin** is the pair that identifies a concrete observation,
+    and a lineage is the sorted set of distinct origins justifying one
+    assertion (schema graph §4.2).
+
+    Artifact ids alone are not enough, and the schema graph says why: source A
+    serving artifact X and source B serving artifact X are two genuinely
+    different observations that may carry different trust, publication context
+    and dates. Keying the lineage on the artifact collapsed them into one
+    claim and destroyed all three.
+    """
     if not evidence_item_ids:
         return []
-    rows = session.scalars(
-        select(ResearchArtifactDerivation.artifact_id)
+    rows = session.execute(
+        select(
+            ResearchEvidenceItem.source_id,
+            ResearchArtifactDerivation.artifact_id,
+        )
         .join(
-            ResearchEvidenceItem,
-            ResearchEvidenceItem.artifact_derivation_id == ResearchArtifactDerivation.id,
+            ResearchArtifactDerivation,
+            ResearchArtifactDerivation.id == ResearchEvidenceItem.artifact_derivation_id,
         )
         .where(ResearchEvidenceItem.id.in_(evidence_item_ids))
     ).all()
-    return sorted({str(artifact_id) for artifact_id in rows})
+    return sorted({(str(source), str(artifact)) for source, artifact in rows})
+
+
+def evidence_origin(
+    session: Session, evidence_item_id: uuid.UUID
+) -> tuple[str, str]:
+    """The one origin an evidence item sits at."""
+    source, artifact = session.execute(
+        select(
+            ResearchEvidenceItem.source_id,
+            ResearchArtifactDerivation.artifact_id,
+        )
+        .join(
+            ResearchArtifactDerivation,
+            ResearchArtifactDerivation.id == ResearchEvidenceItem.artifact_derivation_id,
+        )
+        .where(ResearchEvidenceItem.id == evidence_item_id)
+    ).one()
+    return str(source), str(artifact)

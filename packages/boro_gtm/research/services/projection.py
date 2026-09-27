@@ -33,6 +33,7 @@ from boro_gtm.research.domain.models import (
 )
 from boro_gtm.research.registry import RESEARCH_REGISTRY_VERSION
 from boro_gtm.research.services.claims import claim_observation_date
+from boro_gtm.research.services.evidence import independent_publisher_count
 
 
 class UnsupportedClaimError(ValueError):
@@ -138,6 +139,40 @@ def project_company(
                 fact_type=None, value=None, confidence=None,
             )]
     return by_key
+
+
+def corroborating_publisher_count(
+    session: Session, *, company_id: uuid.UUID, attribute_key: str, value: dict
+) -> int:
+    """How many independent witnesses assert one value for one attribute.
+
+    Corroboration is counted **across** claims, by grouping: one claim is one
+    lineage, and two lineages are independent only when they differ in both
+    publisher and document. So this gathers every evidence item behind every
+    claim asserting the value, and counts connected components.
+
+    The fixture corpus makes the distinction concrete. The contractor states
+    24/7 service on two of its own pages, a trade publication states it
+    independently, and a directory republishes the contractor's page verbatim.
+    That is four claims and **two** witnesses: the directory's copy shares a
+    document with the page it copied, so it is the same voice repeated.
+    """
+    claim_ids = session.scalars(
+        select(CompanyClaim.id).where(
+            CompanyClaim.subject_company_id == company_id,
+            CompanyClaim.attribute_key == attribute_key,
+            CompanyClaim.attribute_registry_version == RESEARCH_REGISTRY_VERSION,
+            CompanyClaim.value_jsonb == value,
+        )
+    ).all()
+    if not claim_ids:
+        return 0
+    evidence_ids = session.scalars(
+        select(ClaimEvidenceLink.evidence_item_id).where(
+            ClaimEvidenceLink.claim_id.in_(claim_ids)
+        )
+    ).all()
+    return independent_publisher_count(session, list(evidence_ids))
 
 
 def open_gap_keys(session: Session, run_id: uuid.UUID) -> set[str]:

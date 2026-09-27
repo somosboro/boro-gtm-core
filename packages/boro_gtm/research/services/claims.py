@@ -46,8 +46,9 @@ from boro_gtm.research.policies import (
 )
 from boro_gtm.research.registry import RESEARCH_REGISTRY_VERSION, get_attribute
 from boro_gtm.research.services.evidence import (
+    evidence_origin,
     independent_publisher_count,
-    lineage_artifact_ids,
+    lineage_evidence_origins,
 )
 from boro_gtm.research.services.extraction import Observation
 
@@ -90,21 +91,41 @@ class AssertionResult:
 
 
 def group_observations(
+    session: Session,
     observations: list[tuple[Observation, uuid.UUID]],
 ) -> list[PendingAssertion]:
-    """Collapse identical values into one assertion with several evidence items.
+    """Collapse observations into assertions — **one per evidence lineage**.
 
-    Identical means the same attribute, value, unit and fact type. A page that
-    says "24/7 emergency" three times is one assertion supported three times,
-    not three assertions.
+    The grouping key is the value *and* the lineage, never the value alone. An
+    earlier version grouped on ``(attribute, value, unit, fact_type)`` before
+    lineage was considered, so two independent sources saying the same thing
+    became one claim carrying both evidence sets. That is the exact merge the
+    design forbids: the two may differ in trust, publication date and fact
+    type, and collapsing them destroys all three — and it makes
+    "two independent witnesses" indistinguishable from "one witness, twice".
+
+    A page that says "24/7 emergency" three times is still one assertion: the
+    three spans share an origin, so they share a lineage.
+
+    An inference genuinely drawn across several origins keeps that ability
+    through ``Observation.lineage_tag``: observations carrying the same tag
+    form one lineage regardless of where each came from. That is the
+    three-job-postings-and-a-services-page case, and it is deliberate rather
+    than accidental.
     """
     grouped: dict[tuple, PendingAssertion] = {}
     for observation, evidence_id in observations:
+        lineage_key: object
+        if observation.lineage_tag is not None:
+            lineage_key = ("tag", observation.lineage_tag)
+        else:
+            lineage_key = ("origin", evidence_origin(session, evidence_id))
         key = (
             observation.attribute_key,
             _canonical_value_key(observation.value),
             observation.unit,
             observation.fact_type,
+            lineage_key,
         )
         pending = grouped.get(key)
         if pending is None:
@@ -154,7 +175,7 @@ def assert_claim(
     attribute.validate(pending.value, pending.unit, pending.fact_type)
 
     contract = assertion_contract_hash(inference_rule_version)
-    lineage = lineage_artifact_ids(session, pending.evidence_item_ids)
+    lineage = lineage_evidence_origins(session, pending.evidence_item_ids)
     fingerprint = assertion_fingerprint(
         subject_company_id=company_id,
         attribute_key=pending.attribute_key,
@@ -165,7 +186,7 @@ def assert_claim(
         availability="OBSERVED",
         period_granularity=pending.period_granularity,
         observed_at=pending.observed_at,
-        lineage_artifact_ids=lineage,
+        lineage_origins=lineage,
         contract_hash=contract,
     )
     inferred = inference_rule_version is not None

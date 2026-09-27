@@ -414,11 +414,16 @@ creation.
 **When** research is requested under `v2`
 **Then** a new run is created and the `v1` run is untouched.
 
-### G5 [MUST] — Two workers fetching one URL produce one version
+### G5 [MUST] — Two workers fetching one URL converge on one body
 **Given** two connections fetching the same URL with identical bytes
 **When** both commit
-**Then** one version row exists and neither worker sees a raw `IntegrityError`.
+**Then** one `research_artifact_bodies` row exists, each worker keeps its own
+`research_fetch_events` row, and neither sees a raw `IntegrityError`.
 *Runs against two real connections.*
+> *Wording corrected in revision 5.1.* This said "one version row", naming
+> `research_artifact_versions` — a table revision 2 removed when body identity
+> and semantic identity were separated. The invariant is unchanged; only the
+> object it names was stale.
 
 ### G6 [MUST] — Two workers extracting one artifact produce one extraction
 *Two real connections.*
@@ -426,11 +431,19 @@ creation.
 ### G7 [MUST] — Two workers raising one gap produce one gap
 *Two real connections.*
 
-### G8 [MUST] — Two concurrent runs on one company are prevented
-**Given** a live run for a company under a policy
-**When** a second is requested
-**Then** it is refused by the partial unique index, and the caller receives a
-domain error, not an `IntegrityError`.
+### G8 [WITHDRAWN — contradicts the frozen run/attempt model]
+~~Two concurrent runs on one company are prevented.~~
+
+**Withdrawn in revision 5.1 (M3-ADR-050).** A `run` is a logical *question*,
+not an execution, and one company legitimately has many: a different target
+set or a different policy version is a different question, and G13 and G4
+require exactly that. Preventing "two runs on one company" would forbid what
+two other MUST scenarios mandate.
+
+The real invariant is **one live attempt per run**, which is what the partial
+unique index `uq_attempt_live` enforces and what **G15** states. G8 is
+withdrawn rather than silently reinterpreted, so nothing claims coverage of a
+scenario the model contradicts.
 
 ### G9 [MUST] — A failed fetch is retried, then recorded
 **Given** a source returning 503 three times
@@ -1006,5 +1019,5 @@ any mismatch fails rather than warns.
 * A terminal-state test: no attempt may transition out of `COMPLETED`,
   `PARTIAL` or `FAILED`.
 
-**Scenario count: 135 (all MUST)** — A:14, B:5, C:14, D:6, E:6, F:6, G:15, H:7,
-I:3, J:4, L:19, M:16, N:2, O:18.
+**Scenario count: 134 MUST + 1 withdrawn = 135** — A:14, B:5, C:14, D:6, E:6,
+F:6, G:14 (+G8 withdrawn), H:7, I:3, J:4, L:19, M:16, N:2, O:18.

@@ -1637,3 +1637,110 @@ publisher/document graph.
 * A mirror still collapses, now for the structural reason rather than because
   the fixture maps both domains to one publisher key.
 * The rule reads as written: *different publisher **and** different document*.
+
+---
+
+## M3-ADR-049 — The lineage key is evidence origins, not artifact ids
+
+**Status:** accepted (regression found by adversarial review of phase 2)
+
+### Context
+
+The frozen schema graph (§4.2) defines an **evidence origin** as
+`(source_id, artifact_id)` and a lineage as the sorted set of distinct origins
+behind one assertion. It says explicitly why artifact ids alone are
+insufficient: source A and source B both serving artifact X are two
+observations that may carry different trust, publication context and dates.
+
+The phase-2 implementation shipped `lineage_artifact_ids()` — sorted distinct
+artifact ids — and fed it to the assertion fingerprint. That is revision 2's
+model, which revision 3 replaced and the schema graph records as superseded.
+`M3_OPERATIONAL_RESEARCH_DESIGN.md` §5.1.1 still carried the old line, which is
+how the regression looked correct while being written.
+
+### Decision
+
+`lineage_evidence_origins()` returns sorted `(source_id, artifact_id)` pairs
+and the fingerprint uses them. The stale design line is corrected and labelled.
+
+### Consequences
+
+* Two publishers serving the same document now produce two claims, each with
+  its own trust tier and observation date, instead of one merged assertion.
+* Grouping had to change with it (M3-ADR-051): keying only on the value
+  merged independent origins *before* the fingerprint ever saw them, so the
+  fingerprint fix alone would not have been enough.
+* Where two documents state the same thing, there are now more claims and each
+  is narrower. Corroboration is counted across them, by grouping, which is what
+  the design said all along.
+* **Lesson:** two documents stated the same invariant and one was stale. The
+  fix is not "read more carefully" — it is that a contract stated twice needs a
+  test that reads both.
+
+---
+
+## M3-ADR-050 — G8 is withdrawn; the invariant is one live attempt per run
+
+**Status:** accepted (revision 5.1)
+
+### Context
+
+Acceptance G8 read *"two concurrent runs on one company are prevented"*. Under
+the frozen run/attempt model a **run is a logical question**, not an execution,
+and one company legitimately has many: G13 requires a different target set to
+be a different run, and G4 requires a different policy version to be one.
+
+G8 therefore forbids what two other MUST scenarios mandate. It is a survivor of
+the pre-revision-3 model in which a run *was* an execution.
+
+### Decision
+
+G8 is **withdrawn**, visibly, with its replacement named: G15, *only one
+attempt may be live per run*, enforced by the partial unique index
+`uq_attempt_live`.
+
+### Consequences
+
+* The contract is 134 MUST scenarios plus one withdrawn, and the withdrawal is
+  legible rather than a silent renumber.
+* `start_attempt()` now raises `AttemptAlreadyLiveError` instead of letting an
+  `IntegrityError` escape, which is what G15 actually asks for and what the
+  phase-2 test was not checking.
+
+---
+
+## M3-ADR-051 — Grouping is by lineage, not by value
+
+**Status:** accepted (found by adversarial review of phase 2)
+
+### Context
+
+`group_observations()` collapsed observations on
+`(attribute, value, unit, fact_type)` before lineage was considered. Two
+independent sources stating the same thing therefore became **one**
+`PendingAssertion` holding both evidence sets — one claim, two lineages.
+
+That is the merge the design forbids in as many words, and it made
+"two independent witnesses" indistinguishable from "one witness, twice". The
+fingerprint fix (M3-ADR-049) would not have caught it: by the time the
+fingerprint was computed, the merge had already happened.
+
+### Decision
+
+The grouping key includes the lineage. A direct observation's lineage is its
+own evidence origin, so independent sources stay separate. Several spans from
+one origin still form one assertion.
+
+An inference genuinely drawn across several origins keeps that ability through
+an explicit `lineage_tag`: observations sharing a tag form one lineage wherever
+they came from. That is the three-job-postings-and-a-services-page case, and it
+is now deliberate rather than a side effect of grouping by value.
+
+### Consequences
+
+* Corroboration is counted **across** claims by grouping, never inside one.
+  `corroborating_publisher_count()` does this and is what the C7 test asserts.
+* The fixture corpus now demonstrates all three cases at once for
+  `emergency_service = true`: the contractor states it on two of its own pages,
+  a trade publication states it independently, and a directory republishes the
+  contractor's page byte for byte. Four claims, **two** witnesses.

@@ -372,11 +372,20 @@ The dedupe key is an **assertion fingerprint**:
 ```
 sha256(subject_company_id, attribute_key, attribute_registry_version,
        canonical_json(value), fact_type, period_granularity, observed_at,
-       lineage_key)           -- lineage_key = sorted distinct artifact ids
+       lineage_key)           -- sorted [(source_id, artifact_id), …]
 ```
 
 stored on `company_claims.assertion_fingerprint` (nullable, partial unique
 index `WHERE NOT NULL`, so M2 claims are untouched).
+
+> *Corrected in revision 5.1.* This section said `lineage_key = sorted distinct
+> artifact ids`, contradicting the frozen invariant in
+> [M3_SCHEMA_GRAPH.md](M3_SCHEMA_GRAPH.md) §4.2, which defines the lineage as
+> the sorted set of **evidence origins** `(source_id, artifact_id)`. The schema
+> graph is correct and is the frozen contract: artifact ids alone collapse
+> source A and source B both serving artifact X into one claim, discarding two
+> different trust tiers, publication contexts and dates. The implementation
+> regressed to the artifact-only form and was corrected — see M3-ADR-049.
 
 It **excludes the extractor**, and that one choice produces every behaviour
 required:
@@ -1480,7 +1489,7 @@ The brief's seven conditions, each checked mechanically rather than asserted:
 criterion: it changed meaning, not structure.
 
 Counts, computed from the documents at revision 5: **23 tables · 42 registry
-attributes · 135 acceptance scenarios · 48 ADRs.** Three M2 objects are touched, all additively:
+attributes · 134 acceptance scenarios (+1 withdrawn) · 51 ADRs.** Three M2 objects are touched, all additively:
 `attribute_definitions.owner_milestone`,
 `company_claims.assertion_fingerprint` with a partial unique index, and a
 deferred constraint trigger on `company_claims`.

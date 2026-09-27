@@ -566,23 +566,34 @@ def test_a_contradiction_produces_two_claims_not_one_winner(first_run, m3):
 # --- confidence and independence -------------------------------------------
 
 
-def test_repetition_by_one_publisher_is_not_corroboration(first_run, m3):
-    """A page saying the same thing three times is one voice."""
-    claim = m3.scalars(
+def _emergency_page_claim(m3):
+    """The FACT claim whose lineage is the company's own emergency page."""
+    return m3.scalars(
         select(CompanyClaim)
+        .join(m.ClaimEvidenceLink, m.ClaimEvidenceLink.claim_id == CompanyClaim.id)
+        .join(m.ResearchEvidenceItem,
+              m.ResearchEvidenceItem.id == m.ClaimEvidenceLink.evidence_item_id)
+        .join(m.ResearchSource,
+              m.ResearchSource.id == m.ResearchEvidenceItem.source_id)
         .where(
             CompanyClaim.attribute_key == "emergency_service",
             CompanyClaim.value_jsonb["value"].astext == "true",
             CompanyClaim.fact_type == "FACT",
+            m.ResearchSource.normalized_locator
+            == normalize_locator(corpus.EMERGENCY_URL),
         )
     ).first()
+
+
+def test_repetition_within_one_lineage_is_not_corroboration(first_run, m3):
+    """A page saying the same thing three times is one voice, cited thrice."""
+    claim = _emergency_page_claim(m3)
     assert claim is not None
     links = m3.scalars(
         select(m.ClaimEvidenceLink).where(m.ClaimEvidenceLink.claim_id == claim.id)
     ).all()
-    assert len(links) >= 2, "the same statement appears more than once"
-    publishers = {link.source_class for link in links}
-    assert publishers == {"COMPANY_OWN_SITE"}
+    assert len(links) == 3, "the page states it three times"
+    assert {link.source_class for link in links} == {"COMPANY_OWN_SITE"}
     # base(FACT) 0.95 x trust 0.90 x corroboration 1.0 -> no inflation.
     assert float(claim.confidence) == pytest.approx(0.855, abs=1e-6)
 
@@ -822,17 +833,19 @@ def test_the_projection_reports_observation_dates_not_fetch_dates(first_run, m3)
     """A crawl date is not an event date (M3-ADR-045)."""
     from boro_gtm.research.services.projection import project_claim
 
-    claim = m3.scalars(
+    claims = m3.scalars(
         select(CompanyClaim)
         .where(
             CompanyClaim.attribute_key == "branch_count",
             CompanyClaim.fact_type == "FACT",
         )
-    ).one()
-    records = project_claim(m3, claim)
-    assert records
+    ).all()
+    assert claims
+    records = [r for claim in claims for r in project_claim(m3, claim)]
+    dated = [r for r in records if r.date_observed is not None]
+    assert dated
     # The about page states 2025-11-04; the pipeline ran on 2026-09-26.
-    assert all(r.date_observed == datetime(2025, 11, 4).date() for r in records)
+    assert all(r.date_observed == datetime(2025, 11, 4).date() for r in dated)
     assert all(r.date_observed != NOW.date() for r in records)
 
 
@@ -844,7 +857,8 @@ def test_an_undated_source_projects_without_a_date_rather_than_a_guess(first_run
             CompanyClaim.attribute_key == "technician_count",
             CompanyClaim.fact_type == "ESTIMATE",
         )
-    ).one()
+    ).first()
+    assert claim is not None
     records = project_claim(m3, claim)
     assert records
     assert all(r.date_observed is None for r in records)
@@ -984,14 +998,23 @@ def test_a_claim_cannot_exist_without_evidence(m3, company):
     m3.rollback()
 
 
-def test_two_independent_lineages_produce_two_claims(first_run, m3):
-    """Different documents, different publishers, two claims -- not a merge (C7)."""
+def test_the_same_value_from_two_origins_stays_two_lineages(first_run, m3):
+    """One publisher, two of its own pages, same value: still two claims.
+
+    The lineage is the set of ``(source, document)`` origins, so two documents
+    are two lineages even under one publisher. They are not independent -- that
+    is a separate question, settled by the corroboration count -- but they are
+    not the same assertion either, and merging them would lose one page's date
+    and trust.
+    """
     rows = m3.scalars(
-        select(CompanyClaim).where(CompanyClaim.attribute_key == "branch_count")
+        select(CompanyClaim).where(
+            CompanyClaim.attribute_key == "branch_count",
+            CompanyClaim.value_jsonb["min"].astext == "4",
+        )
     ).all()
     assert len(rows) >= 2
-    fingerprints = {c.assertion_fingerprint for c in rows}
-    assert len(fingerprints) == len(rows)
+    assert len({c.assertion_fingerprint for c in rows}) == len(rows)
 
 
 def test_the_same_lineage_asserted_twice_produces_one_claim(m3, company, transport):
@@ -1008,21 +1031,20 @@ def test_the_same_lineage_asserted_twice_produces_one_claim(m3, company, transpo
 
 
 def test_one_assertion_may_cite_several_spans(first_run, m3):
-    """"24/7" appears three times on one page; that is one claim, three spans (C8c)."""
-    claim = m3.scalars(
-        select(CompanyClaim).where(
-            CompanyClaim.attribute_key == "emergency_service",
-            CompanyClaim.value_jsonb["value"].astext == "true",
-            CompanyClaim.fact_type == "FACT",
-        )
-    ).first()
+    """"24/7" appears three times on one page: one claim, three distinct spans (C8c).
+
+    The spans must be *distinct*. An earlier locator resolved every quote to
+    its first occurrence in the text, so three statements produced one locator
+    hash and the evidence unique key collapsed them into a single citation.
+    """
+    claim = _emergency_page_claim(m3)
     locators = m3.scalars(
         select(m.ResearchEvidenceItem.locator_hash)
         .join(m.ClaimEvidenceLink,
               m.ClaimEvidenceLink.evidence_item_id == m.ResearchEvidenceItem.id)
         .where(m.ClaimEvidenceLink.claim_id == claim.id)
     ).all()
-    assert len(set(locators)) >= 2
+    assert len(set(locators)) == 3
 
 
 def test_an_inference_is_never_a_fact(first_run, m3):
@@ -1037,3 +1059,462 @@ def test_an_inference_is_never_a_fact(first_run, m3):
     assert rows
     for key, fact_type in rows:
         assert fact_type in get_attribute(key).allowed_fact_types
+
+
+# --- C7: independent corroboration, and what does not count ----------------
+
+
+def test_two_independent_lineages_asserting_one_value_produce_two_claims(
+    first_run, m3, company
+):
+    """C7 proper: the same value, two publishers, two documents, two claims.
+
+    An earlier test claimed C7 using `branch_count` claims whose values
+    *differed*. Two claims with different values prove that contradictions
+    coexist; they say nothing about whether two witnesses of the *same* value
+    stay separate, which is what C7 is for.
+    """
+    from boro_gtm.research.services.projection import corroborating_publisher_count
+
+    value = {"value": True}
+    claims = m3.scalars(
+        select(CompanyClaim).where(
+            CompanyClaim.attribute_key == "emergency_service",
+            CompanyClaim.value_jsonb == value,
+            CompanyClaim.fact_type == "FACT",
+        )
+    ).all()
+    assert len(claims) >= 2
+
+    by_publisher: dict[str, set[str]] = {}
+    for claim in claims:
+        rows = m3.execute(
+            select(m.ResearchEvidenceItem.publisher_key,
+                   m.ResearchArtifactDerivation.artifact_id)
+            .join(m.ClaimEvidenceLink,
+                  m.ClaimEvidenceLink.evidence_item_id == m.ResearchEvidenceItem.id)
+            .join(m.ResearchArtifactDerivation,
+                  m.ResearchArtifactDerivation.id
+                  == m.ResearchEvidenceItem.artifact_derivation_id)
+            .where(m.ClaimEvidenceLink.claim_id == claim.id)
+        ).all()
+        for publisher, artifact in rows:
+            by_publisher.setdefault(publisher, set()).add(str(artifact))
+
+    # The company's own site and an independent trade publication.
+    assert {"meridianmechanical", "tradepress"} <= set(by_publisher)
+    assert by_publisher["meridianmechanical"].isdisjoint(by_publisher["tradepress"])
+
+    # Distinct lineages, therefore distinct fingerprints.
+    assert len({c.assertion_fingerprint for c in claims}) == len(claims)
+
+    assert corroborating_publisher_count(
+        m3, company_id=company.id, attribute_key="emergency_service", value=value
+    ) == 2
+
+
+def test_a_copied_document_adds_no_independent_corroboration(first_run, m3, company):
+    """A directory republishing the company's page verbatim is not a witness.
+
+    Different publisher, *same* document. Requiring both to differ is what
+    stops "we found it twice on the internet" masquerading as corroboration.
+    """
+    from boro_gtm.research.services.projection import corroborating_publisher_count
+
+    copy = m3.scalars(
+        select(m.ResearchSource).where(
+            m.ResearchSource.normalized_locator
+            == normalize_locator(corpus.DIRECTORY_COPY_URL)
+        )
+    ).one()
+    original = m3.scalars(
+        select(m.ResearchSource).where(
+            m.ResearchSource.normalized_locator == normalize_locator(corpus.EMERGENCY_URL)
+        )
+    ).one()
+
+    # Separate source provenance survives: two sources, two fetch events.
+    assert copy.id != original.id
+    assert copy.registrable_domain != original.registrable_domain
+    assert m3.scalar(
+        select(func.count()).select_from(m.ResearchFetchEvent).where(
+            m.ResearchFetchEvent.source_id.in_([copy.id, original.id]),
+            m.ResearchFetchEvent.fetch_outcome == "OK",
+        )
+    ) == 2
+
+    # One document, and a third publisher's copy of it.
+    artifacts = m3.scalars(
+        select(m.ResearchArtifactDerivation.artifact_id)
+        .join(m.ResearchEvidenceItem,
+              m.ResearchEvidenceItem.artifact_derivation_id
+              == m.ResearchArtifactDerivation.id)
+        .where(m.ResearchEvidenceItem.source_id.in_([copy.id, original.id]))
+    ).all()
+    assert len(set(artifacts)) == 1
+
+    # Three publishers assert it; only two are independent witnesses.
+    publishers = m3.scalars(
+        select(m.ResearchEvidenceItem.publisher_key)
+        .join(m.ClaimEvidenceLink,
+              m.ClaimEvidenceLink.evidence_item_id == m.ResearchEvidenceItem.id)
+        .join(CompanyClaim, CompanyClaim.id == m.ClaimEvidenceLink.claim_id)
+        .where(
+            CompanyClaim.attribute_key == "emergency_service",
+            CompanyClaim.value_jsonb == {"value": True},
+        )
+    ).all()
+    assert len(set(publishers)) == 3
+    assert corroborating_publisher_count(
+        m3, company_id=company.id, attribute_key="emergency_service",
+        value={"value": True},
+    ) == 2
+
+
+# --- A4: byte identity across two URLs -------------------------------------
+
+
+def test_identical_bytes_at_two_urls_converge_on_one_body(first_run, m3):
+    """A4: two sources, two fetch events, one body, and a MIRROR_CANDIDATE edge.
+
+    Distinct from the semantic-mirror case (M5), where the bytes differ and
+    only the canonical content matches. Here the payload is stored once.
+    """
+    copy = m3.scalars(
+        select(m.ResearchSource).where(
+            m.ResearchSource.normalized_locator
+            == normalize_locator(corpus.DIRECTORY_COPY_URL)
+        )
+    ).one()
+    original = m3.scalars(
+        select(m.ResearchSource).where(
+            m.ResearchSource.normalized_locator == normalize_locator(corpus.EMERGENCY_URL)
+        )
+    ).one()
+
+    events = m3.scalars(
+        select(m.ResearchFetchEvent).where(
+            m.ResearchFetchEvent.source_id.in_([copy.id, original.id]),
+            m.ResearchFetchEvent.fetch_outcome == "OK",
+        )
+    ).all()
+    assert len(events) == 2
+    assert len({e.body_id for e in events}) == 1, "identical bytes are stored once"
+
+    edges = m3.scalars(
+        select(m.ResearchSourceEdge).where(
+            m.ResearchSourceEdge.relation_type == "MIRROR_CANDIDATE",
+            m.ResearchSourceEdge.from_source_id.in_([copy.id, original.id]),
+            m.ResearchSourceEdge.to_source_id.in_([copy.id, original.id]),
+        )
+    ).all()
+    assert len(edges) == 1
+    assert edges[0].edge_origin == "DERIVED"
+    assert edges[0].observed_by_fetch_event_id is not None
+    assert edges[0].corroborating_fetch_event_id is not None
+
+
+def test_a_semantic_mirror_keeps_two_derivations_of_one_document(first_run, m3):
+    """M5: different bytes, one artifact, and publication metadata that differs."""
+    mirror_body = m3.scalar(
+        select(m.ResearchFetchEvent.body_id)
+        .join(m.ResearchSource, m.ResearchSource.id == m.ResearchFetchEvent.source_id)
+        .where(
+            m.ResearchSource.normalized_locator
+            == normalize_locator(corpus.ABOUT_MIRROR_URL),
+            m.ResearchFetchEvent.fetch_outcome == "OK",
+        )
+    )
+    home_body = m3.scalar(
+        select(m.ResearchFetchEvent.body_id)
+        .join(m.ResearchSource, m.ResearchSource.id == m.ResearchFetchEvent.source_id)
+        .where(
+            m.ResearchSource.normalized_locator == normalize_locator(corpus.HOME),
+            m.ResearchFetchEvent.fetch_outcome == "OK",
+        )
+    )
+    assert mirror_body != home_body, "the mirror is undated, so the bytes differ"
+
+    derivations = m3.scalars(
+        select(m.ResearchArtifactDerivation).where(
+            m.ResearchArtifactDerivation.body_id.in_([mirror_body, home_body])
+        )
+    ).all()
+    assert len({d.artifact_id for d in derivations}) == 1
+    assert {d.source_published_granularity for d in derivations} == {"DATE", "UNDATED"}
+
+
+# --- A1: repeated identical retrieval --------------------------------------
+
+
+def test_three_identical_retrievals_append_events_and_nothing_else(m3, company):
+    """A1: one body, one artifact, one source -- and three fetch events."""
+    transport = FixtureTransport()
+    for index in range(3):
+        run_pipeline(m3, company_id=company.id, transport=transport,
+                     now=NOW + timedelta(days=index), conditional=False)
+
+    source = m3.scalars(
+        select(m.ResearchSource).where(
+            m.ResearchSource.normalized_locator == normalize_locator(corpus.PM_URL)
+        )
+    ).one()
+    events = m3.scalars(
+        select(m.ResearchFetchEvent).where(
+            m.ResearchFetchEvent.source_id == source.id,
+            m.ResearchFetchEvent.fetch_outcome == "OK",
+        )
+    ).all()
+    assert len(events) == 3
+    assert len({e.body_id for e in events}) == 1
+
+    derivations = m3.scalars(
+        select(m.ResearchArtifactDerivation).where(
+            m.ResearchArtifactDerivation.body_id == events[0].body_id
+        )
+    ).all()
+    assert len(derivations) == 1
+
+
+# --- L6: extraction reuse across attempts ----------------------------------
+
+
+def test_an_extraction_reused_by_a_second_attempt_is_not_duplicated(m3, company):
+    """L6: one extraction row, two attempt usages, CREATED then REUSED.
+
+    A second run that receives 304 for every page never calls the extractor at
+    all, so it proves fetch avoidance rather than extraction reuse. This drives
+    the extraction service directly, over the same stored text derivation.
+    """
+    from boro_gtm.research.services.extraction import PROSE_EXTRACTOR, run_extraction
+
+    first = run_pipeline(m3, company_id=company.id, transport=FixtureTransport(),
+                         now=NOW)
+    text_derivation = m3.scalars(
+        select(m.ResearchTextDerivation)
+        .join(m.ResearchExtraction,
+              m.ResearchExtraction.text_derivation_id == m.ResearchTextDerivation.id)
+        .where(m.ResearchExtraction.extractor_id == PROSE_EXTRACTOR.extractor_id)
+        .limit(1)
+    ).first()
+    assert text_derivation is not None
+
+    created = run_extraction(
+        m3, extractor=PROSE_EXTRACTOR, text_derivation=text_derivation,
+        attempt_id=first.attempt.id, now=NOW,
+    )
+    assert created.created is False, "attempt 1 already created it"
+    extraction_id = created.extraction.id
+
+    second = run_pipeline(m3, company_id=company.id, transport=FixtureTransport(),
+                          now=LATER)
+    reused = run_extraction(
+        m3, extractor=PROSE_EXTRACTOR, text_derivation=text_derivation,
+        attempt_id=second.attempt.id, now=LATER,
+    )
+    m3.flush()
+
+    assert reused.extraction.id == extraction_id
+    assert m3.scalar(
+        select(func.count()).select_from(m.ResearchExtraction).where(
+            m.ResearchExtraction.id == extraction_id
+        )
+    ) == 1
+
+    usages = m3.execute(
+        select(m.ResearchAttemptExtraction.attempt_id,
+               m.ResearchAttemptExtraction.usage_role)
+        .where(m.ResearchAttemptExtraction.extraction_id == extraction_id)
+    ).all()
+    by_attempt = dict(usages)
+    assert by_attempt[first.attempt.id] == "CREATED"
+    assert by_attempt[second.attempt.id] == "REUSED"
+    assert set(by_attempt) == {first.attempt.id, second.attempt.id}
+
+
+# --- M11: two sampled executions -------------------------------------------
+
+
+def test_a_sampled_contract_run_twice_produces_two_rows(m3, company):
+    """M11: distinguished by execution slot, and neither asserts a claim.
+
+    A unique key that kept the first sample would be a frozen race, not
+    idempotency.
+    """
+    from boro_gtm.research.services.extraction import PDF_MODEL_EXTRACTOR, run_extraction
+
+    run = run_pipeline(m3, company_id=company.id, transport=FixtureTransport(), now=NOW)
+    derivation = m3.scalars(
+        select(m.ResearchTextDerivation)
+        .join(m.ResearchExtraction,
+              m.ResearchExtraction.text_derivation_id == m.ResearchTextDerivation.id)
+        .where(m.ResearchExtraction.determinism == "SAMPLED")
+    ).one()
+
+    second = run_extraction(
+        m3, extractor=PDF_MODEL_EXTRACTOR, text_derivation=derivation,
+        attempt_id=run.attempt.id, now=LATER, sample_execution_id="second-sample",
+    )
+    m3.flush()
+    assert second.created is True
+
+    rows = m3.scalars(
+        select(m.ResearchExtraction).where(
+            m.ResearchExtraction.determinism == "SAMPLED",
+            m.ResearchExtraction.text_derivation_id == derivation.id,
+        )
+    ).all()
+    assert len(rows) == 2
+    assert len({r.sample_execution_id for r in rows}) == 2
+
+    linked = m3.scalars(
+        select(m.ClaimEvidenceLink.id)
+        .join(m.ResearchEvidenceItem,
+              m.ResearchEvidenceItem.id == m.ClaimEvidenceLink.evidence_item_id)
+        .where(m.ResearchEvidenceItem.extraction_id.in_([r.id for r in rows]))
+    ).all()
+    assert linked == []
+
+
+# --- C8a: a newer extractor over the same lineage ---------------------------
+
+
+def test_a_newer_extractor_over_one_lineage_appends_a_link_not_a_twin(m3, company):
+    """C8a: same lineage, same value, one claim -- and no inflated corroboration."""
+    import dataclasses
+
+    from boro_gtm.research.services import claims as claim_svc
+    from boro_gtm.research.services.evidence import EvidenceContext, create_evidence_item
+    from boro_gtm.research.services.extraction import (
+        SERVICE_EXTRACTOR,
+        run_extraction,
+    )
+    from boro_gtm.research.services.projection import corroborating_publisher_count
+
+    run = run_pipeline(m3, company_id=company.id, transport=FixtureTransport(), now=NOW)
+    claim = _emergency_page_claim(m3)
+    assert claim is not None
+    links_before = m3.scalar(
+        select(func.count()).select_from(m.ClaimEvidenceLink).where(
+            m.ClaimEvidenceLink.claim_id == claim.id
+        )
+    )
+    claims_before = _count(m3, CompanyClaim)
+
+    # Same rules, a later version: a different extraction contract over the
+    # same text, producing the same values.
+    newer = dataclasses.replace(SERVICE_EXTRACTOR, extractor_version="2.0.0")
+    source = m3.scalars(
+        select(m.ResearchSource).where(
+            m.ResearchSource.normalized_locator == normalize_locator(corpus.EMERGENCY_URL)
+        )
+    ).one()
+    fetch = m3.scalars(
+        select(m.ResearchFetchEvent).where(
+            m.ResearchFetchEvent.source_id == source.id,
+            m.ResearchFetchEvent.fetch_outcome == "OK",
+        )
+    ).one()
+    derivation = m3.scalars(
+        select(m.ResearchArtifactDerivation).where(
+            m.ResearchArtifactDerivation.body_id == fetch.body_id
+        )
+    ).one()
+    text_derivation = m3.scalars(
+        select(m.ResearchTextDerivation).where(
+            m.ResearchTextDerivation.body_id == fetch.body_id
+        )
+    ).one()
+
+    outcome = run_extraction(
+        m3, extractor=newer, text_derivation=text_derivation,
+        attempt_id=run.attempt.id, now=LATER,
+    )
+    assert outcome.created is True, "a new extractor version is a new contract"
+
+    context = EvidenceContext(
+        extraction_id=outcome.extraction.id, fetch_event_id=fetch.id,
+        artifact_derivation_id=derivation.id, body_id=fetch.body_id, source=source,
+    )
+    fresh: list[tuple[object, object]] = []
+    for observation in outcome.observations:
+        if observation.attribute_key != "emergency_service":
+            continue
+        evidence, _ = create_evidence_item(
+            m3, context=context, observation=observation, now=LATER
+        )
+        fresh.append((observation, evidence.id))
+    assert fresh
+
+    for pending in claim_svc.group_observations(m3, fresh):
+        result = claim_svc.assert_claim(
+            m3, company_id=company.id, pending=pending, now=LATER
+        )
+        assert result.created is False, "the same lineage and value is the same claim"
+        assert result.claim.id == claim.id
+
+    m3.flush()
+    assert _count(m3, CompanyClaim) == claims_before
+    links_after = m3.scalar(
+        select(func.count()).select_from(m.ClaimEvidenceLink).where(
+            m.ClaimEvidenceLink.claim_id == claim.id
+        )
+    )
+    assert links_after > links_before, "the newer reading is appended as evidence"
+    assert corroborating_publisher_count(
+        m3, company_id=company.id, attribute_key="emergency_service",
+        value={"value": True},
+    ) == 2, "re-reading a page is not a third witness"
+
+
+# --- G4: a policy version change is a different question -------------------
+
+
+def test_a_policy_version_change_creates_a_new_run(m3, company):
+    """G4: same company, same targets, same inputs -- a different policy is a
+    different question.
+
+    The earlier test labelled G4 changed the *target attributes*, which is
+    G13. Policy version and target set are separate inputs to the plan hash,
+    and testing one does not test the other.
+    """
+    from boro_gtm.research.services.pipeline import research_plan_hash
+
+    common = {
+        "company_id": company.id,
+        "vertical_id": None,
+        "target_attribute_keys": ("erp", "crm"),
+        "plan_inputs": {"locale": "en-US"},
+    }
+    v1 = research_plan_hash(policy_version="1.0", **common)
+    v2 = research_plan_hash(policy_version="2.0", **common)
+    assert v1 != v2
+
+    # And the same inputs under one policy are the same question.
+    assert research_plan_hash(policy_version="1.0", **common) == v1
+
+
+def test_a_different_policy_version_yields_a_distinct_logical_run(m3, company):
+    """G4, through the service rather than the hash alone."""
+    from boro_gtm.research.domain.models import OperationalResearchRun
+    from boro_gtm.research.services.pipeline import get_or_create_run
+
+    first, created_first = get_or_create_run(
+        m3, company_id=company.id, now=NOW, target_attribute_keys=("erp",),
+        policy_version="1.0",
+    )
+    second, created_second = get_or_create_run(
+        m3, company_id=company.id, now=LATER, target_attribute_keys=("erp",),
+        policy_version="2.0",
+    )
+    m3.flush()
+
+    assert created_first is True
+    assert created_second is True
+    assert first.id != second.id
+    assert first.research_policy_version == "1.0"
+    assert second.research_policy_version == "2.0"
+    assert _count(m3, OperationalResearchRun) == 2
+    # The v1 run is untouched.
+    m3.refresh(first)
+    assert first.target_attribute_keys == ["erp"]

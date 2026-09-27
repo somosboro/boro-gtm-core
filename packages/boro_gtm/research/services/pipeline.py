@@ -91,11 +91,17 @@ def get_or_create_run(
     target_attribute_keys: tuple[str, ...] = DEFAULT_TARGET_ATTRIBUTES,
     plan_inputs: dict | None = None,
     created_by: str = "m3-pipeline",
+    policy_version: str = RESEARCH_POLICY_VERSION,
 ) -> tuple[OperationalResearchRun, bool]:
-    """A logical question. Asking it twice does not create two questions."""
+    """A logical question. Asking it twice does not create two questions.
+
+    ``policy_version`` is a parameter rather than a read of the module
+    constant so that "a policy change is a different question" can be
+    exercised directly, instead of by monkeypatching global state in a test.
+    """
     now = now or _now()
     digest = research_plan_hash(
-        company_id=company_id, policy_version=RESEARCH_POLICY_VERSION,
+        company_id=company_id, policy_version=policy_version,
         vertical_id=vertical_id, target_attribute_keys=target_attribute_keys,
         plan_inputs=plan_inputs,
     )
@@ -103,7 +109,7 @@ def get_or_create_run(
         pg_insert(OperationalResearchRun)
         .values(
             id=uuid.uuid4(), company_id=company_id,
-            research_policy_version=RESEARCH_POLICY_VERSION, vertical_id=vertical_id,
+            research_policy_version=policy_version, vertical_id=vertical_id,
             target_attribute_keys=list(target_attribute_keys), plan_inputs=plan_inputs,
             research_plan_hash=digest, created_by=created_by, created_at=now,
         )
@@ -120,6 +126,15 @@ def get_or_create_run(
     ).one(), False
 
 
+class AttemptAlreadyLiveError(RuntimeError):
+    """A second attempt was requested while one is still running.
+
+    The partial unique index `uq_attempt_live` already makes this
+    unrepresentable. Raising here turns that into a sentence the caller can act
+    on, rather than an `IntegrityError` naming an index (G15).
+    """
+
+
 def start_attempt(
     session: Session, *, run: OperationalResearchRun, now: datetime | None = None,
     seed_inputs: dict | None = None, allow_partial_assertion: bool = True,
@@ -130,6 +145,17 @@ def start_attempt(
     not reproducible, and reproducibility is the only reason to record them.
     """
     now = now or _now()
+    live = session.scalars(
+        select(OperationalResearchAttempt).where(
+            OperationalResearchAttempt.run_id == run.id,
+            OperationalResearchAttempt.status.not_in(("COMPLETED", "PARTIAL", "FAILED")),
+        )
+    ).first()
+    if live is not None:
+        raise AttemptAlreadyLiveError(
+            f"attempt {live.attempt_number} of run {run.id} is still "
+            f"{live.status}; one question is executed by one worker at a time"
+        )
     last = session.scalar(
         select(func.max(OperationalResearchAttempt.attempt_number)).where(
             OperationalResearchAttempt.run_id == run.id
@@ -203,8 +229,16 @@ def run_pipeline(
     now: datetime | None = None,
     confirm_sampled: bool = False,
     vertical_id: uuid.UUID | None = None,
+    conditional: bool = True,
 ) -> PipelineResult:
-    """Discover, retrieve, read, evidence and assert — once."""
+    """Discover, retrieve, read, evidence and assert — once.
+
+    ``conditional`` sends ``If-None-Match`` from the last successful retrieval,
+    which is what a polite crawler does and what makes a re-run cheap. Setting
+    it to ``False`` forces a full re-read — the operational case where a
+    validator is not trusted, and the only way to observe what happens when the
+    same bytes genuinely arrive again.
+    """
     now = now or _now()
     transport = transport or FixtureTransport()
     provider = FixtureDiscoveryProvider(transport)
@@ -221,7 +255,9 @@ def run_pipeline(
     _advance(session, attempt, "FETCHING", "discovery_completed_at", now)
 
     # -- FETCHING ----------------------------------------------------------
-    fetched = _retrieve(session, transport, attempt, candidates, now, result)
+    fetched = _retrieve(
+        session, transport, attempt, candidates, now, result, conditional=conditional
+    )
     _advance(session, attempt, "EXTRACTING", "fetch_completed_at", now)
 
     # -- EXTRACTING --------------------------------------------------------
@@ -318,13 +354,14 @@ def _retrieve(
     session: Session, transport: FixtureTransport,
     attempt: OperationalResearchAttempt,
     candidates: dict[str, tuple[ResearchSource, list[DiscoveredLocator]]],
-    now: datetime, result: PipelineResult,
+    now: datetime, result: PipelineResult, conditional: bool = True,
 ) -> list[_Retrieved]:
     retrieved: list[_Retrieved] = []
     for locator, (source, _) in sorted(candidates.items()):
         previous = acquisition.last_successful_fetch(session, source.id)
         fetch = transport.fetch(
-            locator, if_none_match=previous.etag if previous else None
+            locator,
+            if_none_match=previous.etag if (previous and conditional) else None,
         )
         event, body, created = acquisition.record_fetch(
             session, source=source, attempt_id=attempt.id, result=fetch, now=now,
@@ -382,8 +419,6 @@ def _relate_sources(
     and carries both observations. That distinction is why the edge table has
     an origin column at all.
     """
-    by_body: dict[uuid.UUID, _Retrieved] = {item.body_id: item for item in fetched}
-
     for item in fetched:
         canonical = _CANONICAL_LINK.search(item.raw)
         if canonical:
@@ -409,16 +444,24 @@ def _relate_sources(
             ):
                 result.edges_created += 1
 
-    # Mirrors: one semantic document, two registrable domains.
-    rows = session.execute(
+    # Mirrors: one semantic document, two registrable domains. Grouped over
+    # the retrieval list rather than a body-keyed dict, because two URLs
+    # serving *byte-identical* content share one body -- and a dict keyed by
+    # body id silently dropped one of them, so the clearest mirror of all was
+    # the one case that produced no edge.
+    artifact_of = dict(session.execute(
         select(
-            ResearchArtifactDerivation.artifact_id,
             ResearchArtifactDerivation.body_id,
-        ).where(ResearchArtifactDerivation.body_id.in_(list(by_body)))
-    ).all()
+            ResearchArtifactDerivation.artifact_id,
+        ).where(
+            ResearchArtifactDerivation.body_id.in_({item.body_id for item in fetched})
+        )
+    ).all())
     by_artifact: dict[uuid.UUID, list[_Retrieved]] = {}
-    for artifact_id, body_id in rows:
-        by_artifact.setdefault(artifact_id, []).append(by_body[body_id])
+    for item in fetched:
+        artifact_id = artifact_of.get(item.body_id)
+        if artifact_id is not None:
+            by_artifact.setdefault(artifact_id, []).append(item)
 
     for members in by_artifact.values():
         if len(members) < 2:
@@ -542,7 +585,7 @@ def _assert(
     observations: list[tuple[Observation, uuid.UUID]], now: datetime,
     result: PipelineResult,
 ) -> None:
-    for pending in claims.group_observations(observations):
+    for pending in claims.group_observations(session, observations):
         outcome = claims.assert_claim(
             session, company_id=company_id, pending=pending, now=now
         )

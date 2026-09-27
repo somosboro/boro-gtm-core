@@ -369,7 +369,7 @@ def assertion_fingerprint(
     availability: str,
     period_granularity: str,
     observed_at: object,
-    lineage_artifact_ids: list[str],
+    lineage_origins: list[tuple[str, str]],
     contract_hash: str,
 ) -> str:
     """Identity of an assertion, deliberately **excluding the extractor**.
@@ -377,6 +377,11 @@ def assertion_fingerprint(
     A newer extractor agreeing with an older one over the same lineage appends
     an evidence link rather than a twin claim. Without that, re-extracting one
     page three times would read as threefold corroboration.
+
+    The lineage key is the sorted set of ``(source_id, artifact_id)`` **evidence
+    origins**, never artifact ids alone: source A and source B both serving
+    artifact X are two observations with their own trust, publication context
+    and dates, and an artifact-only key merged them into one claim.
     """
     return sha256_json({
         "subject_company_id": str(subject_company_id),
@@ -388,6 +393,6 @@ def assertion_fingerprint(
         "availability": availability,
         "period_granularity": period_granularity,
         "observed_at": observed_at,
-        "lineage_key": sorted(lineage_artifact_ids),
+        "lineage_key": sorted(tuple(origin) for origin in lineage_origins),
         "assertion_contract_hash": contract_hash,
     })
