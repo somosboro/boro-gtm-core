@@ -61,7 +61,11 @@ def test_the_contract_count_matches_the_acceptance_document(contract_ids):
     live, retired, total = (int(g) for g in stated.groups())
     assert live == len(contract_ids)
     assert retired == len(withdrawn)
-    assert live + retired == total == 135
+    assert live + retired == total
+    # The total is not pinned to a constant. It rose from 135 to 140 when an
+    # audit proved five behaviours the branch did not have, and a hard-coded
+    # number would have made adding them look like a regression.
+    assert total >= 135
 
 
 def test_a_withdrawn_scenario_is_never_claimed_as_covered(contract_ids):

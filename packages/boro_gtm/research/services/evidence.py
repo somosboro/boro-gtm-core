@@ -110,21 +110,62 @@ def create_evidence_item(
     ).one(), False
 
 
+def _maximum_matching(edges: list[tuple[str, str]]) -> int:
+    """Maximum cardinality matching over a bipartite graph, by augmenting paths.
+
+    Kuhn's algorithm. Deterministic: both sides are iterated in sorted order, so
+    the *size* is the same whatever order the rows arrived in — and the size is
+    all that is reported.
+    """
+    adjacency: dict[str, list[str]] = {}
+    for left, right in edges:
+        adjacency.setdefault(left, [])
+        if right not in adjacency[left]:
+            adjacency[left].append(right)
+    for left in adjacency:
+        adjacency[left].sort()
+
+    matched_right: dict[str, str] = {}
+
+    def augment(left: str, seen: set[str]) -> bool:
+        for right in adjacency[left]:
+            if right in seen:
+                continue
+            seen.add(right)
+            holder = matched_right.get(right)
+            if holder is None or augment(holder, seen):
+                matched_right[right] = left
+                return True
+        return False
+
+    return sum(1 for left in sorted(adjacency) if augment(left, set()))
+
+
 def independent_publisher_count(
     session: Session, evidence_item_ids: list[uuid.UUID]
 ) -> int:
     """How many genuinely separate voices this evidence represents.
 
-    Two items are the *same* voice if they share a publisher **or** a semantic
-    document, so the count is the number of connected components over the
-    publisher/document graph. Both halves matter, and an earlier version of
-    this function got it wrong by counting distinct ``(publisher, document)``
-    pairs:
+    The frozen contract (schema graph §4.2a) is *the size of the largest set of
+    pairwise-independent lineages*, where two are independent only when they
+    differ in **both** publisher and document. A set of `(publisher, document)`
+    pairs is pairwise independent exactly when no publisher and no document
+    repeats — which is a **matching** in the bipartite publisher↔document graph.
+    So the count is the maximum matching, and computing it is the contract, not
+    an approximation of it.
 
-    * one publisher saying something on two of its own pages counted as two
-      voices — a company could corroborate itself by adding a page;
-    * a third party mirroring a company document would have counted as two,
-      which is the inflation the independence rule exists to prevent.
+    Two earlier implementations were both wrong, in opposite directions:
+
+    * counting distinct pairs over-counted — one publisher on two of its own
+      pages read as two voices, so a company could corroborate itself by adding
+      a page;
+    * counting connected components under-counted. On ``A–doc1, A–doc2,
+      B–doc2, B–doc3, C–doc3`` every edge sits in one component, so it answered
+      1, while ``A/doc1, B/doc2, C/doc3`` are three genuinely independent
+      witnesses.
+
+    Both mirrors and self-corroboration still behave: a publisher can be matched
+    once and a document can be matched once, which is precisely the rule.
     """
     if not evidence_item_ids:
         return 0
@@ -141,24 +182,9 @@ def independent_publisher_count(
     ).all()
     if not rows:
         return 0
-
-    parent: dict[object, object] = {}
-
-    def find(node: object) -> object:
-        parent.setdefault(node, node)
-        while parent[node] != node:
-            parent[node] = parent[parent[node]]
-            node = parent[node]
-        return node
-
-    def union(left: object, right: object) -> None:
-        a, b = find(left), find(right)
-        if a != b:
-            parent[a] = b
-
-    for publisher, artifact in rows:
-        union(("publisher", publisher), ("artifact", artifact))
-    return len({find(("publisher", publisher)) for publisher, _ in rows})
+    return _maximum_matching(
+        sorted({(str(publisher), str(artifact)) for publisher, artifact in rows})
+    )
 
 
 def lineage_evidence_origins(

@@ -486,25 +486,28 @@ def test_a_model_version_change_is_a_distinct_extraction_contract(researched, m3
             first.raw_output_sha256) == fingerprint
 
 
-def test_a_human_review_appends_and_leaves_the_model_alone(researched, m3):
-    """D6: a HUMAN extraction is added; the model's is byte-identical."""
-    from boro_gtm.research.services.review import review_claim
+def test_a_human_confirmation_appends_an_assertable_lineage(researched, m3, company):
+    """D6: the review targets the *evidence*, which exists before any claim."""
+    from boro_gtm.research.services.review import pending_review_items, review_evidence
 
-    sampled = m3.scalars(select(m.ResearchExtraction).where(
-        m.ResearchExtraction.determinism == "SAMPLED"
-    ).limit(1)).first()
+    item = pending_review_items(m3)[0]
+    sampled = m3.get(m.ResearchExtraction, item.extraction_id)
+    assert sampled.determinism == "SAMPLED"
     fingerprint = (sampled.raw_output_sha256, sampled.extraction_contract_hash,
                    str(sampled.observations))
 
-    claim_id = m3.scalar(select(CompanyClaim.id).where(
-        CompanyClaim.attribute_registry_version == RESEARCH_REGISTRY_VERSION
-    ).limit(1))
-    outcome = review_claim(m3, claim_id=claim_id, decision="CONFIRM", actor="analyst",
-                          now=LATER)
+    outcome = review_evidence(
+        m3, evidence_item_id=item.id, decision="CONFIRM", actor="analyst",
+        company_id=company.id, now=LATER,
+    )
     m3.flush()
-    assert outcome.human_extraction_id
-    human = m3.get(m.ResearchExtraction, outcome.human_extraction_id)
+
+    record = m3.get(m.ResearchEvidenceReview, outcome.review_id)
+    assert record.decision == "CONFIRM"
+    assert record.actor == "analyst"
+    human = m3.get(m.ResearchExtraction, record.human_extraction_id)
     assert human.extractor_kind == "HUMAN"
+
     m3.refresh(sampled)
     assert (sampled.raw_output_sha256, sampled.extraction_contract_hash,
             str(sampled.observations)) == fingerprint
@@ -648,7 +651,19 @@ def test_two_sources_serving_identical_bytes_do_not_corroborate(researched, m3, 
         .where(CompanyClaim.attribute_key == "emergency_service")
     ).all())
     assert len(publishers) == 3
-    assert profile.corroborating_publisher_counts["emergency_service"] == 2
+    # The pairwise rule gives 3, not 2: the services page, the directory's copy
+    # of the emergency page, and the trade press differ from each other in both
+    # publisher and document. The copy is excluded only from a set that already
+    # holds the page it copied — which is what stops a mirror inflating, and is
+    # narrower than the connected-component answer this replaced (M3-ADR-059).
+    assert profile.corroborating_publisher_counts["emergency_service"] == 3
+
+    # The rule's actual anti-inflation clause, isolated: a copy and its
+    # original can never both be counted.
+    from boro_gtm.research.services.evidence import _maximum_matching
+
+    assert _maximum_matching([("meridianmechanical", "emergency"),
+                              ("contractordirectory", "emergency")]) == 1
 
 
 def test_a_company_page_and_a_registry_do_corroborate(m3, company):

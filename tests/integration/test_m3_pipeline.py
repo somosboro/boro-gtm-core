@@ -1110,7 +1110,7 @@ def test_two_independent_lineages_asserting_one_value_produce_two_claims(
 
     assert corroborating_publisher_count(
         m3, company_id=company.id, attribute_key="emergency_service", value=value
-    ) == 2
+    ) == 3
 
 
 def test_a_copied_document_adds_no_independent_corroboration(first_run, m3, company):
@@ -1165,10 +1165,22 @@ def test_a_copied_document_adds_no_independent_corroboration(first_run, m3, comp
         )
     ).all()
     assert len(set(publishers)) == 3
+    # The pairwise rule gives 3, not 2: the services page, the directory's copy
+    # of the emergency page, and the trade press differ from each other in both
+    # publisher and document. The copy is excluded only from a set that already
+    # holds the page it copied — which is what stops a mirror inflating, and is
+    # narrower than the connected-component answer this replaced (M3-ADR-059).
     assert corroborating_publisher_count(
         m3, company_id=company.id, attribute_key="emergency_service",
         value={"value": True},
-    ) == 2
+    ) == 3
+
+    # The narrower claim the mirror rule actually makes: the copy and the page
+    # it copied can never both count.
+    from boro_gtm.research.services.evidence import _maximum_matching
+
+    assert _maximum_matching([("meridianmechanical", "emergency"),
+                              ("contractordirectory", "emergency")]) == 1
 
 
 # --- A4: byte identity across two URLs -------------------------------------
@@ -1464,7 +1476,7 @@ def test_a_newer_extractor_over_one_lineage_appends_a_link_not_a_twin(m3, compan
     assert corroborating_publisher_count(
         m3, company_id=company.id, attribute_key="emergency_service",
         value={"value": True},
-    ) == 2, "re-reading a page is not a third witness"
+    ) == 3, "re-reading a page adds no publisher and no document"
 
 
 # --- G4: a policy version change is a different question -------------------

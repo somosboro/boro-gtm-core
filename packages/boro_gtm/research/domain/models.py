@@ -606,6 +606,52 @@ class ResearchEvidenceItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ResearchEvidenceReview(Base):
+    """A human decision about one observation. Append-only.
+
+    Keyed on the **evidence item**, not on a claim: a sampled reading awaiting
+    confirmation has no claim yet, so a review resource keyed by claim could
+    not represent the workflow it existed for. The evidence item exists from
+    the moment the reading is recorded, which is exactly when it becomes
+    reviewable (M3-ADR-056).
+
+    A rejection asserts nothing — a CHECK forbids it from naming an extraction
+    or a claim. "A reviewer did not believe this" is not evidence that the
+    opposite is true.
+    """
+
+    __tablename__ = "research_evidence_reviews"
+    __table_args__ = (
+        UniqueConstraint("evidence_item_id", "actor", "reviewed_at",
+                         name="uq_review_identity"),
+        CheckConstraint("decision IN ('CONFIRM','REJECT')",
+                        name="decision_vocabulary"),
+        CheckConstraint(
+            "decision = 'CONFIRM' OR "
+            "(human_extraction_id IS NULL AND resulting_claim_id IS NULL)",
+            name="rejection_asserts_nothing",
+        ),
+        Index("ix_reviews_evidence_item", "evidence_item_id"),
+        Index("ix_reviews_decision", "decision"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("research_evidence_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: What a confirmation produced. NULL on every rejection, by constraint.
+    human_extraction_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("research_extractions.id", ondelete="RESTRICT"), nullable=True
+    )
+    resulting_claim_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("company_claims.id", ondelete="RESTRICT"), nullable=True
+    )
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ClaimEvidenceLink(Base):
     """Which evidence supports which assertion, with that assertion's trust."""
 
@@ -674,6 +720,13 @@ class OperationalResearchGapEvent(Base):
             unique=True, postgresql_nulls_not_distinct=True,
         ),
         _vocab("event_kind", e._v(e.GapEventKind), "ck_gap_event_vocabulary"),
+        # RESOLVED and ABANDONED are alternatives, not a progression, so the
+        # transition trigger let two concurrent writers insert one each. At most
+        # one terminal event per gap, structurally (M3-ADR-057).
+        Index(
+            "uq_gap_terminal_event", "gap_id", unique=True,
+            postgresql_where="event_kind IN ('RESOLVED','ABANDONED')",
+        ),
         Index("ix_gap_events_gap_time", "gap_id", "occurred_at"),
     )
 
@@ -782,6 +835,11 @@ class IdentityReviewSignalEvent(Base):
     __table_args__ = (
         UniqueConstraint("occurrence_id", "status", "occurred_at", name="uq_signal_event"),
         _vocab("status", e._v(e.SignalStatus), "ck_signal_status_vocabulary"),
+        # ACTIONED and DISMISSED are alternatives; see the gap events above.
+        Index(
+            "uq_signal_terminal_event", "occurrence_id", unique=True,
+            postgresql_where="status IN ('ACTIONED','DISMISSED')",
+        ),
         Index("ix_signal_events_occurrence", "occurrence_id", "occurred_at"),
     )
 

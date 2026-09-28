@@ -248,13 +248,23 @@ def test_the_projection_reads_no_clock(researched, m3, company):
 def test_corroboration_across_claims_follows_the_independence_rule(
     researched, m3, company
 ):
-    """Same publisher, several pages: one voice. Two publishers: two."""
+    """The largest set of pairwise-independent lineages, per M3-ADR-059.
+
+    Independent means differing in **both** publisher and document, so the
+    count is a maximum matching over the publisher/document graph — not a
+    component count, which under-reported, and not a pair count, which
+    over-reported.
+    """
     profile = m3.get(m.OperationalResearchProfile, company.id)
     counts = profile.corroborating_publisher_counts
 
-    # The contractor states 24/7 on two of its own pages, a trade publication
-    # states it independently, and a directory republishes the company's page.
-    assert counts["emergency_service"] == 2
+    # Four pairs support `emergency_service = true`: the company's services
+    # page, the company's emergency page, a directory's byte-identical copy of
+    # that emergency page, and a trade publication. The largest pairwise
+    # independent set is three — services / copy / trade press. The copy is
+    # excluded only from a set already holding the page it copied, which is the
+    # clause that stops a mirror inflating.
+    assert counts["emergency_service"] == 3
 
     # branch_count is asserted only by the company (home, mirror, redirect
     # source) plus a directory listing a different value -- two publishers.

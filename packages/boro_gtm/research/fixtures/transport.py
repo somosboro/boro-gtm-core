@@ -170,6 +170,11 @@ class DiscoveredLocator:
     context: dict[str, object] | None = None
     discovered_from: str | None = None
     relevance_hint: float | None = None
+    #: The attribute keys the plan was pursuing when it produced this
+    #: candidate. Without it there is no honest way to say *which* question a
+    #: failed source failed for, and attributing a failure to an arbitrary
+    #: target manufactures specificity the data does not have.
+    pursued_for: tuple[str, ...] = ()
 
 
 class FixtureDiscoveryProvider:
@@ -202,9 +207,11 @@ class FixtureDiscoveryProvider:
         ]
 
     def search(self, query: str) -> list[DiscoveredLocator]:
+        pursued = corpus.QUERY_INTENT.get(query, ())
         return [
             DiscoveredLocator(url, "SEARCH", {"query": query, "rank": rank},
-                              relevance_hint=round(1.0 - rank * 0.1, 4))
+                              relevance_hint=round(1.0 - rank * 0.1, 4),
+                              pursued_for=pursued)
             for rank, url in enumerate(corpus.SEARCH_RESULTS.get(query, ()))
         ]
 

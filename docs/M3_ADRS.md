@@ -1967,3 +1967,192 @@ byte-identical.
 > condition the manifest exists to detect"* — which is exactly right. The entry
 > had been recorded prematurely during this same session and never committed, so
 > it was removed and re-recorded rather than forced.
+
+---
+
+## M3-ADR-056 — Review is keyed on evidence, and both decisions persist
+
+**Status:** accepted (audit finding; **new migration** `0007_m3_review`)
+
+### Context
+
+`POST /research-claims/{claim_id}/review` could not express the workflow it
+existed for. The frozen rule is that a `SAMPLED` reading does **not** assert a
+claim and reaches assertion only after human confirmation — so at the moment it
+becomes reviewable there is no claim, and a route keyed by claim cannot address
+it.
+
+Worse, `review_claim(decision="REJECT")` persisted nothing. It built a
+`ReviewOutcome` and returned it. After the response there was no record that a
+human had reviewed anything: not the actor, not the time, not the rationale,
+not what was rejected. In an evidence system.
+
+Acceptance D6 compounded it, reading *"a model claim a reviewer **rejects** …
+a `HUMAN` extraction and a **new claim** are appended"* — two contradictions in
+one sentence, since a rejection must not append a claim.
+
+### Decision
+
+`research_evidence_reviews` is append-only and keyed on the **evidence item**,
+which exists from the moment a sampled reading is recorded — exactly when it
+becomes reviewable. Both decisions write a row carrying actor, time, decision
+and rationale. A CHECK forbids a rejection from naming an extraction or a
+claim.
+
+The API becomes `GET /research-reviews/pending`,
+`POST /research-evidence-items/{id}/review` and
+`GET /research-evidence-items/{id}/reviews`. The claim-keyed route is
+**superseded and removed** rather than kept as a misleading alias; nothing is
+released, so there is no compatibility to preserve.
+
+D6 is split into D6 (confirmation) and D7 (durable rejection), because they are
+genuinely different behaviours and one scenario could not state both.
+
+### Consequences
+
+* A reviewer's queue is addressable before any claim exists, which is the state
+  the milestone spent three phases insisting is real.
+* A rejection is now auditable. It still asserts nothing: disbelief is not
+  evidence of the opposite.
+* **Generalisable:** if a workflow has a state, the API must have a resource
+  for that state. A route keyed on an object that does not exist yet is a
+  design error wearing a URL.
+
+---
+
+## M3-ADR-057 — Terminal siblings need uniqueness, not ordering
+
+**Status:** accepted (audit finding; `0007_m3_review`)
+
+### Context
+
+M3-ADR-053 broke status ties by lifecycle position. `ACTIONED`/`DISMISSED` and
+`RESOLVED`/`ABANDONED` share a rank, because they are **alternatives, not a
+progression** — there is no "further along" between them.
+
+So ordering cannot separate them, and two transactions reading the same
+pre-terminal state could each insert a different terminal child. Reproduced on
+this branch: a gap ended holding both `RESOLVED` and `ABANDONED`.
+
+The signal side happened not to reproduce, because the transition trigger also
+`UPDATE`s `is_open` on the occurrence and that row lock serialises the writers.
+That is an accident of an unrelated statement, not an invariant.
+
+### Decision
+
+A partial unique index per lifecycle — one terminal event per gap, one per
+occurrence. The second writer gets a unique violation, which the services
+translate into a domain conflict.
+
+### Consequences
+
+* The guarantee no longer depends on a lock taken for another reason.
+* Assigning the siblings different arbitrary ranks was the tempting fix and
+  would have been wrong: it would have declared one of two alternatives
+  "later", which is a claim about the domain that is not true.
+
+---
+
+## M3-ADR-058 — One job type, because one is what runs
+
+**Status:** accepted (audit finding); **supersedes the four-job split in
+M3-ADR-013 for the fixture-only milestone**
+
+### Context
+
+The design declared four job types on the stated grounds that each has a
+different failure and retry profile: *"a robots denial must not be retried like
+a timeout."* The reasoning is sound and it is about a **production** provider.
+
+M3 ships fixture adapters only. Every outcome is deterministic and reproducible
+from local files, so there is no transient failure for a per-stage retry to
+retry. The implementation reflected that honestly and badly: `DISCOVER_SOURCES`
+ran the entire pipeline and the other three returned `{"skipped": …}` and
+marked themselves DONE. Three declared job types were no-ops.
+
+### Decision
+
+One job type, `M3_EXECUTE_RESEARCH`, which is what actually runs. The four-way
+split returns with the provider whose failure modes justify it, and the ADR
+that will reintroduce it should cite this one.
+
+### Consequences
+
+* The docs and the code describe the same system.
+* Nothing is lost: the stages still exist as durable state on the attempt —
+  `discovery_completed_at`, `fetch_completed_at`, `extraction_completed_at` —
+  which is where stage progress belongs. What is gone is a queue topology with
+  no failures to route.
+* **Generalisable:** four names where three mean "skip and succeed" is not an
+  implementation of a design. It is a way of appearing to have one.
+
+---
+
+## M3-ADR-059 — Corroboration is a maximum matching, not a component count
+
+**Status:** accepted (audit finding)
+
+### Context
+
+The frozen contract is *the size of the largest set of pairwise-independent
+lineages*, where two lineages are independent only when they differ in **both**
+publisher and document.
+
+M3-ADR-048 replaced an over-counting implementation with connected components.
+That under-counts. On
+
+```
+A–doc1   A–doc2   B–doc2   B–doc3   C–doc3
+```
+
+every edge sits in one component, so it answered **1** — while `A/doc1`,
+`B/doc2`, `C/doc3` are three genuinely independent witnesses.
+
+A set of `(publisher, document)` pairs is pairwise independent exactly when no
+publisher and no document repeats, which is the definition of a **matching**.
+So the contract *is* maximum bipartite matching; components were never an
+equivalent formulation of it.
+
+### Decision
+
+Kuhn's augmenting-path algorithm over the publisher↔document graph. No new
+dependency; both sides iterated in sorted order, so the result is deterministic.
+
+### Consequences
+
+* The chain above now answers 3. Mirrors and self-corroboration are unchanged,
+  because a publisher matches once and a document matches once — which is
+  precisely the independence rule restated.
+* This function feeds both confidence and the projections, so both were
+  re-derived.
+* **Generalisable, and the second time here:** when a contract states a
+  property, implement the property. Both wrong answers came from substituting a
+  cheaper graph computation that felt equivalent and was not.
+
+---
+
+## M3-ADR-060 — Precedence ranks a *more recent* earliest retrieval first
+
+**Status:** accepted (audit finding)
+
+### Context
+
+The frozen precedence ends: fact type, trust, publication date, **more recent
+earliest `retrieved_at` across the lineage**, lowest claim id.
+
+`_claim_facts` computed `MIN(retrieved_at)` correctly. `precedence_key` then
+placed that datetime into an ascending sort key consumed by `min(...)`, so an
+**older** earliest retrieval won — the exact inverse of the rule, on a rung
+every other element of the key negated.
+
+### Decision
+
+Negate the retrieval rung like every other rung. The meaning is unchanged: it
+is still the *earliest* retrieval across the lineage, and a more recent one now
+outranks an older one.
+
+### Consequences
+
+* The bug only surfaced when fact type, trust and publication date all tied,
+  which is why the fixture corpus never showed it. Rungs below the first
+  distinguishing one need their own test, not coverage by accident.

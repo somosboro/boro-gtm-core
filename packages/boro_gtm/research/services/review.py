@@ -25,13 +25,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from boro_gtm.core.errors import GtmError, NotFoundError, ValidationError
-from boro_gtm.discovery.domain.models import CompanyClaim
 from boro_gtm.research.domain.models import (
-    ClaimEvidenceLink,
     IdentityReviewSignalEvent,
     IdentityReviewSignalOccurrence,
-    ResearchArtifactDerivation,
     ResearchEvidenceItem,
+    ResearchEvidenceReview,
     ResearchExtraction,
     ResearchFetchEvent,
     ResearchSource,
@@ -50,135 +48,174 @@ class IllegalSignalTransitionError(GtmError):
     http_status = 409
 
 
-class ReviewNotApplicableError(GtmError):
-    """The claim has no model-sampled lineage to review."""
+class DuplicateReviewError(GtmError):
+    """The same reviewer already recorded this decision at this instant."""
 
-    code = "REVIEW_NOT_APPLICABLE"
+    code = "REVIEW_DUPLICATE"
     http_status = 409
 
 
 @dataclass(slots=True)
 class ReviewOutcome:
-    claim_id: uuid.UUID
+    """The durable record a review produced."""
+
+    review_id: uuid.UUID
+    evidence_item_id: uuid.UUID
     decision: str
+    actor: str
+    note: str | None
+    reviewed_at: datetime
     human_extraction_id: uuid.UUID | None = None
-    confirmed_claim_id: uuid.UUID | None = None
-    evidence_item_ids: list[uuid.UUID] = field(default_factory=list)
+    resulting_claim_id: uuid.UUID | None = None
+    created_evidence_item_ids: list[uuid.UUID] = field(default_factory=list)
     model_extraction_unchanged: bool = True
-    note: str | None = None
 
     def as_dict(self) -> dict:
         return {
-            "claim_id": self.claim_id,
+            "review_id": self.review_id,
+            "evidence_item_id": self.evidence_item_id,
             "decision": self.decision,
-            "human_extraction_id": self.human_extraction_id,
-            "confirmed_claim_id": self.confirmed_claim_id,
-            "evidence_item_ids": self.evidence_item_ids,
-            "model_extraction_unchanged": self.model_extraction_unchanged,
+            "actor": self.actor,
             "note": self.note,
+            "reviewed_at": self.reviewed_at,
+            "human_extraction_id": self.human_extraction_id,
+            "resulting_claim_id": self.resulting_claim_id,
+            "created_evidence_item_ids": self.created_evidence_item_ids,
+            "model_extraction_unchanged": self.model_extraction_unchanged,
         }
 
 
-def review_claim(
+def pending_review_items(
+    session: Session, *, company_id: uuid.UUID | None = None, limit: int = 50
+) -> list[ResearchEvidenceItem]:
+    """Sampled readings that have not been reviewed and support no claim.
+
+    This is the queue a reviewer works. It exists *before* any claim does,
+    which is the whole point: a sampled reading cannot assert on its own, so
+    there is nothing else to key the workflow on.
+    """
+    reviewed = select(ResearchEvidenceReview.evidence_item_id)
+    statement = (
+        select(ResearchEvidenceItem)
+        .join(ResearchExtraction,
+              ResearchExtraction.id == ResearchEvidenceItem.extraction_id)
+        .where(
+            ResearchExtraction.determinism == "SAMPLED",
+            ResearchEvidenceItem.id.not_in(reviewed),
+        )
+        .order_by(ResearchEvidenceItem.created_at, ResearchEvidenceItem.id)
+        .limit(limit)
+    )
+    if company_id is not None:
+        statement = statement.join(
+            ResearchFetchEvent,
+            ResearchFetchEvent.id == ResearchEvidenceItem.fetch_event_id,
+        )
+    return list(session.scalars(statement).all())
+
+
+def review_evidence(
     session: Session,
     *,
-    claim_id: uuid.UUID,
+    evidence_item_id: uuid.UUID,
     decision: str,
     actor: str,
+    company_id: uuid.UUID | None = None,
     note: str | None = None,
     now: datetime | None = None,
 ) -> ReviewOutcome:
-    """Append a review of one claim's evidence."""
+    """Record a human decision about one observation. Always durable.
+
+    Both outcomes write a row. An earlier version returned a rejection as an
+    in-memory object and persisted nothing, so after the request there was no
+    record that anyone had reviewed anything, who, when, or why — in an
+    evidence system, of all places.
+    """
     now = now or datetime.now(UTC)
     decision = decision.strip().upper()
     if decision not in {CONFIRM, REJECT}:
         raise ValidationError(
             f"decision must be {CONFIRM} or {REJECT}", {"decision": decision}
         )
-    claim = session.get(CompanyClaim, claim_id)
-    if claim is None:
-        raise NotFoundError(f"no claim {claim_id}")
+    item = session.get(ResearchEvidenceItem, evidence_item_id)
+    if item is None:
+        raise NotFoundError(f"no evidence item {evidence_item_id}")
 
-    links = session.scalars(
-        select(ClaimEvidenceLink).where(ClaimEvidenceLink.claim_id == claim_id)
-    ).all()
-    if not links:
-        raise ReviewNotApplicableError(
-            f"claim {claim_id} has no evidence to review"
+    extraction = session.get(ResearchExtraction, item.extraction_id)
+    before = (extraction.raw_output_sha256, extraction.extraction_contract_hash,
+              str(extraction.observations))
+
+    human_extraction_id: uuid.UUID | None = None
+    resulting_claim_id: uuid.UUID | None = None
+    created_ids: list[uuid.UUID] = []
+
+    if decision == CONFIRM:
+        human_extraction_id, resulting_claim_id, created_ids = _confirm(
+            session, item=item, company_id=company_id, now=now
         )
 
-    before = {
-        row.id: (row.raw_output_sha256, row.extraction_contract_hash)
-        for row in session.scalars(
-            select(ResearchExtraction)
-            .join(ResearchEvidenceItem,
-                  ResearchEvidenceItem.extraction_id == ResearchExtraction.id)
-            .where(ResearchEvidenceItem.id.in_(
-                [link.evidence_item_id for link in links]
-            ))
-        ).all()
-    }
-
-    if decision == REJECT:
-        # Recorded, and nothing asserted. The model's work is untouched.
-        return ReviewOutcome(
-            claim_id=claim_id, decision=REJECT,
-            model_extraction_unchanged=_unchanged(session, before),
-            note=note or f"rejected by {actor}",
+    review_id = uuid.uuid4()
+    result = session.execute(
+        pg_insert(ResearchEvidenceReview)
+        .values(
+            id=review_id, evidence_item_id=evidence_item_id, decision=decision,
+            actor=actor, note=note, human_extraction_id=human_extraction_id,
+            resulting_claim_id=resulting_claim_id, reviewed_at=now,
         )
-
-    outcome = _confirm(session, claim=claim, links=list(links), actor=actor, now=now)
-    outcome.model_extraction_unchanged = _unchanged(session, before)
-    outcome.note = note
-    return outcome
-
-
-def _unchanged(session: Session, before: dict) -> bool:
+        .on_conflict_do_nothing(constraint="uq_review_identity")
+        .returning(ResearchEvidenceReview.id)
+    )
+    if result.first() is None:
+        raise DuplicateReviewError(
+            f"{actor} already recorded a review of evidence {evidence_item_id} "
+            f"at {now.isoformat()}",
+            {"evidence_item_id": str(evidence_item_id), "actor": actor},
+        )
     session.flush()
-    after = {
-        row.id: (row.raw_output_sha256, row.extraction_contract_hash)
-        for row in session.scalars(
-            select(ResearchExtraction).where(ResearchExtraction.id.in_(list(before)))
-        ).all()
-    }
-    return after == before
+
+    session.refresh(extraction)
+    unchanged = (extraction.raw_output_sha256, extraction.extraction_contract_hash,
+                 str(extraction.observations)) == before
+
+    return ReviewOutcome(
+        review_id=review_id, evidence_item_id=evidence_item_id, decision=decision,
+        actor=actor, note=note, reviewed_at=now,
+        human_extraction_id=human_extraction_id,
+        resulting_claim_id=resulting_claim_id,
+        created_evidence_item_ids=created_ids,
+        model_extraction_unchanged=unchanged,
+    )
 
 
 def _confirm(
-    session: Session, *, claim: CompanyClaim, links: list[ClaimEvidenceLink],
-    actor: str, now: datetime,
-) -> ReviewOutcome:
-    """Create the HUMAN lineage that makes a sampled reading assertable."""
-    from boro_gtm.research.services.evidence import EvidenceContext, create_evidence_item
-    from boro_gtm.research.services.extraction import (
-        HUMAN_EXTRACTOR,
-        Observation,
-        run_extraction,
-    )
+    session: Session, *, item: ResearchEvidenceItem, company_id: uuid.UUID | None,
+    now: datetime,
+) -> tuple[uuid.UUID, uuid.UUID | None, list[uuid.UUID]]:
+    """Create the HUMAN lineage that makes a sampled reading assertable.
 
-    item = session.get(ResearchEvidenceItem, links[0].evidence_item_id)
-    text_derivation = session.scalars(
-        select(ResearchTextDerivation).where(
-            ResearchTextDerivation.id == (
-                session.get(ResearchExtraction, item.extraction_id).text_derivation_id
-            )
-        )
-    ).one()
-    attempt_id = session.get(ResearchFetchEvent, item.fetch_event_id).attempt_id
+    The sampled evidence is untouched. What changes is that an assertable
+    lineage now exists beside it.
+    """
+    from boro_gtm.research.services.claims import assert_claim, group_observations
+    from boro_gtm.research.services.evidence import EvidenceContext, create_evidence_item
+    from boro_gtm.research.services.extraction import HUMAN_EXTRACTOR, run_extraction
+
+    sampled = session.get(ResearchExtraction, item.extraction_id)
+    text_derivation = session.get(ResearchTextDerivation, sampled.text_derivation_id)
+    fetch = session.get(ResearchFetchEvent, item.fetch_event_id)
 
     reading = run_extraction(
         session, extractor=HUMAN_EXTRACTOR, text_derivation=text_derivation,
-        attempt_id=attempt_id, now=now,
+        attempt_id=fetch.attempt_id, now=now,
     )
-    derivation = session.get(ResearchArtifactDerivation, item.artifact_derivation_id)
     context = EvidenceContext(
         extraction_id=reading.extraction.id, fetch_event_id=item.fetch_event_id,
-        artifact_derivation_id=derivation.id, body_id=item.body_id,
+        artifact_derivation_id=item.artifact_derivation_id, body_id=item.body_id,
         source=session.get(ResearchSource, item.source_id),
     )
 
     created_ids: list[uuid.UUID] = []
-    confirming: list[tuple[Observation, uuid.UUID]] = []
+    confirming = []
     for observation in reading.observations:
         evidence, _ = create_evidence_item(
             session, context=context, observation=observation, now=now
@@ -186,24 +223,26 @@ def _confirm(
         created_ids.append(evidence.id)
         confirming.append((observation, evidence.id))
 
-    confirmed_claim_id: uuid.UUID | None = None
-    if confirming:
-        from boro_gtm.research.services.claims import assert_claim, group_observations
-
-        run_company = claim.subject_company_id
+    resulting_claim_id: uuid.UUID | None = None
+    if confirming and company_id is not None:
         for pending in group_observations(session, confirming):
-            result = assert_claim(
-                session, company_id=run_company, pending=pending, now=now
+            outcome = assert_claim(
+                session, company_id=company_id, pending=pending, now=now
             )
-            if result.claim.attribute_key == claim.attribute_key:
-                confirmed_claim_id = result.claim.id
+            if resulting_claim_id is None:
+                resulting_claim_id = outcome.claim.id
     session.flush()
-    return ReviewOutcome(
-        claim_id=claim.id, decision=CONFIRM,
-        human_extraction_id=reading.extraction.id,
-        confirmed_claim_id=confirmed_claim_id,
-        evidence_item_ids=sorted(created_ids, key=str),
-    )
+    return reading.extraction.id, resulting_claim_id, sorted(created_ids, key=str)
+
+
+def reviews_for(
+    session: Session, evidence_item_id: uuid.UUID
+) -> list[ResearchEvidenceReview]:
+    return list(session.scalars(
+        select(ResearchEvidenceReview)
+        .where(ResearchEvidenceReview.evidence_item_id == evidence_item_id)
+        .order_by(ResearchEvidenceReview.reviewed_at, ResearchEvidenceReview.id)
+    ).all())
 
 
 # ---------------------------------------------------------------------------

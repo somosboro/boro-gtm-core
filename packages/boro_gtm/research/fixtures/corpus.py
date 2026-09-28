@@ -397,13 +397,29 @@ SEARCH_RESULTS: dict[str, tuple[str, ...]] = {
     ),
     "meridian mechanical controls retrofit": (
         "https://www.meridianmechanical.com/services/controls-retrofit",
-        "https://contractordirectory.example/slow/meridian",
+        "https://www.meridianmechanical.com/internal/dispatch-board",
     ),
+}
+
+#: What each query was issued to learn. A failed source can only be attributed
+#: to a question it was actually pursued for; without this the pipeline would
+#: be guessing which attribute a 404 disappointed.
+QUERY_INTENT: dict[str, tuple[str, ...]] = {
+    "meridian mechanical columbus ohio hvac": ("branch_count", "technician_count"),
+    "meridian mechanical emergency service": ("emergency_service",),
+    # Both results fail permanently — a 404 and a robots denial — and nothing
+    # else in the plan pursues dispatch_system, so it is genuinely unreachable.
+    "meridian mechanical controls retrofit": ("dispatch_system",),
 }
 
 JOB_BOARD_RESULTS: tuple[str, ...] = (JOB_URL,)
 REGISTRY_RESULTS: tuple[str, ...] = (REGISTRY_URL,)
-API_RESULTS: tuple[str, ...] = ("https://broken.example/meridian",)
+#: Transport-level failures, discovered with no attribute intent: a timeout and
+#: a connection reset say nothing about *which* question they disappointed.
+API_RESULTS: tuple[str, ...] = (
+    "https://broken.example/meridian",
+    "https://contractordirectory.example/slow/meridian",
+)
 
 #: Addresses the crawler is told it may not visit.
 ROBOTS_DISALLOWED: tuple[str, ...] = (

@@ -194,8 +194,15 @@ Canonicalization is content-type specific and versioned:
 
 Every strategy is **required to preserve declared publication metadata**.
 Without that requirement two documents differing only in publication date would
-canonicalize to one artifact, and the artifact is where
-`source_published_at` lives.
+canonicalize to one artifact and lose one of the two dates.
+
+> *Corrected in revision 5.1.* An earlier draft finished this sentence
+> "…and the artifact is where `source_published_at` lives". It does not, and
+> must not: folding publication metadata into the canonical hash would split
+> mirrors into two artifacts and break independence detection. The date lives
+> on the **derivation** that observed it — the reading of one body under one
+> canonicalization contract — which is what lets a dated original and an
+> undated mirror be one document read twice (M3-ADR-031).
 
 A cosmetic change — a rotating testimonial, a build hash, a footer year —
 produces a **new body** and **no new artifact**. A changed sentence about
@@ -241,7 +248,7 @@ Eleven failed attempts are eleven events with `body_id IS NULL`, which is how
 | Where did this claim come from? | The link names one extraction **and** one fetch event; composite FKs prove both name the same body, so the walk is single-valued |
 | What exact content was observed? | `research_artifact_bodies.raw_body` (or its hash after pruning) |
 | When did we retrieve it — every time? | `research_fetch_events`, one row per retrieval |
-| What did the source itself date? | `research_artifacts.source_published_at` + granularity, NULL when unstated |
+| What did the source itself date? | `research_artifact_derivations.source_published_at` + granularity, NULL when unstated |
 | What content type? | `research_fetch_events.declared_content_type`; sniffed type in `research_body_classifications` under a versioned classifier |
 | What extraction read it? | `research_extractions`, with model and prompt version |
 | Has the live page changed? | A later fetch event yielding a different body; a different artifact only if the change was semantic |
@@ -792,7 +799,7 @@ Four distinct times, and conflating any two of them is a defect:
 | Field | Lives on | Means |
 | --- | --- | --- |
 | `retrieved_at` | fetch event | when *we* fetched it, once per retrieval |
-| `source_published_at` | artifact | when the *source* says it was published — NULL when unstated |
+| `source_published_at` | **derivation** | when the *source* says it was published — NULL when unstated. On the derivation, never the artifact (M3-ADR-031) |
 | `observed_at` | claim | when the asserted fact was true, per the source |
 | `valid_from` / `valid_to` | claim value (interval attributes) | the window the fact covers |
 
@@ -1521,7 +1528,7 @@ The brief's seven conditions, each checked mechanically rather than asserted:
 criterion: it changed meaning, not structure.
 
 Counts, computed from the documents at revision 5: **23 tables · 42 registry
-attributes · 134 acceptance scenarios (+1 withdrawn) · 55 ADRs.** Three M2 objects are touched, all additively:
+attributes · 139 acceptance scenarios (+1 withdrawn) · 60 ADRs.** Three M2 objects are touched, all additively:
 `attribute_definitions.owner_milestone`,
 `company_claims.assertion_fingerprint` with a partial unique index, and a
 deferred constraint trigger on `company_claims`.

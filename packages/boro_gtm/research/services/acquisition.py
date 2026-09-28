@@ -94,6 +94,11 @@ def record_discovery(
     caller can count *new* observations rather than guessing.
     """
     context = dict(candidate.context or {})
+    if candidate.pursued_for:
+        # Part of the observation: *why* we went looking there. It is inside the
+        # context hash deliberately, because the same address pursued for a
+        # different question is a different discovery observation.
+        context["pursued_for"] = list(candidate.pursued_for)
     context_hash = sha256_json(context) if context else None
     values = {
         "id": uuid.uuid4(),

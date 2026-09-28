@@ -152,7 +152,7 @@ adjacent to it.
 | B4 | Offsets shift; the quote hash rehomes the locator | `test_a_locator_survives_reprocessing_by_quote_hash` |
 | B5 | A rotted locator weakens to a stated weight and deletes nothing | `test_a_rotted_locator_weakens_and_never_deletes` |
 | C1 | Conflicting sources coexist as an envelope with a labelled best | `test_a_contradiction_projects_as_an_envelope_with_a_labelled_best` |
-| C2 | Precedence is a total order, independent of input order | `test_insertion_order_does_not_change_the_stored_projection`, `test_precedence_prefers_fact_type_then_trust_then_date_then_id` |
+| C2 | Precedence is a total order; a more recent earliest retrieval wins | `test_insertion_order_does_not_change_the_stored_projection`, `test_precedence_prefers_fact_type_then_trust_then_date_then_id`, `test_a_more_recent_earliest_retrieval_wins_when_all_else_ties`, `test_the_claim_id_remains_the_final_tiebreak` |
 | C3 | An inference is INFERENCE with a rule id and version; FACT is refused | `test_an_inference_is_asserted_as_inference_with_a_named_rule` |
 | C4 | A claim cannot exist without evidence | `test_a_claim_cannot_exist_without_evidence`, `test_every_m3_claim_cites_evidence` |
 | C5 | One claim over a multi-origin lineage carries every input's evidence | `test_an_inference_carries_every_input_claims_evidence` |
@@ -170,7 +170,8 @@ adjacent to it.
 | D3 | A low-confidence reading yields INSUFFICIENT_EVIDENCE, not a claim | `test_a_low_confidence_extraction_yields_a_gap_not_a_claim` |
 | D4 | Re-extraction reuses; the earlier row is byte-identical | `test_re_extraction_adds_evidence_and_never_rewrites` |
 | D5 | Re-running the same extractor version creates no row | `test_an_extraction_reused_by_a_second_attempt_is_not_duplicated` |
-| D6 | A HUMAN extraction is appended; the model's is byte-identical | `test_a_human_review_appends_and_leaves_the_model_alone` |
+| D6 | A confirmation appends a HUMAN lineage and a durable record; the sampled extraction is byte-identical | `test_a_human_confirmation_appends_an_assertable_lineage`, `test_a_confirmation_appends_a_human_lineage_and_a_durable_record`, `test_confirming_an_observation_appends_a_human_lineage` |
+| D7 | A rejection persists actor, time and rationale, and asserts nothing | `test_a_rejection_is_durable_and_asserts_nothing`, `test_a_rejection_never_asserts_the_negative`, `test_the_database_forbids_a_rejection_that_names_a_claim`, `test_rejecting_an_observation_persists_and_asserts_nothing` |
 | E1 | The retrieval date is never the observation date | `test_a_retrieval_date_is_never_used_as_the_observation_date` |
 | E2 | A stated date keeps its own granularity; none is invented | `test_an_invented_publication_date_is_unrepresentable` |
 | E3 | Time passing rewrites no claim | `test_time_passing_never_rewrites_a_claim` |
@@ -183,6 +184,8 @@ adjacent to it.
 | F4 | A gap closes by an event carrying the claim id; the parent is unchanged | `test_a_gap_closes_by_an_event_with_no_update_to_the_parent` |
 | F5 | A non-applicable attribute leaves both sides of coverage untouched | `test_a_non_applicable_attribute_leaves_both_sides_untouched` |
 | F6 | Coverage, confidence and contradiction stay three numbers | `test_coverage_confidence_and_contradiction_stay_separate` |
+| F7 | The three "we do not have it" kinds are mutually exclusive | `test_a_low_confidence_attribute_gets_insufficient_and_not_no_evidence` |
+| F8 | An unrelated failed source raises no UNRESOLVABLE gap | `test_an_unrelated_failed_source_raises_no_unresolvable_gap`, `test_unresolvable_is_attributed_only_to_a_pursued_attribute` |
 | G1 | A run that has not extracted asserts nothing | `test_a_run_that_has_not_extracted_asserts_nothing` |
 | G2 | A stage cannot be skipped, and an advance sets no earlier timestamp | `test_a_later_stage_cannot_launder_an_incomplete_earlier_stage` |
 | G3 | A retry advances the question as attempt n+1 | `test_a_retry_advances_the_same_question`, `test_a_terminal_attempt_stays_terminal` |
@@ -197,6 +200,7 @@ adjacent to it.
 | G13 | A different target attribute set is a different run | `test_a_different_question_is_a_different_run` |
 | G14 | The same question reuses the run | `test_a_retry_advances_the_same_question` |
 | G15 | Only one attempt may be live, and the caller gets a domain error | `test_only_one_attempt_can_be_live_for_a_question`, `test_a_second_live_attempt_is_409_not_an_integrity_error` |
+| G16 | Two terminal transitions cannot both land, over two real connections | `test_two_workers_ending_one_gap_differently_produce_one_terminal`, `test_two_workers_ending_one_occurrence_differently_produce_one_terminal`, `test_a_gap_cannot_hold_two_terminal_events`, `test_an_occurrence_cannot_hold_two_terminal_events` |
 | H1 | A full research run writes no M2 row | `test_m2_is_unchanged_by_a_research_run` |
 | H2 | M3 creates no company | `test_m2_is_unchanged_by_a_research_run` |
 | H3 | M3 alters no resolution decision | `test_m2_is_unchanged_by_a_research_run` |
@@ -207,15 +211,16 @@ adjacent to it.
 | I1 | A pruned body leaves provenance intelligible | `test_pruning_everything_leaves_every_claim_walkable`, `test_a_claim_remains_explainable_after_its_body_is_pruned` |
 | I2 | Pruning is the only permitted mutation | `test_restoring_a_pruned_body_is_rejected`, `test_an_extraction_still_rejects_every_other_update` |
 | I3 | Retention deletes no row | `test_retention_deletes_no_row` |
+| I4 | A prune cannot launder any other mutation, on all three payload tables | `test_a_prune_cannot_carry_an_illegal_mutation`, `test_a_prune_without_a_timestamp_is_rejected`, `test_a_legal_prune_still_succeeds` |
 | J1 | A script fingerprint cannot exceed HYPOTHESIS | `test_a_script_fingerprint_cannot_exceed_hypothesis` |
 | J2 | A job mention of a tool cannot exceed PROXY | `test_a_job_mention_of_a_tool_cannot_exceed_proxy` |
 | J3 | An explicit company statement may be FACT | `test_an_explicit_company_statement_may_be_fact` |
 | J4 | Operating-model attributes cannot be FACT | `test_operating_model_attributes_cannot_be_fact` |
 | L1 | Each evidence item names the source it was observed at | `test_one_body_from_two_sources_resolves_to_one_intended_source` |
 | L2 | Composite FKs bind one body | `test_evidence_cannot_mix_bodies_across_its_three_paths` |
-| L3 | Two sources serving identical bytes do not corroborate | `test_two_sources_serving_identical_bytes_do_not_corroborate` |
-| L4 | A company page and a registry do corroborate | `test_a_company_page_and_a_registry_do_corroborate` |
-| L5 | Two pages on one site do not corroborate | `test_two_pages_on_one_site_do_not_corroborate` |
+| L3 | A copy and the page it copied can never both be counted | `test_two_sources_serving_identical_bytes_do_not_corroborate`, `test_a_mirror_never_joins_a_set_with_the_page_it_copied`, `test_independence_matches_the_frozen_rule` |
+| L4 | A company page and a registry do corroborate | `test_a_company_page_and_a_registry_do_corroborate`, `test_the_chain_topology_counts_three_independent_witnesses` |
+| L5 | Two pages on one site do not corroborate | `test_two_pages_on_one_site_do_not_corroborate`, `test_corroboration_on_the_corpus_follows_the_pairwise_rule` |
 | L6 | One extraction row, two attempt usages, CREATED then REUSED | `test_an_extraction_reused_by_a_second_attempt_is_not_duplicated` |
 | L7 | A model version change is a distinct extraction contract | `test_a_model_version_change_is_a_distinct_extraction_contract` |
 | L8 | A redaction policy upgrade is a distinct text derivation | `test_a_second_text_policy_creates_a_second_derivation_and_edits_nothing` |
@@ -274,14 +279,14 @@ same value from two origins staying two lineages; projections rebuilding
 byte-identically from empty; the API's raw-payload, pagination and error
 contracts; the CLI's fixture-only execution gate.
 
-**306 M3 tests in total** across twelve files.
+**353 M3 tests in total** across thirteen files.
 
 ### Acceptance status, counted mechanically
 
 | | Count |
 | --- | --- |
-| Scenarios in the contract | 134 |
-| Executable, and passing | 134 |
+| Scenarios in the contract | 139 |
+| Executable, and passing | 139 |
 | Failing | 0 |
 | Not yet executable | 0 |
 
@@ -289,12 +294,26 @@ Parsed from the documents by `tests/unit/test_traceability_counts.py`, which
 also refuses a citation to a scenario that does not exist, refuses ranges, and
 refuses to let the withdrawn G8 be claimed.
 
-Four scenarios reached 134 by **building what they asked for** rather than by
-relaxing them. B1 and B2 wanted structural paths — a CSS path, a heading trail,
-a PDF section — which the phase-2 locators did not produce; B4 and B5 wanted
-quote-hash resolution and a rotted-pointer weight, which did not exist. Marking
-those covered by a span-only locator would have been the exact failure the
-phase-2.1 audit caught.
+The count moved from 134 to 139 in phase 3.1, and upward is the only direction
+it should ever move for this reason: an independent audit proved five
+behaviours the branch did not have, so five scenarios were added rather than
+the implementation being declared adequate.
+
+* **D6 split into D6 and D7.** D6 read "a model claim a reviewer *rejects* …
+  a HUMAN extraction and a *new claim* are appended" — a rejection must not
+  append a claim, and a sampled reading awaiting review has no claim to reject.
+* **F7** — `NO_EVIDENCE` and `INSUFFICIENT_EVIDENCE` were raised together for
+  one attribute.
+* **F8** — `UNRESOLVABLE_SOURCE` was attached to `targets[0]`, so `branch_count`
+  read as unreachable while holding three claims.
+* **G16** — two terminal transitions could both land; a gap ended `RESOLVED`
+  *and* `ABANDONED`.
+* **I4** — one UPDATE could combine a legal prune with a forged
+  `raw_body_sha256`.
+
+Earlier, four scenarios reached the contract by **building what they asked
+for**: B1 and B2 wanted structural paths, B4 and B5 quote-hash resolution and a
+rotted-pointer weight.
 
 ## 3. Scenarios not yet executable
 

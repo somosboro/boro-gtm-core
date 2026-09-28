@@ -143,27 +143,20 @@ def precedence_key(facts: ClaimFacts) -> tuple:
         if facts.claim.fact_type in FACT_TYPE_ORDER else -1
     )
     has_date = facts.source_published_at is not None
+    # Every rung is negated so that "more" sorts first under `min`. The
+    # retrieval rung was not, so an *older* earliest retrieval won — the exact
+    # inverse of the rule. `earliest_retrieved_at` still means the earliest
+    # retrieval across the lineage; what changed is that a more recent one now
+    # outranks an older one, as the frozen precedence says.
+    retrieved = facts.earliest_retrieved_at
     return (
         -fact_rank,
         -facts.trust_tier,
         0 if has_date else 1,
         -(facts.source_published_at.toordinal() if has_date else 0),
-        facts.earliest_retrieved_at or _EPOCH,
+        -retrieved.timestamp() if retrieved is not None else 0.0,
         str(facts.claim.id),
     )
-
-
-class _Epoch:
-    """Sorts before any timestamp, without needing a timezone decision."""
-
-    def __lt__(self, other: object) -> bool:
-        return True
-
-    def __gt__(self, other: object) -> bool:
-        return False
-
-
-_EPOCH = _Epoch()
 
 
 # ---------------------------------------------------------------------------

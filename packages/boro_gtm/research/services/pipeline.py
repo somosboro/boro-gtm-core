@@ -30,7 +30,9 @@ from boro_gtm.research.domain.models import (
     OperationalResearchProfile,
     OperationalResearchRun,
     ResearchArtifactDerivation,
+    ResearchFetchEvent,
     ResearchSource,
+    ResearchSourceDiscovery,
 )
 from boro_gtm.research.fixtures import corpus
 from boro_gtm.research.fixtures.transport import (
@@ -639,27 +641,85 @@ def _assert(
         result.evidence_links_created += outcome.links_created
 
 
+#: Failures that will not resolve by trying again. A timeout might; a 410 will
+#: not, and calling them the same thing would make "we could not reach it"
+#: indistinguishable from "it is not there".
+PERMANENT_FETCH_FAILURES = frozenset({
+    "NOT_FOUND", "GONE", "DENIED", "LOGIN_WALL", "ROBOTS_DENIED", "MIME_MISMATCH",
+})
+
+
+def _unreachable_attributes(
+    session: Session, run: OperationalResearchRun, attempt_id: uuid.UUID,
+) -> set[str]:
+    """Attributes every pursued source failed permanently for.
+
+    An earlier version attached `UNRESOLVABLE_SOURCE` to `targets[0]` whenever
+    *any* source failed. That is not evidence semantics: the first target has
+    no relationship to the failed source, and the fixture duly reported
+    `branch_count` unreachable while `branch_count` had three good claims.
+
+    A source is only unreachable *for a question* if the plan was pursuing that
+    question when it found the source — which is why discovery now records
+    `pursued_for`.
+    """
+    rows = session.execute(
+        select(
+            ResearchSourceDiscovery.source_id,
+            ResearchSourceDiscovery.discovery_context,
+        ).where(ResearchSourceDiscovery.attempt_id == attempt_id)
+    ).all()
+    pursued: dict[str, set[uuid.UUID]] = {}
+    for source_id, context in rows:
+        for key in (context or {}).get("pursued_for", []):
+            pursued.setdefault(key, set()).add(source_id)
+    if not pursued:
+        return set()
+
+    outcomes: dict[uuid.UUID, set[str]] = {}
+    for source_id, outcome in session.execute(
+        select(ResearchFetchEvent.source_id, ResearchFetchEvent.fetch_outcome)
+        .where(ResearchFetchEvent.attempt_id == attempt_id)
+    ).all():
+        outcomes.setdefault(source_id, set()).add(outcome)
+
+    unreachable = set()
+    for key, source_ids in pursued.items():
+        seen = [outcomes.get(sid, set()) for sid in source_ids]
+        if not seen or not all(seen):
+            continue
+        if all(o <= PERMANENT_FETCH_FAILURES for o in seen):
+            unreachable.add(key)
+    return unreachable
+
+
 def _raise_gaps(
     session: Session, run: OperationalResearchRun,
     attempt: OperationalResearchAttempt, company_id: uuid.UUID,
     observations: list[tuple[Observation, uuid.UUID]], now: datetime,
     result: PipelineResult,
 ) -> None:
-    """Every targeted attribute nobody evidenced becomes a gap, not a false.
+    """Every targeted attribute we do not hold becomes exactly one kind of gap.
+
+    The three "we do not have it" kinds are **mutually exclusive**, because they
+    are different states and an attribute cannot be in two of them:
+
+    * `UNRESOLVABLE_SOURCE` — every source pursued for it failed permanently;
+    * `INSUFFICIENT_EVIDENCE` — something relevant *was* observed but did not
+      meet the assertion bar;
+    * `NO_EVIDENCE` — nothing relevant was observed at all.
+
+    An earlier version raised `NO_EVIDENCE` and `INSUFFICIENT_EVIDENCE` for the
+    same attribute in the same breath, which contradicts both definitions.
+
+    `CONTRADICTED` and `STALE_EVIDENCE` are separate and may coexist with each
+    other: they describe evidence we *do* hold, and holding contradictory stale
+    evidence is a real state.
 
     "Evidenced" spans the whole question, not just this attempt. A second run
     that gets 304 for every page extracts nothing, and an attempt-local view
-    would then declare every attribute a gap — turning "nothing changed" into
-    "we know nothing", which is the inverse of what a 304 means.
-
-    Five kinds, and the distinction between them is the useful part:
-
-    * `NO_EVIDENCE` — we looked and found nothing;
-    * `INSUFFICIENT_EVIDENCE` — we found something too weak to assert, which is
-      not the same as finding nothing;
-    * `STALE_EVIDENCE` — we found something, a while ago;
-    * `CONTRADICTED` — we found two things that disagree;
-    * `UNRESOLVABLE_SOURCE` — a source we needed could not be retrieved at all.
+    would declare every attribute a gap — turning "nothing changed" into "we
+    know nothing".
     """
     evidenced = {observation.attribute_key for observation, _ in observations}
     evidenced |= {
@@ -686,21 +746,23 @@ def _raise_gaps(
             )
 
     targets = list(run.target_attribute_keys)
+    weak = set(result.low_confidence_deferred)
+    unreachable = _unreachable_attributes(session, run, attempt.id)
 
     for key in targets:
-        if key not in evidenced:
+        if key in evidenced:
+            continue
+        # Exactly one of the three, in order of how much it explains.
+        if key in unreachable:
+            raise_kind(key, "UNRESOLVABLE_SOURCE",
+                       "every source pursued for this attribute failed permanently")
+        elif key in weak:
+            raise_kind(key, "INSUFFICIENT_EVIDENCE",
+                       "observed below the review confidence threshold; awaiting review")
+        else:
             raise_kind(key, "NO_EVIDENCE", "no evidence found in this attempt")
 
-    for key in sorted(set(result.low_confidence_deferred) & set(targets)):
-        if key not in evidenced:
-            raise_kind(
-                key, "INSUFFICIENT_EVIDENCE",
-                "observed below the review confidence threshold; awaiting review",
-            )
-
-    for key in stale_required_attributes(
-        session, company_id, targets, now.date()
-    ):
+    for key in stale_required_attributes(session, company_id, targets, now.date()):
         raise_kind(key, "STALE_EVIDENCE", "freshest evidence is past its horizon")
 
     profile = session.get(OperationalResearchProfile, company_id)
@@ -708,15 +770,6 @@ def _raise_gaps(
         for key, state in (profile.contradictions or {}).items():
             if key in targets and state.get("contradiction"):
                 raise_kind(key, "CONTRADICTED", "sources disagree on this attribute")
-
-    if result.failed_sources:
-        # One gap for the question, not one per attribute: the failure is about
-        # a source, and attributing it to every target would overstate it.
-        for key in targets[:1]:
-            raise_kind(
-                key, "UNRESOLVABLE_SOURCE",
-                f"{len(result.failed_sources)} source(s) could not be retrieved",
-            )
 
 
 def _infer(

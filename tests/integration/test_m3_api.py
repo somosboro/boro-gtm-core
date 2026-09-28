@@ -478,75 +478,117 @@ def test_the_identity_review_path_writes_no_m2_identity(seeded):
 # --- human evidence review --------------------------------------------------
 
 
-def test_confirming_a_claim_appends_a_human_lineage(seeded):
+def _pending_item(seeded) -> dict:
+    items = _ok(seeded["client"].get(f"{API}/research-reviews/pending"))
+    assert items, "the corpus leaves a sampled reading awaiting review"
+    return items[0]
+
+
+def test_the_review_queue_lists_sampled_readings_with_no_claim(seeded):
+    """The state a claim-keyed route could not address at all."""
+    item = _pending_item(seeded)
+    assert item["evidence_item_id"]
+    assert item["extraction_id"]
+    assert item["source"].startswith("https://")
+    assert item["locator"]["kind"] == "PDF_SPAN"
+
     session = seeded["session"]
-    claim_id = session.scalar(
-        select(CompanyClaim.id).where(
-            CompanyClaim.attribute_registry_version == RESEARCH_REGISTRY_VERSION
-        ).limit(1)
-    )
-    before = session.scalar(
-        select(__import__("sqlalchemy").func.count()).select_from(m.ResearchExtraction)
-    )
+    linked = session.scalars(select(m.ClaimEvidenceLink.id).where(
+        m.ClaimEvidenceLink.evidence_item_id == uuid.UUID(item["evidence_item_id"])
+    )).all()
+    assert linked == []
+
+
+def test_confirming_an_observation_appends_a_human_lineage(seeded):
+    item = _pending_item(seeded)
     response = seeded["client"].post(
-        f"{API}/research-claims/{claim_id}/review",
-        json={"decision": "CONFIRM", "actor": "analyst"},
+        f"{API}/research-evidence-items/{item['evidence_item_id']}/review",
+        json={"decision": "CONFIRM", "actor": "analyst",
+              "company_id": seeded["company_id"]},
     )
     assert response.status_code == 201, response.text
     body = response.json()
+    assert body["decision"] == "CONFIRM"
     assert body["human_extraction_id"]
     assert body["model_extraction_unchanged"] is True
+    assert body["reviewed_at"]
 
-    session.expire_all()
-    after = session.scalar(
-        select(__import__("sqlalchemy").func.count()).select_from(m.ResearchExtraction)
-    )
-    assert after >= before
-
-
-def test_rejecting_a_claim_records_the_outcome_and_asserts_nothing(seeded):
-    """"A reviewer did not believe this" is not evidence of the opposite."""
     session = seeded["session"]
-    claim_id = session.scalar(
-        select(CompanyClaim.id).where(
-            CompanyClaim.attribute_key == "emergency_service"
-        ).limit(1)
-    )
-    claim = session.get(CompanyClaim, claim_id)
-    before = (claim.fact_type, claim.availability, str(claim.value_jsonb))
-    claim_count = session.scalar(
+    session.expire_all()
+    row = session.get(m.ResearchEvidenceReview, uuid.UUID(body["review_id"]))
+    assert row is not None and row.decision == "CONFIRM"
+
+
+def test_rejecting_an_observation_persists_and_asserts_nothing(seeded):
+    """The defect: a rejection used to leave no trace whatsoever."""
+    session = seeded["session"]
+    item = _pending_item(seeded)
+    claims_before = session.scalar(
         select(__import__("sqlalchemy").func.count()).select_from(CompanyClaim)
     )
 
-    body = _201(seeded["client"].post(
-        f"{API}/research-claims/{claim_id}/review",
+    response = seeded["client"].post(
+        f"{API}/research-evidence-items/{item['evidence_item_id']}/review",
         json={"decision": "REJECT", "actor": "analyst", "note": "not convinced"},
-    ))
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
     assert body["decision"] == "REJECT"
-    assert body["confirmed_claim_id"] is None
-    assert body["model_extraction_unchanged"] is True
+    assert body["human_extraction_id"] is None
+    assert body["resulting_claim_id"] is None
+    assert body["note"] == "not convinced"
 
     session.expire_all()
-    claim = session.get(CompanyClaim, claim_id)
-    assert (claim.fact_type, claim.availability, str(claim.value_jsonb)) == before
+    row = session.get(m.ResearchEvidenceReview, uuid.UUID(body["review_id"]))
+    assert row is not None, "the decision survives the request"
+    assert row.actor == "analyst"
+    assert row.note == "not convinced"
     assert session.scalar(
         select(__import__("sqlalchemy").func.count()).select_from(CompanyClaim)
-    ) == claim_count
+    ) == claims_before
 
 
-def _201(response):
-    assert response.status_code == 201, response.text
-    return response.json()
+def test_reviews_are_listed_for_an_observation(seeded):
+    item = _pending_item(seeded)
+    seeded["client"].post(
+        f"{API}/research-evidence-items/{item['evidence_item_id']}/review",
+        json={"decision": "REJECT", "actor": "first"},
+    )
+    rows = _ok(seeded["client"].get(
+        f"{API}/research-evidence-items/{item['evidence_item_id']}/reviews"
+    ))
+    assert len(rows) == 1
+    assert rows[0]["actor"] == "first"
+    assert rows[0]["decision"] == "REJECT"
 
 
 def test_an_invalid_review_decision_is_422(seeded):
+    item = _pending_item(seeded)
+    response = seeded["client"].post(
+        f"{API}/research-evidence-items/{item['evidence_item_id']}/review",
+        json={"decision": "MAYBE", "actor": "analyst"},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"]
+
+
+def test_reviewing_an_unknown_observation_is_404(seeded):
+    response = seeded["client"].post(
+        f"{API}/research-evidence-items/{uuid.uuid4()}/review",
+        json={"decision": "REJECT", "actor": "analyst"},
+    )
+    assert response.status_code == 404
+
+
+def test_the_claim_keyed_review_route_is_gone(seeded):
+    """Superseded, not aliased: nothing is released, so nothing depends on it."""
     session = seeded["session"]
     claim_id = session.scalar(select(CompanyClaim.id).limit(1))
     response = seeded["client"].post(
         f"{API}/research-claims/{claim_id}/review",
-        json={"decision": "MAYBE", "actor": "analyst"},
+        json={"decision": "CONFIRM", "actor": "analyst"},
     )
-    assert response.status_code == 422
+    assert response.status_code == 404
 
 
 # --- the commercial firewall, at the boundary -------------------------------

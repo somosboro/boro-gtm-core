@@ -9,7 +9,7 @@ committed, which is the race the unique keys exist to resolve.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select, text
@@ -431,3 +431,171 @@ def test_two_workers_creating_one_evidence_item_converge(two_sessions):
     assert right.scalar(
         select(func.count()).select_from(m.ResearchEvidenceItem)
     ) == before + 1
+
+
+# --- G16: two terminal transitions cannot both land -------------------------
+
+
+def _lifecycle_setup(session, company_id):
+    """A gap at ATTEMPTED and an occurrence at ACKNOWLEDGED, committed."""
+    from boro_gtm.research.fixtures.transport import FixtureTransport
+    from boro_gtm.research.services.pipeline import run_pipeline
+
+    result = run_pipeline(session, company_id=company_id,
+                          transport=FixtureTransport(), now=NOW)
+    gap = session.scalars(select(m.OperationalResearchGap).limit(1)).first()
+    session.add(m.OperationalResearchGapEvent(
+        gap_id=gap.id, event_kind="ATTEMPTED", attempt_id=result.attempt.id,
+        occurred_at=NOW + timedelta(minutes=1)))
+    occurrence = session.scalars(select(m.IdentityReviewSignalOccurrence)).one()
+    session.add(m.IdentityReviewSignalEvent(
+        occurrence_id=occurrence.id, status="ACKNOWLEDGED", actor="setup",
+        occurred_at=NOW + timedelta(minutes=1)))
+    session.commit()
+    return gap.id, occurrence.id, result.attempt.id
+
+
+def test_two_workers_ending_one_gap_differently_produce_one_terminal(two_sessions):
+    """G16: RESOLVED and ABANDONED are alternatives, so ordering cannot separate
+    them — and before the unique index, a gap ended holding both.
+
+    Both transactions read the pre-terminal state before either writes, which
+    is the only arrangement in which the race exists at all.
+    """
+    left, right = two_sessions
+    company = _company(left)
+    gap_id, _, attempt_id = _lifecycle_setup(left, company.id)
+
+    for sess in (left, right):
+        sess.execute(text("SET LOCAL lock_timeout = '5s'"))
+        sess.execute(text(
+            "SELECT event_kind FROM operational_research_gap_events "
+            "WHERE gap_id = :g"), {"g": gap_id}).all()
+
+    insert = text(
+        "INSERT INTO operational_research_gap_events "
+        "(id, gap_id, event_kind, attempt_id, occurred_at) "
+        "VALUES (:i, :g, :k, :a, :t)")
+    refusals = []
+    for sess, kind, minute in ((left, "RESOLVED", 2), (right, "ABANDONED", 3)):
+        try:
+            sess.execute(insert, {"i": uuid.uuid4(), "g": gap_id, "k": kind,
+                                  "a": attempt_id,
+                                  "t": NOW + timedelta(minutes=minute)})
+            sess.commit()
+        except Exception as exc:
+            sess.rollback()
+            refusals.append((kind, type(exc).__name__))
+
+    check = left
+    kinds = check.execute(text(
+        "SELECT event_kind FROM operational_research_gap_events WHERE gap_id = :g"),
+        {"g": gap_id}).scalars().all()
+    terminals = [k for k in kinds if k in ("RESOLVED", "ABANDONED")]
+    assert len(terminals) == 1, f"both terminals landed: {kinds}"
+    assert len(refusals) == 1, f"exactly one writer must be refused: {refusals}"
+
+
+def test_two_workers_ending_one_occurrence_differently_produce_one_terminal(
+    two_sessions,
+):
+    """The same race on the review lifecycle.
+
+    The signal side only ever serialised because the transition trigger also
+    UPDATEs `is_open`, taking a row lock. That is an accident of an unrelated
+    statement; the unique index is the invariant.
+    """
+    left, right = two_sessions
+    company = _company(left)
+    _, occurrence_id, _ = _lifecycle_setup(left, company.id)
+
+    for sess in (left, right):
+        sess.execute(text("SET LOCAL lock_timeout = '5s'"))
+        sess.execute(text(
+            "SELECT status FROM identity_review_signal_events "
+            "WHERE occurrence_id = :o"), {"o": occurrence_id}).all()
+
+    insert = text(
+        "INSERT INTO identity_review_signal_events "
+        "(id, occurrence_id, status, actor, occurred_at) "
+        "VALUES (:i, :o, :s, 'worker', :t)")
+    refusals = []
+    for sess, status, minute in ((left, "ACTIONED", 2), (right, "DISMISSED", 3)):
+        try:
+            sess.execute(insert, {"i": uuid.uuid4(), "o": occurrence_id,
+                                  "s": status,
+                                  "t": NOW + timedelta(minutes=minute)})
+            sess.commit()
+        except Exception as exc:
+            sess.rollback()
+            refusals.append((status, type(exc).__name__))
+
+    statuses = left.execute(text(
+        "SELECT status FROM identity_review_signal_events WHERE occurrence_id = :o"),
+        {"o": occurrence_id}).scalars().all()
+    terminals = [s for s in statuses if s in ("ACTIONED", "DISMISSED")]
+    assert len(terminals) == 1, f"both terminals landed: {statuses}"
+    assert len(refusals) == 1, f"exactly one writer must be refused: {refusals}"
+
+
+def test_two_reviewers_deciding_one_evidence_item_both_persist(two_sessions):
+    """Two reviews of one observation are two records, not a lost decision.
+
+    Unlike a lifecycle transition, a review is an opinion: a second reviewer
+    disagreeing is information, and the append-only log keeps both.
+    """
+    from boro_gtm.research.services.review import review_evidence
+
+    left, right = two_sessions
+    company = _company(left)
+    _researched(left, company.id)
+
+    item = left.scalars(
+        select(m.ResearchEvidenceItem)
+        .join(m.ResearchExtraction,
+              m.ResearchExtraction.id == m.ResearchEvidenceItem.extraction_id)
+        .where(m.ResearchExtraction.determinism == "SAMPLED")
+        .limit(1)
+    ).first()
+    assert item is not None
+
+    review_evidence(left, evidence_item_id=item.id, decision="REJECT",
+                    actor="first", now=NOW + timedelta(minutes=1))
+    left.commit()
+    review_evidence(right, evidence_item_id=item.id, decision="CONFIRM",
+                    actor="second", company_id=company.id,
+                    now=NOW + timedelta(minutes=2))
+    right.commit()
+
+    rows = right.scalars(select(m.ResearchEvidenceReview).where(
+        m.ResearchEvidenceReview.evidence_item_id == item.id
+    )).all()
+    assert {r.actor for r in rows} == {"first", "second"}
+    assert {r.decision for r in rows} == {"REJECT", "CONFIRM"}
+
+
+def test_the_same_reviewer_cannot_record_one_decision_twice(two_sessions):
+    """`uq_review_identity`, and a domain error rather than an index name."""
+    from boro_gtm.research.services.review import DuplicateReviewError, review_evidence
+
+    left, right = two_sessions
+    company = _company(left)
+    _researched(left, company.id)
+
+    item = left.scalars(
+        select(m.ResearchEvidenceItem)
+        .join(m.ResearchExtraction,
+              m.ResearchExtraction.id == m.ResearchEvidenceItem.extraction_id)
+        .where(m.ResearchExtraction.determinism == "SAMPLED")
+        .limit(1)
+    ).first()
+    moment = NOW + timedelta(minutes=1)
+
+    review_evidence(left, evidence_item_id=item.id, decision="REJECT",
+                    actor="analyst", now=moment)
+    left.commit()
+
+    with pytest.raises(DuplicateReviewError):
+        review_evidence(right, evidence_item_id=item.id, decision="REJECT",
+                        actor="analyst", now=moment)
+    right.rollback()

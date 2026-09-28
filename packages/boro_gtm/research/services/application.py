@@ -45,26 +45,25 @@ from boro_gtm.research.services.pipeline import (
     start_attempt,
 )
 
-#: M3's job types. Four, because each has a genuinely different failure and
-#: retry profile — a robots denial must not be retried like a timeout.
-DISCOVER_SOURCES = "M3_DISCOVER_SOURCES"
-FETCH_ARTIFACT = "M3_FETCH_ARTIFACT"
-EXTRACT_ARTIFACT = "M3_EXTRACT_ARTIFACT"
-ASSERT_CLAIMS = "M3_ASSERT_CLAIMS"
+#: **One** job type, because one is what actually runs (M3-ADR-058).
+#:
+#: The design declared four — DISCOVER_SOURCES, FETCH_ARTIFACT,
+#: EXTRACT_ARTIFACT, ASSERT_CLAIMS — on the stated grounds that each has a
+#: different failure and retry profile: "a robots denial must not be retried
+#: like a timeout". That reasoning is sound and it is about a **production**
+#: provider. M3 ships fixture adapters only: every outcome is deterministic and
+#: reproducible from local files, so per-stage retry has nothing to retry, and
+#: three of the four names were implemented as "skip and succeed".
+#:
+#: Four names where three mean nothing is worse than one name that is true. The
+#: split returns with the provider that needs it.
+EXECUTE_RESEARCH = "M3_EXECUTE_RESEARCH"
 
-JOB_TYPES: tuple[str, ...] = (
-    DISCOVER_SOURCES, FETCH_ARTIFACT, EXTRACT_ARTIFACT, ASSERT_CLAIMS,
-)
+JOB_TYPES: tuple[str, ...] = (EXECUTE_RESEARCH,)
 
-#: Retries per type. Discovery and extraction are deterministic given their
-#: inputs, so a second run of the same thing rarely helps; retrieval is where
-#: transient failure actually lives.
-MAX_ATTEMPTS: dict[str, int] = {
-    DISCOVER_SOURCES: 2,
-    FETCH_ARTIFACT: 3,
-    EXTRACT_ARTIFACT: 1,
-    ASSERT_CLAIMS: 2,
-}
+#: One retry. A fixture execution that failed will fail identically, so the
+#: second attempt exists to survive an infrastructure hiccup, not a bad source.
+MAX_ATTEMPTS: dict[str, int] = {EXECUTE_RESEARCH: 2}
 
 
 class RunNotFoundError(NotFoundError):
@@ -336,15 +335,13 @@ def rebuild_profiles(
 # ---------------------------------------------------------------------------
 
 
-def enqueue_research(
-    session: Session, *, run_id: uuid.UUID
-) -> DiscoveryJob:
-    """Queue the first stage. Later stages are enqueued as each completes."""
+def enqueue_research(session: Session, *, run_id: uuid.UUID) -> DiscoveryJob:
+    """Queue one execution of a research question."""
     if session.get(OperationalResearchRun, run_id) is None:
         raise RunNotFoundError(f"no research run {run_id}")
     return job_queue.enqueue(
-        session, DISCOVER_SOURCES, {"run_id": str(run_id)},
-        max_attempts=MAX_ATTEMPTS[DISCOVER_SOURCES],
+        session, EXECUTE_RESEARCH, {"run_id": str(run_id)},
+        max_attempts=MAX_ATTEMPTS[EXECUTE_RESEARCH],
     )
 
 
@@ -353,7 +350,11 @@ def run_worker_once(
 ) -> dict[str, Any] | None:
     """Claim one M3 job and run it, translating domain errors.
 
-    The fixture adapter is the only research adapter M3 has. A worker running
+    Returns `None` when the queue holds nothing runnable. A domain conflict —
+    an attempt already live for that question — fails the job with its message
+    rather than letting an exception escape the worker loop.
+
+    The fixture adapter is the only research adapter M3 has: a worker running
     this is exercising the pipeline, not the internet.
     """
     claimed = job_queue.claim(session, job_types=list(JOB_TYPES), limit=1)
@@ -362,18 +363,14 @@ def run_worker_once(
     job = claimed[0]
     payload = job.payload or {}
     try:
-        if job.job_type == DISCOVER_SOURCES:
-            # The fixture pipeline runs the stages in one transaction, so the
-            # first job carries it through. Splitting a fixture run across four
-            # jobs would test the queue, not the pipeline.
-            view = execute_attempt(
-                session, run_id=uuid.UUID(payload["run_id"]), transport=transport
-            )
-            outcome = {"attempt_id": str(view.id), "status": view.status}
-        else:
-            outcome = {"skipped": job.job_type}
-    except AttemptAlreadyLiveError as exc:
+        view = execute_attempt(
+            session, run_id=uuid.UUID(payload["run_id"]), transport=transport
+        )
+    except (AttemptAlreadyLiveError, RunNotFoundError) as exc:
         job_queue.fail(session, job, str(exc))
-        return {"job_type": job.job_type, "failed": str(exc)}
+        return {"job_type": job.job_type, "job_id": job.id, "failed": str(exc)}
     job_queue.complete(session, job)
-    return {"job_type": job.job_type, **outcome}
+    return {
+        "job_type": job.job_type, "job_id": job.id,
+        "attempt_id": str(view.id), "status": view.status,
+    }

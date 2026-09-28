@@ -161,3 +161,32 @@ def test_both_documents_define_the_lineage_key_the_same_way():
         assert offenders == [], f"{path.name} still defines lineage by artifact alone"
     assert "sorted [(source_id, artifact_id)" in SCHEMA_GRAPH.read_text()
     assert "sorted [(source_id, artifact_id)" in DESIGN.read_text()
+
+
+# --- publication metadata ownership ----------------------------------------
+
+#: Every spelling that puts the publication date on the globally deduplicated
+#: artifact. It belongs to the derivation that observed it; the other placement
+#: would fold it into the canonical hash and split mirrors into two documents.
+_ARTIFACT_OWNED_PUBLICATION = (
+    r"research_artifacts\.source_published_at",
+    r"source_published_at`?\s*\|\s*artifact",
+    r"artifact is where\s*\n?`?source_published_at",
+)
+
+
+@pytest.mark.parametrize("pattern", _ARTIFACT_OWNED_PUBLICATION)
+@pytest.mark.parametrize("path", [DESIGN, SCHEMA_GRAPH], ids=lambda p: p.name)
+def test_publication_metadata_is_never_placed_on_the_artifact(path, pattern):
+    offenders = _unlabelled(path, pattern)
+    assert offenders == [], (
+        f"{path.name} places publication metadata on the artifact:\n\n"
+        + "\n\n".join(offenders)
+    )
+
+
+def test_both_documents_place_publication_metadata_on_the_derivation():
+    """The positive claim, so deleting the wrong sentence is not enough."""
+    assert "research_artifact_derivations.source_published_at" in DESIGN.read_text()
+    graph = SCHEMA_GRAPH.read_text()
+    assert "`source_published_at`, `source_published_granularity`" in graph

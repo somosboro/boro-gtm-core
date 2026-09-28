@@ -299,11 +299,31 @@ v2 produces become new claims.
 **When** the identical extraction is run again
 **Then** no new row is created.
 
-### D6 [MUST] — A human review appends
-**Given** a model claim a reviewer rejects
-**When** the review is recorded
-**Then** a `HUMAN` extraction and a new claim are appended; the model's
-extraction and claim are unchanged.
+### D6 [MUST] — A human confirmation appends an assertable lineage
+**Given** a sampled reading recorded as an evidence item, supporting no claim
+**When** a reviewer confirms it
+**Then** a `HUMAN` extraction and its own evidence are appended, a claim may
+now be asserted, a durable review row records the actor, the time and the
+decision, and the sampled extraction is byte-identical to before.
+
+> *Corrected in revision 5.1.* D6 previously read "a model claim a reviewer
+> **rejects** … a `HUMAN` extraction and a **new claim** are appended". That is
+> two contradictions in one sentence: a rejection must not append a claim, and
+> a sampled reading awaiting review has no claim to reject — which is also why
+> the review resource is keyed on the evidence item rather than on a claim.
+> Confirmation and rejection are genuinely different behaviours and are now
+> D6 and D7 (M3-ADR-056).
+
+### D7 [MUST] — A human rejection is durable and asserts nothing
+**Given** a sampled reading recorded as an evidence item
+**When** a reviewer rejects it
+**Then** a `research_evidence_reviews` row records the evidence item, the
+decision, the actor, the time and the rationale; **no** claim is created, no
+negative fact is asserted, no `HUMAN` extraction is created, and the sampled
+extraction is byte-identical to before.
+*Protects:* an earlier implementation returned a rejection in memory and
+persisted nothing, so after the request there was no record that a human had
+reviewed anything, who, when, or why.
 
 ---
 
@@ -353,6 +373,45 @@ with its original `observed_at`, and only its staleness changes.
 **Given** a company with no FSM evidence
 **When** research runs three times under one policy version
 **Then** exactly one `field_service_management` gap row exists.
+
+### F7 [MUST] — The three "we do not have it" gap kinds are mutually exclusive
+**Given** one attribute in one research question
+**When** gaps are raised
+**Then** it carries at most one of `NO_EVIDENCE`, `INSUFFICIENT_EVIDENCE` and
+`UNRESOLVABLE_SOURCE` — never two.
+*Protects:* an earlier implementation raised `NO_EVIDENCE` **and**
+`INSUFFICIENT_EVIDENCE` for the same attribute in the same attempt, which
+contradicts both definitions. `CONTRADICTED` and `STALE_EVIDENCE` are separate:
+they describe evidence we *do* hold.
+
+### F8 [MUST] — An unrelated failed source raises no gap
+**Given** an attribute supported by successful evidence, and a source that
+failed permanently while being pursued for a *different* attribute
+**When** gaps are raised
+**Then** the supported attribute receives **no** `UNRESOLVABLE_SOURCE` gap, and
+the gap is raised only for an attribute every pursued source failed for.
+*Protects:* an earlier implementation attached `UNRESOLVABLE_SOURCE` to
+`targets[0]` whenever any source failed, and duly reported `branch_count`
+unreachable while `branch_count` held three good claims.
+
+### G16 [MUST] — Two terminal transitions cannot both land
+**Given** a gap at `ATTEMPTED`, or a signal occurrence at `ACKNOWLEDGED`
+**When** two real connections concurrently append the two different terminal
+events — `RESOLVED`/`ABANDONED`, or `ACTIONED`/`DISMISSED`
+**Then** exactly one lands, and the loser receives a domain conflict rather
+than a raw `IntegrityError`.
+*Protects:* the terminal siblings share a lifecycle rank because they are
+alternatives, not a progression, so ordering alone cannot separate them. A gap
+on this branch ended with both `RESOLVED` and `ABANDONED`.
+
+### I4 [MUST] — A prune cannot launder any other mutation
+**Given** a retained payload
+**When** one `UPDATE` combines the legal prune with a change to any other
+column — an extractor version, a content hash
+**Then** the database rejects the whole statement.
+*Protects:* the one-way prune trigger validated only the payload and the
+retention state, so a single statement could rewrite `raw_body_sha256` — the
+terminal node of every provenance walk — under cover of a legal transition.
 
 ### F2 [MUST] — A gap means unknown, not absent
 **Given** any gap row
@@ -1019,5 +1078,9 @@ any mismatch fails rather than warns.
 * A terminal-state test: no attempt may transition out of `COMPLETED`,
   `PARTIAL` or `FAILED`.
 
-**Scenario count: 134 MUST + 1 withdrawn = 135** — A:14, B:5, C:14, D:6, E:6,
-F:6, G:14 (+G8 withdrawn), H:7, I:3, J:4, L:19, M:16, N:2, O:18.
+**Scenario count: 139 MUST + 1 withdrawn = 140** — A:14, B:5, C:14, D:7, E:6,
+F:8, G:15 (+G8 withdrawn), H:7, I:4, J:4, L:19, M:16, N:2, O:18.
+
+Revision 5.1 added D7, F7, F8, G16 and I4, and split D6: each records a
+behaviour an audit proved the branch did not have. The count rose because the
+contract got more truthful, which is the only reason it should ever move.

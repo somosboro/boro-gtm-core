@@ -337,22 +337,43 @@ class SignalEventOut(BaseModel):
 # --- human review -----------------------------------------------------------
 
 
-class ClaimReviewIn(BaseModel):
+class EvidenceReviewIn(BaseModel):
     decision: str            # CONFIRM | REJECT
     actor: str
     note: str | None = None
+    #: Required to assert on confirmation; a rejection needs no company.
+    company_id: uuid.UUID | None = None
 
 
-class ClaimReviewOut(BaseModel):
-    """Confirmation appends; rejection records. Neither edits the model's work."""
+class EvidenceReviewOut(BaseModel):
+    """A durable review record. Both decisions persist one.
 
-    claim_id: uuid.UUID
+    Keyed on the evidence item, which exists from the moment a sampled reading
+    is recorded — before any claim does, and therefore before the point at
+    which a claim-keyed route could have addressed it.
+    """
+
+    review_id: uuid.UUID
+    evidence_item_id: uuid.UUID
     decision: str
-    human_extraction_id: uuid.UUID | None = None
-    confirmed_claim_id: uuid.UUID | None = None
-    evidence_item_ids: list[uuid.UUID] = Field(default_factory=list)
-    model_extraction_unchanged: bool
+    actor: str
     note: str | None = None
+    reviewed_at: datetime
+    human_extraction_id: uuid.UUID | None = None
+    resulting_claim_id: uuid.UUID | None = None
+    created_evidence_item_ids: list[uuid.UUID] = Field(default_factory=list)
+    model_extraction_unchanged: bool
+
+
+class PendingReviewOut(BaseModel):
+    """A sampled reading awaiting a human. It supports no claim yet."""
+
+    evidence_item_id: uuid.UUID
+    extraction_id: uuid.UUID
+    source: str
+    quote: str | None = None
+    locator: dict[str, Any]
+    created_at: datetime
 
 
 # --- retention --------------------------------------------------------------
