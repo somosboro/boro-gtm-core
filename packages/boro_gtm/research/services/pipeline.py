@@ -544,6 +544,10 @@ def _extract(
             outcome = run_extraction(
                 session, extractor=extractor, text_derivation=text_derivation,
                 attempt_id=attempt.id, now=now, sample_execution_id=sample_slot,
+                # The raw document, so a locator can carry a structural path.
+                # It never enters the extraction contract hash: how a reading
+                # was produced is unchanged by being able to describe where.
+                context={"raw": item.raw},
             )
             if outcome.created:
                 result.extractions_created += 1

@@ -59,6 +59,14 @@ def seeded(api_client, database_url):
         "session": session,
     }
     yield context
+
+    # Leave the database as it was found. This fixture commits, so it owns the
+    # cleanup: without it the committed rows leak into later files and the
+    # concurrency tests -- which assert absolute counts -- fail for reasons
+    # that have nothing to do with concurrency.
+    session.rollback()
+    session.execute(sql(f"TRUNCATE {_ALL_TABLES} RESTART IDENTITY CASCADE"))
+    session.commit()
     session.close()
     engine.dispose()
 

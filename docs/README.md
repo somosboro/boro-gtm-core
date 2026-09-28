@@ -17,7 +17,7 @@ These describe the system **as built**.
 | [M2_COMPANY_DISCOVERY_DESIGN.md](M2_COMPANY_DISCOVERY_DESIGN.md) | Identity anchors vs projections, provider versioning and capability, the attribute registry, entity resolution, run lifecycle, domain policy, temporal relationships |
 | [M2_SCHEMA_GRAPH.md](M2_SCHEMA_GRAPH.md) | The table graph as built: ownership, cardinality and indexes |
 | [M2_ACCEPTANCE_CRITERIA.md](M2_ACCEPTANCE_CRITERIA.md) | The scenarios M2 satisfies, each naming the test that executes it |
-| [M2_ADRS.md](M2_ADRS.md) | 54 decision records, including every correction found while implementing |
+| [M2_ADRS.md](M2_ADRS.md) | 55 decision records, including every correction found while implementing |
 
 The design is at **revision 6**, and the code implements it.
 
@@ -41,7 +41,7 @@ The design is at **revision 6**, and the code implements it.
 Superseded reasoning is retained in the ADRs rather than deleted, so the trail
 from each contradiction to its resolution stays readable.
 
-## M3 — Operational Evidence (schema implemented, services pending)
+## M3 — Operational Evidence (implemented on a feature branch)
 
 The design is at **revision 5**, frozen across five passes, each governed by
 one rule:
@@ -60,23 +60,30 @@ one rule:
    above it from "Qualification" to "Account Evidence Interpretation".
 
 Thirty-six structural contradictions were found and resolved across the design
-passes. **The schema is now implemented** on `feat/m3-operational-research`:
-23 tables, migration `0004_m3`, the 42-attribute registry and its seeds. The
-acquisition, extraction, claim and projection services are not built.
+passes. **M3 is implemented** on `feat/m3-operational-research`: 23 tables,
+migrations `0004_m3` and `0005_m3_retention`, the 42-attribute registry, source
+discovery, retrieval, canonicalization, text derivation, extraction, evidence,
+claims, gaps, the identity-review queue, both projections, retention, the API
+and the CLI. All 134 live MUST scenarios are executable and passing.
+
+**Not implemented, by design:** any production research provider. The only
+adapters are deterministic fixtures reading local files, and no test touches
+the internet. M4 interpretation, M5 buyer discovery, M6 outreach, M7
+qualification and later commercialization are out of scope.
 
 | Document | What it covers |
 | --- | --- |
 | [M3_OPERATIONAL_RESEARCH_DESIGN.md](M3_OPERATIONAL_RESEARCH_DESIGN.md) | Responsibility and boundaries, source/artifact/version model, the claim-ledger audit, operational attribute taxonomy, extraction and model-assisted evidence, contradictions, temporal semantics, gaps and coverage, fetch policy, firewalls |
 | [M3_SCHEMA_GRAPH.md](M3_SCHEMA_GRAPH.md) | Proposed table graph: ownership, mutability, keys, indexes and what is deliberately *not* created |
 | [M3_ACCEPTANCE_CRITERIA.md](M3_ACCEPTANCE_CRITERIA.md) | 134 Given/When/Then scenarios M3 must satisfy |
-| [M3_ADRS.md](M3_ADRS.md) | 54 decision records, including the one-ledger decision and the M3/M4 boundary |
+| [M3_ADRS.md](M3_ADRS.md) | 55 decision records, including the one-ledger decision and the M3/M4 boundary |
 | [M3_CANONICAL_COMMERCIAL_ALIGNMENT.md](M3_CANONICAL_COMMERCIAL_ALIGNMENT.md) | How M3 maps to the canonical commercial ontology: the 18-signal coverage matrix, the eleven process-observation primitives, and the firewalls |
 | [GTM_MILESTONE_OWNERSHIP.md](GTM_MILESTONE_OWNERSHIP.md) | The revised milestone roadmap and the 14 canonical sales stages mapped to it |
 | [GTM_ACCOUNT_FIELD_OWNERSHIP.md](GTM_ACCOUNT_FIELD_OWNERSHIP.md) | All 25 canonical account fields: owner, earliest legitimate stage, mutability, who may write |
 | [M3_IMPLEMENTATION_TRACEABILITY.md](M3_IMPLEMENTATION_TRACEABILITY.md) | Which scenarios have executable tests, and the defects implementation found |
 
-**M3 is not released.** Its schema and registry exist on a feature branch; the
-released milestones are M0, M1 and M2. Neither canonical commercial file is in
+**M3 is not released.** It is complete on a feature branch, pending an
+independent audit; the released milestones are M0, M1 and M2. Neither canonical commercial file is in
 this repository — only a redacted contract of identifiers and counts
 (`commercial/CANONICAL_CONTRACT.json`), because the canonical files carry
 internal economics and this repository is public (M3-ADR-041).

@@ -1163,3 +1163,116 @@ def test_required_attributes_drive_coverages_denominator(m3, company):
     coverage = profiles.compute_coverage(m3, run)
     assert coverage.required_attribute_count == len(required)
     assert coverage.not_applicable_attribute_count == 0
+
+
+# --- B: locators ------------------------------------------------------------
+
+
+def test_an_html_claim_cites_a_css_path_a_heading_path_and_the_quote(researched, m3):
+    """B1: a span is exact; a structural path is what a person can check."""
+    source = _source(m3, corpus.SERVICES_URL)
+    items = m3.scalars(select(m.ResearchEvidenceItem).where(
+        m.ResearchEvidenceItem.source_id == source.id
+    )).all()
+    assert items
+    structured = [i for i in items if i.locator.get("css_path")]
+    assert structured, "HTML locators carry a structural path"
+    for item in structured:
+        assert item.locator["kind"] == "HTML_SPAN"
+        assert item.locator["css_path"].startswith("html > body")
+        assert item.locator["heading_path"]
+        assert item.locator["start"] is not None
+        assert item.quote and item.quote_sha256
+
+    # And the claim resolves back to that exact text.
+    item = structured[0]
+    derivation = m3.scalars(select(m.ResearchTextDerivation).where(
+        m.ResearchTextDerivation.body_id == item.body_id
+    )).one()
+    text = derivation.extracted_text
+    assert text[item.locator["start"]:item.locator["end"]] == item.quote
+
+
+def test_a_pdf_claim_cites_a_page_a_section_and_offsets(researched, m3):
+    """B2: page, section, character offsets, the quote and its hash."""
+    items = m3.scalars(select(m.ResearchEvidenceItem).where(
+        m.ResearchEvidenceItem.locator["kind"].astext == "PDF_SPAN"
+    )).all()
+    assert items
+    for item in items:
+        assert item.locator["page"] in (1, 2, 3)
+        assert item.locator["section"], item.locator
+        assert item.locator["start"] is not None and item.locator["end"] is not None
+        assert item.quote and item.quote_sha256
+    assert {i.locator["section"] for i in items} >= {"2. SERVICE DELIVERY"}
+
+
+def test_a_locator_survives_reprocessing_by_quote_hash(researched, m3):
+    """B4: the offsets move, the hash finds it, and the citation still holds."""
+    from boro_gtm.research.services.locators import Resolution, resolve
+
+    item = m3.scalars(select(m.ResearchEvidenceItem).where(
+        m.ResearchEvidenceItem.locator["kind"].astext == "HTML_SPAN"
+    ).limit(1)).first()
+    derivation = m3.scalars(select(m.ResearchTextDerivation).where(
+        m.ResearchTextDerivation.body_id == item.body_id
+    )).one()
+    text = derivation.extracted_text
+
+    exact = resolve(text, item.locator, item.quote_sha256)
+    assert exact.resolution == Resolution.EXACT.value
+    assert exact.quote == item.quote
+    assert exact.weight == 1.0
+
+    # Reprocessed under a policy that prepends a banner: every offset shifts.
+    reflowed = "Updated notice. " + text
+    rehomed = resolve(reflowed, item.locator, item.quote_sha256)
+    assert rehomed.resolution == Resolution.REHOMED.value
+    assert rehomed.quote == item.quote
+    assert rehomed.start != item.locator["start"]
+    assert rehomed.weight == 1.0
+
+
+def test_a_rotted_locator_weakens_and_never_deletes(researched, m3):
+    """B5: "we cannot point at this" is not "this was never observed"."""
+    from boro_gtm.research.services.locators import ROTTED_WEIGHT, Resolution, resolve
+
+    item = m3.scalars(select(m.ResearchEvidenceItem).where(
+        m.ResearchEvidenceItem.locator["kind"].astext == "HTML_SPAN"
+    ).limit(1)).first()
+    before = _count(m3, m.ResearchEvidenceItem)
+    quote, digest = item.quote, item.quote_sha256
+
+    rotted = resolve("the page was rewritten entirely", item.locator, digest)
+    assert rotted.resolution == Resolution.ROTTED.value
+    assert rotted.weight == ROTTED_WEIGHT
+    assert 0 < rotted.weight < 1.0, "weakened, not discarded"
+
+    # Nothing was deleted, and the evidence still carries what it observed.
+    m3.expire_all()
+    assert _count(m3, m.ResearchEvidenceItem) == before
+    survivor = m3.get(m.ResearchEvidenceItem, item.id)
+    assert survivor.quote == quote
+    assert survivor.quote_sha256 == digest
+
+
+def test_a_pruned_text_derivation_reports_a_rotted_pointer_not_a_missing_claim(
+    researched, m3
+):
+    """Retention weakens the pointer; the observation is untouched."""
+    from boro_gtm.research.services import retention
+    from boro_gtm.research.services.locators import Resolution, resolve
+
+    item = m3.scalars(select(m.ResearchEvidenceItem).limit(1)).first()
+    derivation = m3.scalars(select(m.ResearchTextDerivation).where(
+        m.ResearchTextDerivation.body_id == item.body_id
+    )).one()
+    retention.apply_retention(
+        m3, retention.RetentionPlan(text_derivations=[derivation.id]),
+        as_of=LATER,
+    )
+    m3.refresh(derivation)
+
+    resolved = resolve(derivation.extracted_text, item.locator, item.quote_sha256)
+    assert resolved.resolution == Resolution.ROTTED.value
+    assert m3.get(m.ResearchEvidenceItem, item.id).quote == item.quote

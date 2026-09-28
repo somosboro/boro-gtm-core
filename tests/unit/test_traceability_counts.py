@@ -119,3 +119,27 @@ def test_the_adr_count_the_design_states_matches_the_adr_document():
     assert numbers == sorted(numbers), "ADRs are out of order"
     assert len(numbers) == len(set(numbers)), "duplicate ADR number"
     assert f"{len(numbers)} ADRs" in DESIGN.read_text()
+
+
+def test_every_test_the_traceability_cites_actually_exists():
+    """A citation to a test nobody wrote is the same drift as a wrong count.
+
+    Collected from the suite rather than grepped, so a renamed or deleted test
+    fails here instead of leaving a row that looks like coverage.
+    """
+    import subprocess
+    import sys
+
+    cited = set(re.findall(r"`(test_[a-z0-9_]+)`", TRACEABILITY.read_text()))
+    assert len(cited) > 100, "the table should cite well over a hundred tests"
+
+    root = TRACEABILITY.resolve().parents[1]
+    collected = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q"],
+        capture_output=True, text=True, cwd=root, check=False,
+    ).stdout
+    existing = set(re.findall(r"::(test_[A-Za-z0-9_]+)", collected))
+    assert existing, "collection produced nothing; the guard would pass vacuously"
+
+    missing = sorted(cited - existing)
+    assert missing == [], f"traceability cites tests that do not exist: {missing}"

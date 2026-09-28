@@ -1921,3 +1921,49 @@ decision — not an index name.
   which is the right division: a check over a value another transaction can
   change is advisory by nature.
 * The caller is told to re-read rather than silently losing its decision.
+
+---
+
+## M3-ADR-055 — One invariant, one implementation, even across the boundary
+
+**Status:** accepted (phase-3 implementation defect; **new migration**
+`0006_m3_lifecycle_tiebreak`)
+
+### Context
+
+M3-ADR-053 fixed the nondeterministic "latest event" tiebreak in the gap and
+review services. It did not fix the **triggers**, which resolve the same
+question in SQL with the same `ORDER BY occurred_at DESC, id DESC`.
+
+The result was worse than the original bug. The service read `ACKNOWLEDGED`,
+allowed the transition, and the trigger — reading `OPEN` from the same two rows
+because a different random UUID sorted higher — rejected it. Two statements of
+one invariant, disagreeing, with the database winning and the caller getting an
+exception for a move the service had just approved.
+
+This is the third time in this project that one rule written twice has drifted:
+the lineage key in two documents (M3-ADR-049), the coverage summary against its
+own table, and now a lifecycle rule in Python and in PL/pgSQL.
+
+### Decision
+
+`0006_m3_lifecycle_tiebreak` gives both trigger functions and both `current_*`
+views the same lifecycle-position tiebreak the services use. `0004_m3` is left
+byte-identical.
+
+### Consequences
+
+* The service check and the database guard now agree by construction, not by
+  coincidence.
+* `current_operational_research_gaps` and `current_identity_review_occurrences`
+  are recreated from `0004`'s definitions with only the `ORDER BY` changed, so
+  nothing else about them can drift in the rewrite.
+* **Generalisable, and the rule this project keeps relearning:** when an
+  invariant is expressed in two places, fixing one is not fixing it. Either
+  both change together or the pair needs a test that reads both.
+
+> The migration manifest earned its keep here. Editing `0006` after recording
+> its digest was refused — *"content changed after it was recorded, which is the
+> condition the manifest exists to detect"* — which is exactly right. The entry
+> had been recorded prematurely during this same session and never committed, so
+> it was removed and re-recorded rather than forced.

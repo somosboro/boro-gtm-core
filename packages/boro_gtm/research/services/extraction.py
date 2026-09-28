@@ -150,7 +150,8 @@ class Extractor:
 
 
 def _span(
-    text: str, quote: str, kind: str = "HTML_SPAN", start: int | None = None
+    text: str, quote: str, kind: str = "HTML_SPAN", start: int | None = None,
+    raw: bytes | None = None,
 ) -> dict[str, Any]:
     """A real offset into the derived text, or none at all.
 
@@ -167,10 +168,24 @@ def _span(
         start = text.find(quote)
     if start < 0:
         return {"kind": kind, "start": None, "end": None, "resolved": False}
-    return {"kind": kind, "start": start, "end": start + len(quote), "resolved": True}
+    located: dict[str, Any] = {
+        "kind": kind, "start": start, "end": start + len(quote), "resolved": True,
+    }
+    if raw is not None:
+        from boro_gtm.research.services.locators import html_structure
+
+        structure = html_structure(raw, quote)
+        if structure is not None:
+            located["css_path"] = structure.css_path
+            located["heading_path"] = list(structure.heading_path)
+    return located
 
 
-def _pdf_span(text: str, quote: str, page_offsets: dict[str, int] | None) -> dict[str, Any]:
+def _pdf_span(
+    text: str, quote: str, page_offsets: dict[str, int] | None
+) -> dict[str, Any]:
+    from boro_gtm.research.services.locators import pdf_section
+
     start = text.find(quote)
     page = None
     if start >= 0 and page_offsets:
@@ -178,7 +193,8 @@ def _pdf_span(text: str, quote: str, page_offsets: dict[str, int] | None) -> dic
             if offset <= start:
                 page = int(number)
     return {
-        "kind": "PDF_SPAN", "page": page, "start": start if start >= 0 else None,
+        "kind": "PDF_SPAN", "page": page, "section": pdf_section(text, start),
+        "start": start if start >= 0 else None,
         "end": start + len(quote) if start >= 0 else None, "resolved": start >= 0,
     }
 
@@ -226,7 +242,8 @@ class PhraseRule:
 
 
 def _run_rules(
-    rules: Iterable[PhraseRule], text: str, kind: str = "HTML_SPAN"
+    rules: Iterable[PhraseRule], text: str, kind: str = "HTML_SPAN",
+    raw: bytes | None = None,
 ) -> list[Observation]:
     found: list[Observation] = []
     for rule in rules:
@@ -236,7 +253,7 @@ def _run_rules(
                 attribute_key=rule.attribute_key,
                 value=rule.build(match),
                 fact_type=rule.fact_type,
-                locator=_span(text, quote, kind, start=match.start()),
+                locator=_span(text, quote, kind, start=match.start(), raw=raw),
                 quote=quote,
                 unit=rule.unit,
                 support_kind=rule.support_kind,
@@ -448,7 +465,7 @@ def _rule_extractor(
         extractor_version=version,
         extractor_kind="RULE",
         output_schema_version="1",
-        run=lambda text, ctx: _run_rules(rules, text),
+        run=lambda text, ctx: _run_rules(rules, text, raw=ctx.get("raw")),
         media_types=media_types,
         extractor_confidence=0.9,
     )

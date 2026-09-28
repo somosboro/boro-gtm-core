@@ -12,7 +12,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from boro_gtm.discovery.domain.models import Company, CompanyClaim
 from boro_gtm.research.domain import models as m
@@ -29,7 +29,17 @@ URL = "https://www.meridianmechanical.com/services"
 
 @pytest.fixture
 def two_sessions(committed_sessions):
+    """Two real connections, over a database these tests own exclusively.
+
+    The truncate is at setup as well as teardown: every test here asserts an
+    absolute row count, so anything another file committed and did not clean up
+    would read as a concurrency failure.
+    """
+    from tests.conftest import _ALL_TABLES
+
     left, right = committed_sessions(), committed_sessions()
+    left.execute(text(f"TRUNCATE {_ALL_TABLES} RESTART IDENTITY CASCADE"))
+    left.commit()
     seed_all(left)
     left.commit()
     yield left, right
