@@ -31,14 +31,12 @@ from boro_gtm.research.domain.models import (
     IdentityReviewSignalOccurrence,
     OperationalResearchAttempt,
     OperationalResearchRun,
-    ResearchArtifactBody,
     ResearchEvidenceItem,
     ResearchEvidenceReview,
     ResearchExtraction,
     ResearchFetchEvent,
     ResearchReviewCandidate,
     ResearchSource,
-    ResearchTextDerivation,
 )
 from boro_gtm.research.enums import LEGAL_SIGNAL_TRANSITIONS
 
@@ -88,7 +86,12 @@ class ReviewOutcome:
     """The durable record a review produced."""
 
     review_id: uuid.UUID
+    #: The observation reviewed. Everything else is derived through it: an
+    #: evidence item can back several, so it could not be the key.
+    review_candidate_id: uuid.UUID
     evidence_item_id: uuid.UUID
+    attribute_key: str
+    #: Derived from provenance, never supplied.
     company_id: uuid.UUID
     decision: str
     actor: str
@@ -102,7 +105,9 @@ class ReviewOutcome:
     def as_dict(self) -> dict:
         return {
             "review_id": self.review_id,
+            "review_candidate_id": self.review_candidate_id,
             "evidence_item_id": self.evidence_item_id,
+            "attribute_key": self.attribute_key,
             "company_id": self.company_id,
             "decision": self.decision,
             "actor": self.actor,
@@ -164,20 +169,26 @@ def raise_candidate(
     attempt_id: uuid.UUID,
     company_id: uuid.UUID,
     attribute_key: str,
+    observation_fingerprint: str,
     reason: str,
     now: datetime,
     extractor_confidence: float | None = None,
 ) -> bool:
-    """Put one observation in the queue. Idempotent per question."""
+    """Put **one observation** in the queue. Idempotent per question.
+
+    Keyed on the observation, not the evidence item: two rules matching one span
+    share one evidence item, and keying on it dropped the second observation.
+    """
     result = session.execute(
         pg_insert(ResearchReviewCandidate)
         .values(
             id=uuid.uuid4(), evidence_item_id=evidence_item_id, run_id=run_id,
             attempt_id=attempt_id, company_id=company_id,
-            attribute_key=attribute_key, reason=reason,
+            attribute_key=attribute_key,
+            observation_fingerprint=observation_fingerprint, reason=reason,
             extractor_confidence=extractor_confidence, raised_at=now,
         )
-        .on_conflict_do_nothing(constraint="uq_candidate_identity")
+        .on_conflict_do_nothing(constraint="uq_candidate_observation")
         .returning(ResearchReviewCandidate.id)
     )
     return result.first() is not None
@@ -192,13 +203,23 @@ def pending_candidates(
 ) -> list[ResearchReviewCandidate]:
     """Candidates nobody has decided on yet, durably.
 
-    Survives the process that raised them, which is the whole point: a
-    reviewer arriving tomorrow must be able to find what is waiting.
+    Survives the process that raised them, which is the whole point: a reviewer
+    arriving tomorrow must be able to find what is waiting.
+
+    **Pending is per candidate.** It used to exclude every candidate sharing an
+    evidence item with a decided one, so deciding `technician_count` silently
+    removed `field_workforce_present` from the queue.
+
+    **Pending means undecided, not unresolved.** A candidate leaves the queue on
+    its *first* decision. Later reviewers may still record an opinion — the log
+    is append-only and a disagreement is information — but the queue does not
+    reopen, and M3 has no consensus mechanism and needs none. The first
+    decision is the operative one; the rest are recorded dissent.
     """
-    decided = select(ResearchEvidenceReview.evidence_item_id)
+    decided = select(ResearchEvidenceReview.review_candidate_id)
     statement = (
         select(ResearchReviewCandidate)
-        .where(ResearchReviewCandidate.evidence_item_id.not_in(decided))
+        .where(ResearchReviewCandidate.id.not_in(decided))
         .order_by(ResearchReviewCandidate.raised_at, ResearchReviewCandidate.id)
         .limit(limit)
     )
@@ -209,15 +230,15 @@ def pending_candidates(
     return list(session.scalars(statement).all())
 
 
-def candidate_for(
+def candidates_for_evidence(
     session: Session, evidence_item_id: uuid.UUID
-) -> ResearchReviewCandidate | None:
-    return session.scalars(
+) -> list[ResearchReviewCandidate]:
+    """Every observation on one evidence item that is awaiting a decision."""
+    return list(session.scalars(
         select(ResearchReviewCandidate)
         .where(ResearchReviewCandidate.evidence_item_id == evidence_item_id)
-        .order_by(ResearchReviewCandidate.raised_at)
-        .limit(1)
-    ).first()
+        .order_by(ResearchReviewCandidate.attribute_key, ResearchReviewCandidate.id)
+    ).all())
 
 
 # ---------------------------------------------------------------------------
@@ -225,20 +246,24 @@ def candidate_for(
 # ---------------------------------------------------------------------------
 
 
-def review_evidence(
+def review_candidate(
     session: Session,
     *,
-    evidence_item_id: uuid.UUID,
+    candidate_id: uuid.UUID,
     decision: str,
     actor: str,
     note: str | None = None,
     now: datetime | None = None,
 ) -> ReviewOutcome:
-    """Record a human decision about **one** observation. Always durable.
+    """Record a human decision about **one observation**. Always durable.
 
-    The subject company is derived from provenance and the confirmation is
-    scoped to the reviewed span — neither is the caller's to choose, and both
-    were before.
+    The target is the candidate, so a rejection says which observation the
+    reviewer disbelieved. Keyed on the evidence item it could not: two
+    observations can share one.
+
+    Nothing is executed. The observation being confirmed is the one already
+    persisted on the extraction, so a confirmation does not depend on today's
+    extractor, and does not need the raw body.
     """
     now = now or datetime.now(UTC)
     decision = decision.strip().upper()
@@ -246,18 +271,12 @@ def review_evidence(
         raise ValidationError(
             f"decision must be {CONFIRM} or {REJECT}", {"decision": decision}
         )
-    item = session.get(ResearchEvidenceItem, evidence_item_id)
-    if item is None:
-        raise NotFoundError(f"no evidence item {evidence_item_id}")
-
-    candidate = candidate_for(session, evidence_item_id)
+    candidate = session.get(ResearchReviewCandidate, candidate_id)
     if candidate is None:
-        raise NotReviewableError(
-            f"evidence {evidence_item_id} is not awaiting review; only a sampled "
-            "reading or a low-confidence observation is reviewable",
-            {"evidence_item_id": str(evidence_item_id)},
-        )
-    company_id = company_of_evidence(session, evidence_item_id)
+        raise NotFoundError(f"no review candidate {candidate_id}")
+
+    item = session.get(ResearchEvidenceItem, candidate.evidence_item_id)
+    company_id = company_of_evidence(session, item.id)
     if company_id != candidate.company_id:      # pragma: no cover - defensive
         raise UnresolvableProvenanceError(
             "the candidate and the evidence provenance disagree on the company"
@@ -273,15 +292,14 @@ def review_evidence(
 
     if decision == CONFIRM:
         human_extraction_id, resulting_claim_id, created_ids = _confirm(
-            session, item=item, company_id=company_id,
-            attribute_key=candidate.attribute_key, now=now,
+            session, candidate=candidate, item=item, company_id=company_id, now=now
         )
 
     review_id = uuid.uuid4()
     result = session.execute(
         pg_insert(ResearchEvidenceReview)
         .values(
-            id=review_id, evidence_item_id=evidence_item_id, decision=decision,
+            id=review_id, review_candidate_id=candidate.id, decision=decision,
             actor=actor, note=note, human_extraction_id=human_extraction_id,
             resulting_claim_id=resulting_claim_id, reviewed_at=now,
         )
@@ -290,9 +308,9 @@ def review_evidence(
     )
     if result.first() is None:
         raise DuplicateReviewError(
-            f"{actor} already recorded a review of evidence {evidence_item_id} "
+            f"{actor} already recorded a review of candidate {candidate.id} "
             f"at {now.isoformat()}",
-            {"evidence_item_id": str(evidence_item_id), "actor": actor},
+            {"candidate_id": str(candidate.id), "actor": actor},
         )
     session.flush()
 
@@ -301,7 +319,8 @@ def review_evidence(
                  str(extraction.observations)) == before
 
     return ReviewOutcome(
-        review_id=review_id, evidence_item_id=evidence_item_id,
+        review_id=review_id, review_candidate_id=candidate.id,
+        evidence_item_id=item.id, attribute_key=candidate.attribute_key,
         company_id=company_id, decision=decision, actor=actor, note=note,
         reviewed_at=now, human_extraction_id=human_extraction_id,
         resulting_claim_id=resulting_claim_id,
@@ -310,89 +329,72 @@ def review_evidence(
     )
 
 
-def _confirm(
-    session: Session, *, item: ResearchEvidenceItem, company_id: uuid.UUID,
-    attribute_key: str, now: datetime,
-) -> tuple[uuid.UUID, uuid.UUID | None, list[uuid.UUID]]:
-    """Create the HUMAN lineage for **the reviewed observation only**.
+def stored_observation(
+    session: Session, candidate: ResearchReviewCandidate
+) -> dict:
+    """The exact machine observation this candidate is about, from disk.
 
-    Scoped by the reviewed item's locator hash. Confirming one span used to run
-    the human extractor across the whole document and assert every observation
-    in it — four claims from one review, on evidence nobody had looked at.
+    `research_extractions.observations` is permanent under the retention
+    contract — only `raw_output` is prunable — so the reviewed reading survives
+    body pruning and extractor changes alike.
     """
-    from boro_gtm.research.services.claims import PendingAssertion, assert_claim
+    from boro_gtm.research.services.extraction import fingerprint_of_stored
+
+    item = session.get(ResearchEvidenceItem, candidate.evidence_item_id)
+    extraction = session.get(ResearchExtraction, item.extraction_id)
+    payload = (extraction.observations or {}).get("observations", [])
+    for stored in payload:
+        if fingerprint_of_stored(stored) == candidate.observation_fingerprint:
+            return stored
+    raise NotReviewableError(
+        f"candidate {candidate.id} names an observation that is not in "
+        f"extraction {extraction.id}; the queue and the ledger disagree",
+        {"candidate_id": str(candidate.id), "extraction_id": str(extraction.id)},
+    )
+
+
+def _confirm(
+    session: Session, *, candidate: ResearchReviewCandidate,
+    item: ResearchEvidenceItem, company_id: uuid.UUID, now: datetime,
+) -> tuple[uuid.UUID, uuid.UUID | None, list[uuid.UUID]]:
+    """Append a HUMAN lineage for the observation the human actually read.
+
+    No extractor runs. An earlier version looked up the currently registered
+    extractor by id, re-ran it over the derived text, and hoped the locator
+    still reproduced — which made a durable review candidate depend on mutable
+    future software, and impossible to confirm once retention pruned the bytes.
+    The human is confirming the historical reading, not asking today's code what
+    it would say now.
+    """
+    from boro_gtm.research.services.claims import (
+        PendingAssertion,
+        assert_claim,
+        group_observations,
+    )
     from boro_gtm.research.services.evidence import EvidenceContext, create_evidence_item
     from boro_gtm.research.services.extraction import (
-        extractors_for,
-        run_extraction,
-        scoped_human_extractor,
+        observation_from_stored,
+        record_human_extraction,
     )
 
+    stored = stored_observation(session, candidate)
+    observation = observation_from_stored(stored)
     sampled = session.get(ResearchExtraction, item.extraction_id)
-    text_derivation = session.get(ResearchTextDerivation, sampled.text_derivation_id)
-    fetch = session.get(ResearchFetchEvent, item.fetch_event_id)
 
-    source_extractor = next(
-        (x for x in extractors_for(_media_type_of(session, item))
-         if x.extractor_id == sampled.extractor_id),
-        None,
+    human = record_human_extraction(
+        session, text_derivation_id=sampled.text_derivation_id,
+        body_id=sampled.body_id, observation=observation,
+        fingerprint=candidate.observation_fingerprint, now=now,
     )
-    if source_extractor is None:      # pragma: no cover - fixture contract
-        raise NotReviewableError(
-            f"no extractor named {sampled.extractor_id} is registered, so the "
-            "reviewed observation cannot be reproduced"
-        )
-
-    human = scoped_human_extractor(
-        locator_hash=item.locator_hash, attribute_key=attribute_key,
-        source_extractor=source_extractor,
-    )
-    # The same context the pipeline extracted under. An HTML locator carries a
-    # structural path computed from the raw document, so re-running without it
-    # produces a *different* locator hash and the reviewed span matches
-    # nothing — which presented as "the span no longer resolves".
-    body = session.get(ResearchArtifactBody, item.body_id)
-    if body.raw_body is None:
-        raise NotReviewableError(
-            f"body {body.id} was pruned at {body.pruned_at}; the reviewed span "
-            "cannot be reproduced without a refetch",
-            {"body_id": str(body.id)},
-        )
-    reading = run_extraction(
-        session, extractor=human, text_derivation=text_derivation,
-        attempt_id=fetch.attempt_id, now=now, context={"raw": body.raw_body},
-    )
-    if not reading.observations:      # pragma: no cover - fixture contract
-        raise NotReviewableError(
-            f"the reviewed span no longer resolves in {text_derivation.id}; "
-            "confirm against a re-derived reading instead"
-        )
-
     context = EvidenceContext(
-        extraction_id=reading.extraction.id, fetch_event_id=item.fetch_event_id,
+        extraction_id=human.id, fetch_event_id=item.fetch_event_id,
         artifact_derivation_id=item.artifact_derivation_id, body_id=item.body_id,
         source=session.get(ResearchSource, item.source_id),
     )
-    created_ids: list[uuid.UUID] = []
-    confirming = []
-    for observation in reading.observations:
-        evidence, _ = create_evidence_item(
-            session, context=context, observation=observation, now=now
-        )
-        created_ids.append(evidence.id)
-        confirming.append((observation, evidence.id))
-
-    from boro_gtm.research.services.claims import group_observations
-
-    groups = group_observations(session, confirming)
-    if len(groups) > 1:     # pragma: no cover - the scope makes this unreachable
-        raise NotReviewableError(
-            "the reviewed scope resolves to several assertions; a review "
-            "confirms one attribute at one span",
-            {"groups": len(groups)},
-        )
-    # One attribute at one span is one value from one origin, so at most one
-    # assertion. `resulting_claim_id` is singular because the operation is.
+    evidence, _ = create_evidence_item(
+        session, context=context, observation=observation, now=now
+    )
+    groups = group_observations(session, [(observation, evidence.id)])
     resulting_claim_id = None
     for pending in groups:
         outcome = assert_claim(
@@ -407,25 +409,20 @@ def _confirm(
         )
         resulting_claim_id = outcome.claim.id
     session.flush()
-    return reading.extraction.id, resulting_claim_id, sorted(created_ids, key=str)
-
-
-def _media_type_of(session: Session, item: ResearchEvidenceItem) -> str:
-    from boro_gtm.research.domain.models import ResearchBodyClassification
-
-    return session.scalar(
-        select(ResearchBodyClassification.sniffed_media_type)
-        .where(ResearchBodyClassification.body_id == item.body_id)
-        .limit(1)
-    )
+    return human.id, resulting_claim_id, [evidence.id]
 
 
 def reviews_for(
-    session: Session, evidence_item_id: uuid.UUID
+    session: Session, candidate_id: uuid.UUID
 ) -> list[ResearchEvidenceReview]:
+    """Every decision recorded about one observation, oldest first.
+
+    Several are possible and all survive: the first is operative, later ones are
+    recorded dissent. See `pending_candidates` for the policy.
+    """
     return list(session.scalars(
         select(ResearchEvidenceReview)
-        .where(ResearchEvidenceReview.evidence_item_id == evidence_item_id)
+        .where(ResearchEvidenceReview.review_candidate_id == candidate_id)
         .order_by(ResearchEvidenceReview.reviewed_at, ResearchEvidenceReview.id)
     ).all())
 

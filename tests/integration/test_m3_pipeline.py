@@ -337,9 +337,9 @@ def test_every_extractor_kind_is_exercised(m3, company, transport):
     candidate = review_service.pending_candidates(
         m3, reason=review_service.SAMPLED_REASON
     )[0]
-    review_service.review_evidence(
-        m3, evidence_item_id=candidate.evidence_item_id, decision="CONFIRM",
-        actor="analyst", now=LATER,
+    review_service.review_candidate(
+        m3, candidate_id=candidate.id, decision="CONFIRM", actor="analyst",
+        now=LATER,
     )
     m3.flush()
     kinds = set(m3.scalars(select(m.ResearchExtraction.extractor_kind)).all())
@@ -400,9 +400,9 @@ def test_human_confirmation_makes_a_sampled_reading_assertable(m3, company, tran
     candidate = review_service.pending_candidates(
         m3, reason=review_service.SAMPLED_REASON
     )[0]
-    review_service.review_evidence(
-        m3, evidence_item_id=candidate.evidence_item_id, decision="CONFIRM",
-        actor="analyst", now=LATER,
+    review_service.review_candidate(
+        m3, candidate_id=candidate.id, decision="CONFIRM", actor="analyst",
+        now=LATER,
     )
     m3.flush()
 

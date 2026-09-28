@@ -486,9 +486,14 @@ def test_a_model_version_change_is_a_distinct_extraction_contract(researched, m3
 
 
 def test_a_human_confirmation_appends_an_assertable_lineage(researched, m3, company):
-    """D6: the review targets the *evidence*, which exists before any claim."""
+    """D6: the review targets one *observation*, which exists before any claim.
+
+    The candidate is the target, not the evidence item: an item is keyed on the
+    locator, so two readings of one span share one and it could not name which
+    was confirmed (M3-ADR-064).
+    """
     from boro_gtm.research.services import review as review_service
-    from boro_gtm.research.services.review import review_evidence
+    from boro_gtm.research.services.review import review_candidate
 
     candidate = review_service.pending_candidates(
         m3, reason=review_service.SAMPLED_REASON
@@ -499,8 +504,8 @@ def test_a_human_confirmation_appends_an_assertable_lineage(researched, m3, comp
     fingerprint = (sampled.raw_output_sha256, sampled.extraction_contract_hash,
                    str(sampled.observations))
 
-    outcome = review_evidence(
-        m3, evidence_item_id=item.id, decision="CONFIRM", actor="analyst",
+    outcome = review_candidate(
+        m3, candidate_id=candidate.id, decision="CONFIRM", actor="analyst",
         now=LATER,
     )
     m3.flush()
@@ -508,8 +513,12 @@ def test_a_human_confirmation_appends_an_assertable_lineage(researched, m3, comp
     record = m3.get(m.ResearchEvidenceReview, outcome.review_id)
     assert record.decision == "CONFIRM"
     assert record.actor == "analyst"
+    assert record.review_candidate_id == candidate.id
     human = m3.get(m.ResearchExtraction, record.human_extraction_id)
     assert human.extractor_kind == "HUMAN"
+    # Exactly the historical reading, read off disk rather than recomputed.
+    recorded = (human.observations or {}).get("observations", [])
+    assert len(recorded) == 1
 
     m3.refresh(sampled)
     assert (sampled.raw_output_sha256, sampled.extraction_contract_hash,

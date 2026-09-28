@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
+from boro_gtm.core.errors import NotFoundError
 from boro_gtm.discovery.domain.models import Company, CompanyClaim
 from boro_gtm.research.domain import models as m
 from boro_gtm.research.fixtures.transport import FixtureTransport
@@ -93,14 +94,14 @@ def test_evidence_captured_for_one_company_cannot_be_confirmed_into_another(
     other = _company(m3)
     candidate = _sampled_candidate(m3)
 
-    signature = inspect.signature(review.review_evidence)
+    signature = inspect.signature(review.review_candidate)
     assert "company_id" not in signature.parameters, (
         "the subject company must not be an input to a review"
     )
 
-    outcome = review.review_evidence(
-        m3, evidence_item_id=candidate.evidence_item_id, decision="CONFIRM",
-        actor="analyst", now=LATER,
+    outcome = review.review_candidate(
+        m3, candidate_id=candidate.id, decision="CONFIRM", actor="analyst",
+        now=LATER,
     )
     m3.flush()
     assert outcome.company_id == researched.id
@@ -139,8 +140,8 @@ def test_confirming_one_observation_confirms_only_that_observation(researched, m
     assert total >= 3, "the sampled reading must hold several observations"
 
     claims_before = _count(m3, CompanyClaim)
-    outcome = review.review_evidence(
-        m3, evidence_item_id=item.id, decision="CONFIRM", actor="analyst",
+    outcome = review.review_candidate(
+        m3, candidate_id=candidate.id, decision="CONFIRM", actor="analyst",
         now=LATER,
     )
     m3.flush()
@@ -159,8 +160,8 @@ def test_confirming_one_observation_confirms_only_that_observation(researched, m
 
     # And the other observations of the same document remain unreviewed.
     still_waiting = {
-        c.attribute_key for c in review.pending_candidates(m3)
-        if c.evidence_item_id != item.id
+        c.attribute_key for c in review.pending_candidates(m3, limit=500)
+        if c.id != candidate.id
     }
     assert still_waiting
 
@@ -170,12 +171,12 @@ def test_two_observations_on_one_document_need_two_decisions(researched, m3):
     sampled = [c for c in review.pending_candidates(m3, reason=review.SAMPLED_REASON)]
     assert len(sampled) >= 2
 
-    first = review.review_evidence(
-        m3, evidence_item_id=sampled[0].evidence_item_id, decision="CONFIRM",
+    first = review.review_candidate(
+        m3, candidate_id=sampled[0].id, decision="CONFIRM",
         actor="analyst", now=LATER,
     )
-    second = review.review_evidence(
-        m3, evidence_item_id=sampled[1].evidence_item_id, decision="CONFIRM",
+    second = review.review_candidate(
+        m3, candidate_id=sampled[1].id, decision="CONFIRM",
         actor="analyst", now=LATER + timedelta(minutes=1),
     )
     m3.flush()
@@ -191,9 +192,9 @@ def test_two_observations_on_one_document_need_two_decisions(researched, m3):
 
 def test_a_confirmation_produces_at_most_one_claim_and_records_it(researched, m3):
     candidate = _sampled_candidate(m3)
-    outcome = review.review_evidence(
-        m3, evidence_item_id=candidate.evidence_item_id, decision="CONFIRM",
-        actor="analyst", now=LATER,
+    outcome = review.review_candidate(
+        m3, candidate_id=candidate.id, decision="CONFIRM", actor="analyst",
+        now=LATER,
     )
     m3.flush()
 
@@ -217,16 +218,23 @@ def test_a_confirmation_produces_at_most_one_claim_and_records_it(researched, m3
 
 
 def test_an_ordinary_deterministic_observation_is_not_reviewable(researched, m3):
-    """"Reviewable" is a state, not knowledge of a UUID."""
+    """"Reviewable" is a state, not knowledge of a UUID.
+
+    An ordinary deterministic reading asserted its claim already. No candidate
+    was ever raised for it, and a decision can only be addressed to a
+    candidate, so there is nothing to review and no route that pretends there
+    is.
+    """
     candidates = {c.evidence_item_id for c in review.pending_candidates(m3, limit=500)}
     ordinary = m3.scalars(select(m.ResearchEvidenceItem.id).where(
         m.ResearchEvidenceItem.id.not_in(candidates)
     ).limit(1)).first()
     assert ordinary is not None
+    assert review.candidates_for_evidence(m3, ordinary) == []
 
-    with pytest.raises(review.NotReviewableError):
-        review.review_evidence(m3, evidence_item_id=ordinary, decision="CONFIRM",
-                               actor="analyst", now=LATER)
+    with pytest.raises(NotFoundError):
+        review.review_candidate(m3, candidate_id=uuid.uuid4(),
+                                decision="CONFIRM", actor="analyst", now=LATER)
 
 
 def test_both_reviewable_reasons_are_distinguished(researched, m3):
@@ -295,9 +303,9 @@ def test_a_low_confidence_observation_is_discoverable_after_the_process_ends(
 
     # Confirming it asserts only that observation.
     before = reader.scalar(select(func.count()).select_from(CompanyClaim))
-    outcome = review.review_evidence(
-        reader, evidence_item_id=candidate.evidence_item_id, decision="CONFIRM",
-        actor="analyst", now=LATER,
+    outcome = review.review_candidate(
+        reader, candidate_id=candidate.id, decision="CONFIRM", actor="analyst",
+        now=LATER,
     )
     reader.commit()
     assert len(outcome.created_evidence_item_ids) == 1
@@ -321,14 +329,14 @@ def test_review_history_round_trips_through_a_fresh_session(committed_sessions):
     writer.commit()
 
     candidate = review.pending_candidates(writer, reason=review.SAMPLED_REASON)[0]
-    outcome = review.review_evidence(
-        writer, evidence_item_id=candidate.evidence_item_id, decision="CONFIRM",
-        actor="analyst", now=LATER,
+    outcome = review.review_candidate(
+        writer, candidate_id=candidate.id, decision="CONFIRM", actor="analyst",
+        now=LATER,
     )
     writer.commit()
 
     reader = committed_sessions()
-    rows = review.reviews_for(reader, candidate.evidence_item_id)
+    rows = review.reviews_for(reader, candidate.id)
     assert len(rows) == 1
     row = rows[0]
     assert row.human_extraction_id == outcome.human_extraction_id
@@ -341,9 +349,9 @@ def test_review_history_round_trips_through_a_fresh_session(committed_sessions):
 
 def test_a_rejection_history_row_reports_no_created_evidence(researched, m3):
     candidate = _sampled_candidate(m3)
-    outcome = review.review_evidence(
-        m3, evidence_item_id=candidate.evidence_item_id, decision="REJECT",
-        actor="analyst", now=LATER,
+    outcome = review.review_candidate(
+        m3, candidate_id=candidate.id, decision="REJECT", actor="analyst",
+        now=LATER,
     )
     m3.flush()
     row = m3.get(m.ResearchEvidenceReview, outcome.review_id)
@@ -379,9 +387,9 @@ def test_the_database_forbids_a_confirmation_with_no_human_extraction(researched
         with m3.begin_nested():
             m3.execute(text(
                 "INSERT INTO research_evidence_reviews "
-                "(id, evidence_item_id, decision, actor, reviewed_at) "
-                "VALUES (:i, :e, 'CONFIRM', 'a', now())"
-            ), {"i": uuid.uuid4(), "e": candidate.evidence_item_id})
+                "(id, review_candidate_id, decision, actor, reviewed_at) "
+                "VALUES (:i, :c, 'CONFIRM', 'a', now())"
+            ), {"i": uuid.uuid4(), "c": candidate.id})
 
 
 def test_a_candidate_row_is_append_only(researched, m3):

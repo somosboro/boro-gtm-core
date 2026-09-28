@@ -639,43 +639,135 @@ PDF_MODEL_EXTRACTOR = Extractor(
     media_types=("application/pdf",), extractor_confidence=0.55,
 )
 
-def scoped_human_extractor(
-    *, locator_hash: str, attribute_key: str, source_extractor: Extractor
-) -> Extractor:
-    """A HUMAN reading of **one** observation: one attribute, at one span.
+def locator_hash_of(observation: Observation) -> str:
+    return locator_hash(observation.locator)
 
-    Both halves are needed. Two rules can match the same text — "58 field
-    technicians" yields `technician_count` *and* `field_workforce_present` at
-    one offset — so the locator alone is not one observation, and scoping by it
-    would confirm an attribute the reviewer never considered.
 
-    A reviewer who confirms one span has confirmed one span. An extractor keyed
-    only by the text derivation produced a stored reading whose `observations`
-    listed every model finding in the document — a durable record asserting the
-    reviewer had approved things they never saw.
+def observation_fingerprint(observation: Observation) -> str:
+    """Identity of one exact machine observation.
 
-    The scope is in the contract hash, so each confirmed observation is its own
-    extraction, and the observations it stores are exactly what was confirmed.
+    An evidence item is keyed on its locator, so two rules matching one span —
+    "58 field technicians" yielding both `technician_count` and
+    `field_workforce_present` — share one evidence item. Keying a review
+    candidate on the evidence item therefore lost the second observation
+    entirely (M3-ADR-064).
+
+    Every field that can make two observations *different* is in the hash:
+
+    * `attribute_key` — the two above differ only here;
+    * the canonical `value` (which carries `evidence_class` for a capped
+      attribute), `unit` and `fact_type` — so the same attribute asserted at one
+      span with a different value, unit or strength stays a separate
+      observation rather than colliding;
+    * `locator_hash` — the span;
+    * `support_kind` — a direct statement and a derivation from the same span
+      are different readings.
+
+    The quote is excluded: it is a function of the span, so including it would
+    add nothing and make the identity fragile to whitespace.
     """
+    return sha256_json({
+        "attribute_key": observation.attribute_key,
+        "value": observation.value,
+        "unit": observation.unit,
+        "fact_type": observation.fact_type,
+        "locator_hash": locator_hash_of(observation),
+        "support_kind": observation.support_kind,
+    })
 
-    def run(text: str, context: dict[str, Any]) -> list[Observation]:
-        return [
-            observation
-            for observation in source_extractor.run(text, context)
-            if observation.attribute_key == attribute_key
-            and locator_hash_of(observation) == locator_hash
-        ]
 
-    return Extractor(
-        extractor_id="analyst_confirmation", extractor_version="1.0.0",
-        extractor_kind="HUMAN", output_schema_version="1", run=run,
-        media_types=source_extractor.media_types, extractor_confidence=1.0,
-        scope=f"{attribute_key}@{locator_hash}",
+def fingerprint_of_stored(stored: dict[str, Any]) -> str:
+    """The same identity, computed from an observation read back out of the
+    extraction's persisted payload.
+
+    This is what lets a confirmation find the reviewed observation without
+    re-running anything: the machine's reading is already on disk.
+    """
+    return sha256_json({
+        "attribute_key": stored["attribute_key"],
+        "value": stored["value"],
+        "unit": stored.get("unit"),
+        "fact_type": stored["fact_type"],
+        "locator_hash": locator_hash(stored["locator"]),
+        "support_kind": stored.get("support_kind", "DIRECT_STATEMENT"),
+    })
+
+
+def observation_from_stored(stored: dict[str, Any]) -> Observation:
+    """Rebuild an `Observation` from the persisted payload, verbatim."""
+    return Observation(
+        attribute_key=stored["attribute_key"], value=stored["value"],
+        fact_type=stored["fact_type"], locator=stored["locator"],
+        quote=stored["quote"], unit=stored.get("unit"),
+        support_kind=stored.get("support_kind", "DIRECT_STATEMENT"),
+        evidence_class=stored["value"].get("evidence_class"),
+        lineage_tag=stored.get("lineage_tag"),
     )
 
 
-def locator_hash_of(observation: Observation) -> str:
-    return locator_hash(observation.locator)
+def record_human_extraction(
+    session,
+    *,
+    text_derivation_id: uuid.UUID,
+    body_id: uuid.UUID,
+    observation: Observation,
+    fingerprint: str,
+    now: datetime,
+) -> ResearchExtraction:
+    """A HUMAN reading of one historical observation.
+
+    Deliberately **not** created through `run_extraction`:
+
+    * nothing is executed — the observation is the one already on disk, so a
+      confirmation does not depend on today's extractor still existing, still
+      behaving the same way, or on the raw body still being retained;
+    * no `research_attempt_extractions` row is written. A human reviewing three
+      days later is not something the original execution "created or reused",
+      and appending usage to a terminal attempt made
+      `GET /attempts/{id}/extractions` report a reading that execution never
+      performed (M3-ADR-065). The review record is the provenance of the human
+      operation.
+    """
+    contract = sha256_json({
+        "extractor_id": "analyst_confirmation",
+        "extractor_version": "2.0.0",
+        "extractor_kind": "HUMAN",
+        "output_schema_version": "1",
+        "determinism": "DETERMINISTIC",
+        "scope": fingerprint,
+    })
+    existing = session.scalars(
+        select(ResearchExtraction).where(
+            ResearchExtraction.text_derivation_id == text_derivation_id,
+            ResearchExtraction.extraction_contract_hash == contract,
+            ResearchExtraction.sample_execution_id.is_(None),
+        )
+    ).first()
+    if existing is not None:
+        return existing
+
+    payload = {"observations": [observation.as_json()]}
+    raw_output = sha256_json(payload)
+    extraction = ResearchExtraction(
+        id=uuid.uuid4(),
+        text_derivation_id=text_derivation_id,
+        body_id=body_id,
+        extractor_kind="HUMAN",
+        extractor_id="analyst_confirmation",
+        extractor_version="2.0.0",
+        output_schema_version="1",
+        determinism="DETERMINISTIC",
+        extraction_contract_hash=contract,
+        extractor_confidence=1.0,
+        observations=payload,
+        status="OK",
+        raw_output=raw_output,
+        raw_output_sha256=sha256_text(raw_output),
+        created_at=now,
+    )
+    session.add(extraction)
+    session.flush()
+    return extraction
 
 DEFAULT_EXTRACTORS: tuple[Extractor, ...] = (
     PROSE_EXTRACTOR, SERVICE_EXTRACTOR, PROCESS_EXTRACTOR, CHANGE_EXTRACTOR,

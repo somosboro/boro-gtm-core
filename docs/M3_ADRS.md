@@ -1993,17 +1993,26 @@ one sentence, since a rejection must not append a claim.
 
 ### Decision
 
-`research_evidence_reviews` is append-only and keyed on the **evidence item**,
-which exists from the moment a sampled reading is recorded — exactly when it
-becomes reviewable. Both decisions write a row carrying actor, time, decision
-and rationale. A CHECK forbids a rejection from naming an extraction or a
-claim.
+`research_evidence_reviews` is append-only and keyed on something that exists
+from the moment a sampled reading is recorded — exactly when it becomes
+reviewable. Both decisions write a row carrying actor, time, decision and
+rationale. A CHECK forbids a rejection from naming an extraction or a claim.
+
+> *Amended in revision 5.3 (M3-ADR-064).* This ADR chose the **evidence item** as
+> that key, and the routes below followed from it. An item is keyed on its
+> locator, so two readings of one span share one; the key is now the **review
+> candidate**, and the routes are
+> `GET /research-review-candidates`,
+> `POST /research-review-candidates/{id}/decision` and
+> `GET /research-review-candidates/{id}/reviews`. The reasoning in this ADR —
+> that the resource must predate the claim — is unchanged and is what M3-ADR-064
+> builds on.
 
 The API becomes `GET /research-reviews/pending`,
 `POST /research-evidence-items/{id}/review` and
-`GET /research-evidence-items/{id}/reviews`. The claim-keyed route is
-**superseded and removed** rather than kept as a misleading alias; nothing is
-released, so there is no compatibility to preserve.
+`GET /research-evidence-items/{id}/reviews` (superseded above). The claim-keyed
+route is **superseded and removed** rather than kept as a misleading alias;
+nothing is released, so there is no compatibility to preserve.
 
 D6 is split into D6 (confirmation) and D7 (durable rejection), because they are
 genuinely different behaviours and one scenario could not state both.
@@ -2205,10 +2214,18 @@ evidence behind it. D3 was passing without being implemented.
 * `resulting_claim_id` stays singular and is now **true**: one attribute at one
   span is one value from one origin, so at most one claim. The service raises
   rather than silently recording the first of several.
-* The review must re-run the source extractor under the same context the
+* ~~The review must re-run the source extractor under the same context the
   pipeline used — an HTML locator carries a structural path computed from the
   raw document, and re-running without it produces a different locator hash. A
-  pruned body therefore makes a confirmation impossible, and says so.
+  pruned body therefore makes a confirmation impossible, and says so.~~
+  **Superseded by M3-ADR-065.** Re-running was the wrong mechanism: it made a
+  durable candidate depend on the current extractor registry, and the pruned-body
+  consequence — stated here as an accepted cost — was a defect. The reviewed
+  reading is read from the persisted extraction instead.
+* The scoping decision above is unchanged in intent but no longer implemented by
+  a scoped extractor: identity now comes from the observation fingerprint
+  (M3-ADR-064), and the confirmed observation is copied from disk rather than
+  recomputed.
 * **Generalisable:** an operation that can affect several things must not
   record one of them. Either scope the operation or record the set — and
   scoping was right here, because a reviewer confirms what they read.
@@ -2281,3 +2298,143 @@ and now checks the fact type and the source class it follows from.
 * **Generalisable:** a scenario that requires an exception to a governing rule
   is usually a wrong scenario, not a needed exception. The fix was to the
   sentence.
+
+---
+
+## M3-ADR-064 — A review candidate is one observation, identified by fingerprint
+
+**Status:** accepted (third audit; **new migration** `0009_m3_observation_identity`)
+
+### Context
+
+M3-ADR-061 said a review targets "one attribute at one span". The table did not.
+`research_review_candidates` was keyed
+`UNIQUE (evidence_item_id, run_id)`, and an evidence item is keyed on its
+locator — so two extraction rules matching the same text share one.
+
+The corpus contains two such pairs. "58 field technicians" yields
+`technician_count` **and** `field_workforce_present` at one offset;
+another sentence yields `fleet_size` and `fleet_presence`. Reproduced before
+changing anything: the pipeline raised one candidate where two observations were
+waiting, and `ON CONFLICT DO NOTHING` swallowed the second without an error.
+
+Three things followed:
+
+* **A question disappeared.** The second observation was never queued, so no
+  reviewer would ever see it, and no gap explained its absence.
+* **One decision answered two questions.** `pending_candidates` excluded by
+  `evidence_item_id NOT IN (SELECT evidence_item_id FROM reviews)`, so deciding
+  `technician_count` removed `field_workforce_present` from the queue.
+* **A rejection was unreadable.** `research_evidence_reviews.evidence_item_id`
+  could not distinguish "the figure 58 is wrong" from "there are no field
+  technicians". A durable record that cannot say what was rejected records
+  nothing usable.
+
+### Decision
+
+Candidate identity is the **observation**, not the evidence item:
+`UNIQUE (run_id, observation_fingerprint)`.
+
+The fingerprint is `sha256_json` over every field that can make two observations
+different — `attribute_key`, the canonical `value` (which carries
+`evidence_class` for a capped attribute), `unit`, `fact_type`, the locator hash,
+and `support_kind`. The quote is excluded: it is a function of the span, so it
+adds nothing and would make identity fragile to whitespace.
+
+`attribute_key` alone is not sufficient and neither is the locator alone — the
+two collisions above differ only in the attribute, and the same attribute could
+in principle be read at one span with a different value, unit or strength. Both
+are therefore in the hash, along with the rest.
+
+A review names the **candidate**: `research_evidence_reviews.review_candidate_id`
+replaces `evidence_item_id` outright, with `uq_review_identity
+(review_candidate_id, actor, reviewed_at)`. The API follows the resource:
+`GET /research-review-candidates`,
+`POST /research-review-candidates/{id}/decision`,
+`GET /research-review-candidates/{id}/reviews`. The old item-keyed routes are
+**removed**, not aliased — keeping them would keep the ambiguity reachable, and
+nothing is released.
+
+Pending is per candidate, and means **undecided, not unresolved**: a candidate
+leaves the queue on its first decision. Later reviewers may still record an
+opinion, because the log is append-only and a disagreement is information, but
+the queue does not reopen and nothing adjudicates. The first decision is
+operative; the rest are recorded dissent. M3 has no consensus mechanism and
+needs none — this is stated so that its absence is a decision rather than a gap.
+
+### Consequences
+
+* Migration 0009 backfills 0008's rows deterministically rather than deleting
+  them: `'legacy:' || sha256(evidence_item_id || ':' || attribute_key)`. Those
+  rows predate the fingerprint, so no honest fingerprint exists for them; the
+  prefix says so explicitly instead of fabricating one that would collide with a
+  real reading. Existing reviews are attached to the candidate with the lowest
+  attribute key for their evidence item — the only deterministic choice
+  available, since the old row did not record which observation it meant.
+* The backfill has to disable the append-only trigger on both tables for the
+  duration. A migration may; a service may not, and the migration says so.
+* Evidence items keep their locator identity. Sharing one between observations
+  was never the defect — treating that item as the unit of review was.
+* **Generalisable:** a uniqueness constraint is a claim about what the row *is*.
+  When the prose says "one observation" and the key says "one document", the key
+  wins silently, and `ON CONFLICT DO NOTHING` turns the disagreement into
+  missing data rather than an error.
+
+---
+
+## M3-ADR-065 — A confirmation reviews the historical reading, and closes no attempt
+
+**Status:** accepted (third audit)
+
+### Context
+
+Confirmation looked up the currently registered extractor by id, wrapped it in a
+scoped HUMAN extractor, and re-ran it over the derived text, hoping the locator
+still reproduced. Two independent failures:
+
+**It depended on the present.** A review candidate is durable by design — D11
+exists precisely so a reviewer arriving tomorrow can act. But the extractor may
+by then have been upgraded, renamed or withdrawn, in which case a legitimate
+candidate became unanswerable. And retention prunes raw bodies and derived text
+on a schedule; M3-ADR-061 recorded "a pruned body makes a confirmation
+impossible" as an accepted consequence. It is not acceptable: retention must not
+silently destroy a queued question.
+
+**It rewrote a finished record.** `run_extraction(attempt_id=...)` records usage,
+so a confirmation three days later added a `research_attempt_extractions` row to
+a research attempt that had already reached `PARTIAL`. Reproduced before
+changing anything. An attempt is the record of one execution; nothing executed,
+and it happened later, by someone else.
+
+### Decision
+
+The reviewed object is the observation already persisted in
+`research_extractions.observations`, located by the candidate's fingerprint.
+Confirmation copies it into a HUMAN extraction. Nothing is executed, no
+extractor is consulted, and no text or body is read — `observations` is not
+prunable under the retention contract; only `raw_output` is.
+
+If the fingerprint names no stored observation, the confirmation is refused with
+`NotReviewableError`: the queue and the ledger disagree, and guessing which is
+right would be worse than stopping.
+
+The HUMAN extraction is inserted directly, with **no** `research_attempt_extractions`
+row. It therefore belongs to no attempt at all, and its lineage is reachable
+through `research_evidence_reviews.human_extraction_id` — the relationship that
+actually describes how it came to exist.
+
+### Consequences
+
+* A confirmation now survives its extractor being deleted and its body and text
+  being pruned. Both are tested directly (D16).
+* The HUMAN extraction's contract hash is scoped by the fingerprint, so each
+  confirmed observation is its own extraction and two confirmations of one
+  document never collide.
+* `scoped_human_extractor` is deleted rather than left unused: it existed only to
+  re-run, and a helper that re-runs is an invitation to re-run.
+* Attempt cost and usage totals no longer drift with review activity, which they
+  silently did before.
+* **Generalisable:** confirming a historical statement means reading what was
+  said, not asking the current system what it would say now. When the two differ
+  the second answers a different question — and an append-only record of a
+  finished process is not a place to put something that happened afterwards.

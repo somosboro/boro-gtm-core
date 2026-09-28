@@ -175,7 +175,12 @@ adjacent to it.
 | D9 | One confirmation covers one attribute at one span | `test_confirming_one_observation_confirms_only_that_observation`, `test_two_observations_on_one_document_need_two_decisions`, `test_a_confirmation_produces_at_most_one_claim_and_records_it` |
 | D10 | Only a durable candidate is reviewable | `test_an_ordinary_deterministic_observation_is_not_reviewable`, `test_both_reviewable_reasons_are_distinguished` |
 | D11 | A candidate outlives the process that raised it | `test_a_low_confidence_observation_is_discoverable_after_the_process_ends` |
-| D12 | Review history reports only persisted or derivable values | `test_review_history_round_trips_through_a_fresh_session`, `test_a_rejection_history_row_reports_no_created_evidence`, `test_reviews_are_listed_for_an_observation` |
+| D12 | Review history reports only persisted or derivable values | `test_review_history_round_trips_through_a_fresh_session`, `test_a_rejection_history_row_reports_no_created_evidence`, `test_reviews_are_listed_for_an_observation`, `test_history_distinguishes_two_readings_of_one_span` |
+| D13 | Two readings of one span are two review candidates | `test_two_observations_of_one_span_are_two_candidates`, `test_the_database_keys_a_candidate_on_the_observation`, `test_the_fingerprint_is_a_function_of_the_reading_alone` |
+| D14 | A decision closes one question, not its siblings | `test_deciding_one_observation_leaves_its_sibling_pending`, `test_two_reviewers_on_sibling_observations_do_not_collide`, `test_a_reviewed_observation_leaves_the_pending_queue` |
+| D15 | A rejection names the observation it disbelieves | `test_a_rejection_is_specific_to_one_observation`, `test_the_database_refuses_a_review_of_no_candidate` |
+| D16 | A confirmation reviews the historical reading, not a re-run | `test_a_confirmation_survives_the_extractor_being_replaced`, `test_a_confirmation_survives_a_pruned_body_and_text`, `test_a_candidate_naming_an_absent_observation_is_not_reviewable` |
+| D17 | A human review does not mutate the attempt it reviews | `test_a_review_does_not_append_usage_to_the_terminal_attempt`, `test_the_terminal_attempt_row_cannot_be_rewritten_at_all` |
 | D7 | A rejection persists actor, time and rationale, and asserts nothing | `test_a_rejection_is_durable_and_asserts_nothing`, `test_a_rejection_never_asserts_the_negative`, `test_the_database_forbids_a_rejection_that_names_a_claim`, `test_rejecting_an_observation_persists_and_asserts_nothing` |
 | E1 | The retrieval date is never the observation date | `test_a_retrieval_date_is_never_used_as_the_observation_date` |
 | E2 | A stated date keeps its own granularity; none is invented | `test_an_invented_publication_date_is_unrepresentable` |
@@ -285,14 +290,14 @@ same value from two origins staying two lineages; projections rebuilding
 byte-identically from empty; the API's raw-payload, pagination and error
 contracts; the CLI's fixture-only execution gate.
 
-**367 M3 tests in total** across fourteen files.
+**383 M3 tests in total** across fifteen files.
 
 ### Acceptance status, counted mechanically
 
 | | Count |
 | --- | --- |
-| Scenarios in the contract | 145 |
-| Executable, and passing | 145 |
+| Scenarios in the contract | 150 |
+| Executable, and passing | 150 |
 | Failing | 0 |
 | Not yet executable | 0 |
 
@@ -300,9 +305,26 @@ Parsed from the documents by `tests/unit/test_traceability_counts.py`, which
 also refuses a citation to a scenario that does not exist, refuses ranges, and
 refuses to let the withdrawn G8 be claimed.
 
-The count moved 134 → 139 → **145**, and upward is the only direction it should
-move for this reason: each audit proved behaviours the branch did not have, so
-scenarios were added rather than the implementation being declared adequate.
+The count moved 134 → 139 → 145 → **150**, and upward is the only direction it
+should move for this reason: each audit proved behaviours the branch did not
+have, so scenarios were added rather than the implementation being declared
+adequate. The number is recomputed from the acceptance document's headings, not
+typed here and matched — no phase targets a count.
+
+Phase 3.3 added **D13–D17**, all on one root cause:
+
+* **D13** — a review candidate was keyed `(evidence_item_id, run_id)`. An
+  evidence item is keyed on its locator, so two rules matching one span share
+  one, and `ON CONFLICT DO NOTHING` silently discarded the second question.
+* **D14** — the pending queue treated an evidence item as decided if *any*
+  review existed for it, so deciding one reading removed its sibling.
+* **D15** — a rejection keyed on the evidence item could not say which reading
+  the reviewer disbelieved.
+* **D16** — confirmation re-ran the source extractor over the derived text, so a
+  durable candidate depended on the current extractor registry and became
+  unanswerable once retention pruned the body.
+* **D17** — the confirmation appended a HUMAN reading to the usage set of an
+  already-terminal research attempt.
 
 Phase 3.2 added **D8–D12** and **G17**, and corrected **C10**:
 

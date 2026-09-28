@@ -616,36 +616,35 @@ def test_two_workers_ending_one_occurrence_differently_produce_one_terminal(
     assert len(terminals) == 1, f"both terminals landed: {statuses}"
 
 
-def test_two_reviewers_deciding_one_evidence_item_both_persist(two_sessions):
+def test_two_reviewers_deciding_one_observation_both_persist(two_sessions):
     """Two reviews of one observation are two records, not a lost decision.
 
     Unlike a lifecycle transition, a review is an opinion: a second reviewer
-    disagreeing is information, and the append-only log keeps both.
+    disagreeing is information, and the append-only log keeps both. Nothing
+    adjudicates — the first decision is operative, the second is recorded
+    dissent (M3-ADR-065).
     """
-    from boro_gtm.research.services.review import review_evidence
+    from boro_gtm.research.services.review import (
+        pending_candidates,
+        review_candidate,
+    )
 
     left, right = two_sessions
     company = _company(left)
     _researched(left, company.id)
-
-    item = left.scalars(
-        select(m.ResearchEvidenceItem)
-        .join(m.ResearchExtraction,
-              m.ResearchExtraction.id == m.ResearchEvidenceItem.extraction_id)
-        .where(m.ResearchExtraction.determinism == "SAMPLED")
-        .limit(1)
-    ).first()
-    assert item is not None
-
-    review_evidence(left, evidence_item_id=item.id, decision="REJECT",
-                    actor="first", now=NOW + timedelta(minutes=1))
     left.commit()
-    review_evidence(right, evidence_item_id=item.id, decision="CONFIRM",
-                    actor="second", now=NOW + timedelta(minutes=2))
+
+    candidate = pending_candidates(left, limit=500)[0]
+
+    review_candidate(left, candidate_id=candidate.id, decision="REJECT",
+                     actor="first", now=NOW + timedelta(minutes=1))
+    left.commit()
+    review_candidate(right, candidate_id=candidate.id, decision="CONFIRM",
+                     actor="second", now=NOW + timedelta(minutes=2))
     right.commit()
 
     rows = right.scalars(select(m.ResearchEvidenceReview).where(
-        m.ResearchEvidenceReview.evidence_item_id == item.id
+        m.ResearchEvidenceReview.review_candidate_id == candidate.id
     )).all()
     assert {r.actor for r in rows} == {"first", "second"}
     assert {r.decision for r in rows} == {"REJECT", "CONFIRM"}
@@ -653,26 +652,77 @@ def test_two_reviewers_deciding_one_evidence_item_both_persist(two_sessions):
 
 def test_the_same_reviewer_cannot_record_one_decision_twice(two_sessions):
     """`uq_review_identity`, and a domain error rather than an index name."""
-    from boro_gtm.research.services.review import DuplicateReviewError, review_evidence
+    from boro_gtm.research.services.review import (
+        DuplicateReviewError,
+        pending_candidates,
+        review_candidate,
+    )
 
     left, right = two_sessions
     company = _company(left)
     _researched(left, company.id)
+    left.commit()
 
-    item = left.scalars(
-        select(m.ResearchEvidenceItem)
-        .join(m.ResearchExtraction,
-              m.ResearchExtraction.id == m.ResearchEvidenceItem.extraction_id)
-        .where(m.ResearchExtraction.determinism == "SAMPLED")
-        .limit(1)
-    ).first()
+    candidate = pending_candidates(left, limit=500)[0]
     moment = NOW + timedelta(minutes=1)
 
-    review_evidence(left, evidence_item_id=item.id, decision="REJECT",
-                    actor="analyst", now=moment)
+    review_candidate(left, candidate_id=candidate.id, decision="REJECT",
+                     actor="analyst", now=moment)
     left.commit()
 
     with pytest.raises(DuplicateReviewError):
-        review_evidence(right, evidence_item_id=item.id, decision="REJECT",
-                        actor="analyst", now=moment)
+        review_candidate(right, candidate_id=candidate.id, decision="REJECT",
+                         actor="analyst", now=moment)
     right.rollback()
+
+
+def test_two_reviewers_on_sibling_observations_do_not_collide(two_sessions):
+    """Two readings of one span are two questions, decided independently.
+
+    They share an evidence item, so under the old identity there was only one
+    candidate and only one of these decisions could exist.
+    """
+    import dataclasses
+
+    import boro_gtm.research.services.extraction as extraction_module
+    from boro_gtm.research.services.extraction import PROSE_EXTRACTOR
+    from boro_gtm.research.services.review import (
+        pending_candidates,
+        review_candidate,
+    )
+
+    left, right = two_sessions
+    company = _company(left)
+    # The prose extractor is confident, so its readings assert instead of
+    # queueing. Lowering it is how the pipeline's own low-confidence path puts
+    # the corpus's shared-span pairs in the queue.
+    weak = dataclasses.replace(PROSE_EXTRACTOR, extractor_confidence=0.10)
+    original = extraction_module.DEFAULT_EXTRACTORS
+    extraction_module.DEFAULT_EXTRACTORS = tuple(
+        weak if x.extractor_id == PROSE_EXTRACTOR.extractor_id else x
+        for x in original
+    )
+    try:
+        _researched(left, company.id)
+    finally:
+        extraction_module.DEFAULT_EXTRACTORS = original
+    left.commit()
+
+    by_item: dict = {}
+    for row in pending_candidates(left, limit=500):
+        by_item.setdefault(row.evidence_item_id, []).append(row)
+    shared = next((v for v in by_item.values() if len(v) > 1), None)
+    assert shared is not None, "the corpus contains two readings of one span"
+    first, second = sorted(shared, key=lambda c: c.attribute_key)
+
+    review_candidate(left, candidate_id=first.id, decision="CONFIRM",
+                     actor="one", now=NOW + timedelta(minutes=1))
+    left.commit()
+    review_candidate(right, candidate_id=second.id, decision="REJECT",
+                     actor="two", now=NOW + timedelta(minutes=2))
+    right.commit()
+
+    rows = right.scalars(select(m.ResearchEvidenceReview)).all()
+    keyed = {r.review_candidate_id: r.decision for r in rows}
+    assert keyed[first.id] == "CONFIRM"
+    assert keyed[second.id] == "REJECT"

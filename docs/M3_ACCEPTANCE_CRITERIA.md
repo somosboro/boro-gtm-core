@@ -318,6 +318,54 @@ persisted extraction, never invented.
 *Protects:* the endpoint emitted an empty created-evidence list for every
 historical row, which is false for every confirmation.
 
+### D13 [MUST] — Two readings of one span are two review candidates
+**Given** two extraction rules that match the same offset of the same document —
+`technician_count` and `field_workforce_present` from "58 field technicians" —
+whose readings therefore share one evidence item
+**When** both are deferred for review
+**Then** two durable candidates exist, each naming its own observation by
+fingerprint, and each fingerprint identifies a reading present in the persisted
+extraction.
+*Protects:* a candidate keyed on `(evidence_item_id, run_id)` collided, and
+`ON CONFLICT DO NOTHING` silently discarded the second question.
+
+### D14 [MUST] — A decision closes one question, not its siblings
+**Given** two review candidates that share one evidence item
+**When** a reviewer decides the first
+**Then** the first leaves the pending queue, the second remains in it and is
+still answerable, and its answer is its own record.
+*Protects:* the pending queue excluded every candidate sharing an evidence item
+with a decided one, so deciding one reading silently answered the other.
+
+### D15 [MUST] — A rejection names the observation it disbelieves
+**Given** two readings of one span, one of which a reviewer disbelieves
+**When** the rejection is recorded
+**Then** the row identifies that one observation, the sibling has no review and
+remains pending, and no claim of any kind is asserted.
+*Protects:* a rejection keyed on the evidence item could not distinguish
+"the figure 58 is wrong" from "there are no field technicians".
+
+### D16 [MUST] — A confirmation reviews the historical reading
+**Given** a durable review candidate whose extractor has since been withdrawn,
+and whose raw body and derived text have since been pruned by retention
+**When** a reviewer confirms it
+**Then** the confirmation succeeds, and the HUMAN extraction records exactly the
+observation persisted on the machine extraction — by fingerprint — with nothing
+re-executed and no dependency on today's extractor registry.
+*Protects:* confirmation re-ran the source extractor over the derived text, so a
+durable candidate depended on mutable future software and became unanswerable
+once the bytes were pruned.
+
+### D17 [MUST] — A human review does not mutate the attempt it reviews
+**Given** a research attempt that has already reached a terminal status
+**When** a reviewer confirms one of its observations days later
+**Then** no `research_attempt_extractions` row is added for that attempt, the
+HUMAN extraction belongs to no attempt at all, the attempt's status and
+completion time are unchanged, and the HUMAN lineage is reachable through the
+review record.
+*Protects:* a review appended a HUMAN reading to the usage set of a finished
+attempt, rewriting the record of an execution that had already ended.
+
 ### D3 [MUST] — A low-confidence extraction yields a gap, not a claim
 **Given** an extraction below the review threshold
 **When** assertion runs
@@ -373,13 +421,16 @@ reviewer had approved all four.
 ### D10 [MUST] — Only an observation awaiting review is reviewable
 **Given** an ordinary deterministic evidence item that is not a review candidate
 **When** a confirmation is attempted against it
-**Then** it is refused. "Reviewable" is a durable state, not knowledge of an id.
+**Then** it is refused. "Reviewable" is a durable state, not knowledge of an id,
+and a decision can only be addressed to a candidate — so there is no route that
+accepts the request at all.
 
 ### D7 [MUST] — A human rejection is durable and asserts nothing
 **Given** a sampled reading recorded as an evidence item
 **When** a reviewer rejects it
-**Then** a `research_evidence_reviews` row records the evidence item, the
-decision, the actor, the time and the rationale; **no** claim is created, no
+**Then** a `research_evidence_reviews` row records the **review candidate** —
+one observation — the decision, the actor, the time and the rationale; **no**
+claim is created, no
 negative fact is asserted, no `HUMAN` extraction is created, and the sampled
 extraction is byte-identical to before.
 *Protects:* an earlier implementation returned a rejection in memory and
@@ -1150,11 +1201,12 @@ any mismatch fails rather than warns.
 * A terminal-state test: no attempt may transition out of `COMPLETED`,
   `PARTIAL` or `FAILED`.
 
-**Scenario count: 145 MUST + 1 withdrawn = 146** — A:14, B:5, C:14, D:12, E:6,
+**Scenario count: 150 MUST + 1 withdrawn = 151** — A:14, B:5, C:14, D:17, E:6,
 F:8, G:16 (+G8 withdrawn), H:7, I:4, J:4, L:19, M:16, N:2, O:18.
 
 Revision 5.1 added D7, F7, F8, G16 and I4, and split D6. Revision 5.2 added
-D8–D12 and G17, and corrected C10. Every one records a behaviour an audit
-proved the branch did not have, or a sentence that could not be satisfied
-without breaking a governing rule. The count rises because the contract gets
-more truthful, which is the only reason it should ever move.
+D8–D12 and G17, and corrected C10. Revision 5.3 added D13–D17. Every one records
+a behaviour an audit proved the branch did not have, or a sentence that could
+not be satisfied without breaking a governing rule. The count rises because the
+contract gets more truthful, which is the only reason it should ever move — and
+it is recomputed from the headings rather than typed, so it cannot be a target.

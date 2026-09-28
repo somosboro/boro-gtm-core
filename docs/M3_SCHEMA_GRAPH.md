@@ -80,7 +80,9 @@ Revision 4 adds the third and final rule (M3-ADR-029 … 038):
   discovery_jobs (M2-owned queue) ── reused unchanged, no new queue
 ```
 
-**Twenty-three new tables.** Three M2 objects are touched, all additively (§5).
+**Twenty-five new tables.** Three M2 objects are touched, all additively (§5).
+(Twenty-three at revision 5; `research_evidence_reviews` and
+`research_review_candidates` were added by the review remediations, §3.19–3.20.)
 
 ---
 
@@ -930,6 +932,79 @@ would silently overwrite the first (M3-ADR-029).
 The three numbers stay separate here exactly as they did before. Collapsing
 them would produce something that reads like a score, and something that reads
 like a score gets used as one — which is M4's job, not M3's.
+
+### 3.19 `research_review_candidates` — one observation awaiting a human
+
+| Property | Value |
+| --- | --- |
+| Owner | M3 |
+| Mutability | **append-only** |
+| PK | `id` (uuid) |
+| Natural uniqueness | `UNIQUE (run_id, observation_fingerprint)` |
+| Key FKs | `evidence_item_id → research_evidence_items` (RESTRICT), `run_id → operational_research_runs` (RESTRICT), `attempt_id → operational_research_attempts` (RESTRICT), `company_id → companies` (RESTRICT) |
+| Truncatable | No |
+| Temporal | `raised_at` |
+
+Columns: `attribute_key`, `observation_fingerprint`, `reason`
+(`SAMPLED_REQUIRES_CONFIRMATION` | `LOW_CONFIDENCE_REQUIRES_REVIEW`),
+`extractor_confidence`.
+
+```
+observation_fingerprint = sha256(canonical_json({
+    attribute_key, value, unit, fact_type, locator_hash, support_kind
+}))
+```
+
+**Reviewability is a durable state, not knowledge of an id.** Before this table
+the deferral lived in the pipeline's return value, so once the process ended
+nothing connected an `INSUFFICIENT_EVIDENCE` gap to the evidence behind it
+(M3-ADR-061).
+
+**Identity is the observation, not the evidence item.** Revision 5.2 keyed this
+`UNIQUE (evidence_item_id, run_id)`. An evidence item is keyed on its locator, so
+two extraction rules matching one span — `technician_count` and
+`field_workforce_present` from "58 field technicians" — share one, and
+`ON CONFLICT DO NOTHING` discarded the second question without an error
+(M3-ADR-064). The quote is excluded from the fingerprint: it is a function of the
+span, so it would add nothing and make identity fragile to whitespace.
+
+`ix_review_candidates_company` and `ix_review_candidates_evidence` are named for
+this table rather than `ix_candidates_*`: index names are **schema-global** in
+PostgreSQL, and M2's `entity_resolution_candidates` already owns
+`ix_candidates_company`.
+
+### 3.20 `research_evidence_reviews` — what a human decided
+
+| Property | Value |
+| --- | --- |
+| Owner | M3 |
+| Mutability | **append-only** |
+| PK | `id` (uuid) |
+| Natural uniqueness | `UNIQUE (review_candidate_id, actor, reviewed_at)` |
+| Key FKs | `review_candidate_id → research_review_candidates` (RESTRICT), `human_extraction_id → research_extractions` (RESTRICT, nullable), `resulting_claim_id → company_claims` (RESTRICT, nullable) |
+| Truncatable | No |
+| Temporal | `reviewed_at` |
+
+Columns: `decision` (`CONFIRM` | `REJECT`), `actor`, `note`.
+
+A `CHECK` forbids a `REJECT` from naming an extraction or a claim, and forbids a
+`CONFIRM` from naming no extraction: a confirmation that produced no HUMAN
+lineage did not happen, and a rejection that produced a claim is a contradiction.
+
+**Keyed on the candidate.** Revision 5.2 keyed it on the evidence item, which
+could not distinguish "the figure 58 is wrong" from "there are no field
+technicians", and made deciding one reading of a span silently answer the other
+(M3-ADR-064). The `evidence_item_id` column is dropped, not deprecated.
+
+Several rows per candidate are permitted and expected: the queue closes on the
+first decision, and a later reviewer's disagreement is recorded dissent rather
+than a re-opened question. Nothing adjudicates — M3 has no consensus mechanism,
+by decision (M3-ADR-064).
+
+`human_extraction_id` is how a HUMAN reading is reachable at all. It is
+deliberately **not** recorded in `research_attempt_extractions`: the attempt that
+produced the machine reading had already terminated, and a human reading days
+later is not part of that execution (M3-ADR-065).
 
 ## 4. The unit of a claim
 

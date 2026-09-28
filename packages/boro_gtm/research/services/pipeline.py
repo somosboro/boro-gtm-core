@@ -64,6 +64,7 @@ from boro_gtm.research.services.evidence import EvidenceContext, create_evidence
 from boro_gtm.research.services.extraction import (
     Observation,
     extractors_for,
+    observation_fingerprint,
     run_extraction,
 )
 from boro_gtm.research.services.staleness import stale_required_attributes
@@ -586,6 +587,7 @@ def _extract(
                         session, evidence_item_id=evidence.id, run_id=run.id,
                         attempt_id=attempt.id, company_id=company_id,
                         attribute_key=observation.attribute_key,
+                        observation_fingerprint=observation_fingerprint(observation),
                         reason=review.LOW_CONFIDENCE_REASON, now=now,
                         extractor_confidence=extractor.extractor_confidence,
                     )
@@ -598,6 +600,7 @@ def _extract(
                         session, evidence_item_id=evidence.id, run_id=run.id,
                         attempt_id=attempt.id, company_id=company_id,
                         attribute_key=observation.attribute_key,
+                        observation_fingerprint=observation_fingerprint(observation),
                         reason=review.SAMPLED_REASON, now=now,
                         extractor_confidence=extractor.extractor_confidence,
                     )

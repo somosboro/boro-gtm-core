@@ -357,13 +357,18 @@ class EvidenceReviewIn(BaseModel):
 class EvidenceReviewOut(BaseModel):
     """A durable review record. Both decisions persist one.
 
-    Keyed on the evidence item, which exists from the moment a sampled reading
-    is recorded — before any claim does, and therefore before the point at
-    which a claim-keyed route could have addressed it.
+    Keyed on the review candidate — one observation — which exists from the
+    moment a sampled reading is recorded, before any claim does and therefore
+    before the point at which a claim-keyed route could have addressed it. The
+    evidence item was too coarse: several observations can share one.
     """
 
     review_id: uuid.UUID
+    review_candidate_id: uuid.UUID
+    #: The evidence item the reviewed observation was read from. Not the key:
+    #: one item can back several observations.
     evidence_item_id: uuid.UUID
+    attribute_key: str
     #: Derived from provenance, never supplied.
     company_id: uuid.UUID
     decision: str

@@ -41,6 +41,7 @@ from boro_gtm.research.domain.models import (
     ResearchEvidenceItem,
     ResearchExtraction,
     ResearchFetchEvent,
+    ResearchReviewCandidate,
     ResearchSource,
     ResearchSourceDiscovery,
     ResearchSourceEdge,
@@ -662,12 +663,14 @@ def append_signal_status(
 # ---------------------------------------------------------------------------
 
 
-# Its own path rather than `/research-evidence-items/pending-review`: that
-# would be shadowed by `/research-evidence-items/{item_id}`, which is declared
-# first and would reject the literal segment as an invalid UUID.
-@router.get("/research-reviews/pending",
+# The review candidate is the addressable resource, not the evidence item. An
+# item can back several observations, so `/research-evidence-items/{id}/review`
+# could not say *which* observation a decision was about (M3-ADR-064). The
+# ambiguous route is gone rather than aliased: keeping it would keep the
+# ambiguity reachable.
+@router.get("/research-review-candidates",
             response_model=list[s.PendingReviewOut], tags=["operational-research"])
-def list_pending_reviews(
+def list_review_candidates(
     company: uuid.UUID | None = Query(None, description="Filter by company"),
     reason: str | None = Query(None, description="Filter by why it is waiting"),
     limit: int = Query(50, ge=1, le=MAX_PAGE),
@@ -701,41 +704,48 @@ def list_pending_reviews(
     return out
 
 
-@router.post("/research-evidence-items/{item_id}/review",
+@router.post("/research-review-candidates/{candidate_id}/decision",
              response_model=s.EvidenceReviewOut, status_code=201,
              tags=["operational-research"])
-def review_evidence_item(
-    item_id: uuid.UUID, body: s.EvidenceReviewIn, db: Session = Depends(get_db)
+def decide_review_candidate(
+    candidate_id: uuid.UUID, body: s.EvidenceReviewIn,
+    db: Session = Depends(get_db),
 ) -> s.EvidenceReviewOut:
-    """Record a human decision about one observation. Both outcomes persist.
+    """Record a human decision about **one observation**. Both outcomes persist.
 
-    **Confirm** appends a HUMAN extraction and its own evidence, and may assert
-    a claim. **Reject** records the decision, the actor, the time and the
-    rationale, and asserts nothing — a reviewer's disbelief is not evidence
-    that the opposite is true. Neither touches the model's extraction.
+    **Confirm** appends a HUMAN extraction of the observation already stored on
+    the machine extraction — nothing is re-executed — plus its own evidence, and
+    may assert a claim. **Reject** records the decision, the actor, the time and
+    the rationale for that one observation, and asserts nothing: a reviewer's
+    disbelief is not evidence that the opposite is true. Neither touches the
+    model's extraction, and neither decides a sibling observation.
     """
-    outcome = review.review_evidence(
-        db, evidence_item_id=item_id, decision=body.decision, actor=body.actor,
+    outcome = review.review_candidate(
+        db, candidate_id=candidate_id, decision=body.decision, actor=body.actor,
         note=body.note,
     )
     db.commit()
     return s.EvidenceReviewOut(**outcome.as_dict())
 
 
-@router.get("/research-evidence-items/{item_id}/reviews",
+@router.get("/research-review-candidates/{candidate_id}/reviews",
             response_model=list[s.EvidenceReviewOut], tags=["operational-research"])
-def list_evidence_reviews(
-    item_id: uuid.UUID, db: Session = Depends(get_db)
+def list_candidate_reviews(
+    candidate_id: uuid.UUID, db: Session = Depends(get_db)
 ) -> list[s.EvidenceReviewOut]:
-    """Every decision recorded about this observation, oldest first."""
-    _get_or_404(db, ResearchEvidenceItem, item_id, "research evidence item")
+    """Every decision recorded about this one observation, oldest first."""
+    candidate = _get_or_404(
+        db, ResearchReviewCandidate, candidate_id, "research review candidate"
+    )
     # `created_evidence_item_ids` is reconstructed from the persisted human
     # extraction, not invented. The previous version emitted an empty list for
     # every historical row, which is false for every confirmation.
     return [
         s.EvidenceReviewOut(
-            review_id=row.id, evidence_item_id=row.evidence_item_id,
-            company_id=review.company_of_evidence(db, row.evidence_item_id),
+            review_id=row.id, review_candidate_id=candidate.id,
+            evidence_item_id=candidate.evidence_item_id,
+            attribute_key=candidate.attribute_key,
+            company_id=review.company_of_evidence(db, candidate.evidence_item_id),
             decision=row.decision, actor=row.actor, note=row.note,
             reviewed_at=row.reviewed_at,
             human_extraction_id=row.human_extraction_id,
@@ -743,7 +753,7 @@ def list_evidence_reviews(
             created_evidence_item_ids=review.evidence_created_by(db, row),
             model_extraction_unchanged=True,
         )
-        for row in review.reviews_for(db, item_id)
+        for row in review.reviews_for(db, candidate.id)
     ]
 
 

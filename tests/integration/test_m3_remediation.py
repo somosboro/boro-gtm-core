@@ -337,15 +337,19 @@ def test_the_claim_id_remains_the_final_tiebreak(m3):
 
 
 def _pending(m3):
-    """The first sampled candidate. Reviewability is a durable state now."""
+    """The first sampled candidate. Reviewability is a durable state now.
+
+    Returns the candidate itself: it names one observation, which is what a
+    decision is addressed to. The evidence item behind it may back several.
+    """
     candidates = review.pending_candidates(m3, reason=review.SAMPLED_REASON)
     assert candidates, "the corpus produces a sampled reading awaiting review"
-    return m3.get(m.ResearchEvidenceItem, candidates[0].evidence_item_id)
+    return candidates[0]
 
 
 def test_a_sampled_reading_is_reviewable_before_any_claim_exists(researched, m3):
     """The state a claim-keyed route could not address."""
-    item = _pending(m3)
+    item = m3.get(m.ResearchEvidenceItem, _pending(m3).evidence_item_id)
     extraction = m3.get(m.ResearchExtraction, item.extraction_id)
     assert extraction.determinism == "SAMPLED"
 
@@ -357,15 +361,16 @@ def test_a_sampled_reading_is_reviewable_before_any_claim_exists(researched, m3)
 
 def test_a_rejection_is_durable_and_asserts_nothing(researched, m3, company):
     """D7: the defect was that this persisted nothing at all."""
-    item = _pending(m3)
+    candidate = _pending(m3)
+    item = m3.get(m.ResearchEvidenceItem, candidate.evidence_item_id)
     sampled = m3.get(m.ResearchExtraction, item.extraction_id)
     before = (sampled.raw_output_sha256, sampled.extraction_contract_hash,
               str(sampled.observations))
     claims_before = _count(m3, CompanyClaim)
     extractions_before = _count(m3, m.ResearchExtraction)
 
-    outcome = review.review_evidence(
-        m3, evidence_item_id=item.id, decision="REJECT", actor="analyst",
+    outcome = review.review_candidate(
+        m3, candidate_id=candidate.id, decision="REJECT", actor="analyst",
         note="the phrasing does not support it", now=LATER,
     )
     m3.flush()
@@ -376,7 +381,9 @@ def test_a_rejection_is_durable_and_asserts_nothing(researched, m3, company):
     assert row.actor == "analyst"
     assert row.note == "the phrasing does not support it"
     assert row.reviewed_at == LATER
-    assert row.evidence_item_id == item.id
+    assert row.review_candidate_id == candidate.id
+    assert outcome.evidence_item_id == item.id
+    assert outcome.attribute_key == candidate.attribute_key
     assert row.human_extraction_id is None
     assert row.resulting_claim_id is None
 
@@ -389,9 +396,8 @@ def test_a_rejection_is_durable_and_asserts_nothing(researched, m3, company):
 
 def test_a_rejection_never_asserts_the_negative(researched, m3, company):
     """Disbelief is not evidence that the opposite is true."""
-    item = _pending(m3)
-    review.review_evidence(m3, evidence_item_id=item.id, decision="REJECT",
-                           actor="analyst", now=LATER)
+    review.review_candidate(m3, candidate_id=_pending(m3).id, decision="REJECT",
+                            actor="analyst", now=LATER)
     m3.flush()
     negatives = m3.scalars(select(CompanyClaim).where(
         CompanyClaim.value_jsonb["value"].astext == "false"
@@ -405,28 +411,29 @@ def test_a_rejection_never_asserts_the_negative(researched, m3, company):
 
 def test_the_database_forbids_a_rejection_that_names_a_claim(researched, m3):
     """The CHECK, not the service, is what makes it impossible."""
-    item = _pending(m3)
+    candidate = _pending(m3)
     claim_id = m3.scalar(select(CompanyClaim.id).limit(1))
     with pytest.raises(DBAPIError):
         with m3.begin_nested():
             m3.execute(text(
                 "INSERT INTO research_evidence_reviews "
-                "(id, evidence_item_id, decision, actor, resulting_claim_id, "
-                " reviewed_at) VALUES (:i, :e, 'REJECT', 'a', :c, now())"
-            ), {"i": uuid.uuid4(), "e": item.id, "c": claim_id})
+                "(id, review_candidate_id, decision, actor, resulting_claim_id, "
+                " reviewed_at) VALUES (:i, :c, 'REJECT', 'a', :k, now())"
+            ), {"i": uuid.uuid4(), "c": candidate.id, "k": claim_id})
 
 
 def test_a_confirmation_appends_a_human_lineage_and_a_durable_record(
     researched, m3, company
 ):
     """D6: the sampled extraction is byte-identical afterwards."""
-    item = _pending(m3)
+    candidate = _pending(m3)
+    item = m3.get(m.ResearchEvidenceItem, candidate.evidence_item_id)
     sampled = m3.get(m.ResearchExtraction, item.extraction_id)
     before = (sampled.raw_output_sha256, sampled.extraction_contract_hash,
               str(sampled.observations))
 
-    outcome = review.review_evidence(
-        m3, evidence_item_id=item.id, decision="CONFIRM", actor="analyst",
+    outcome = review.review_candidate(
+        m3, candidate_id=candidate.id, decision="CONFIRM", actor="analyst",
         now=LATER,
     )
     m3.flush()
@@ -443,21 +450,20 @@ def test_a_confirmation_appends_a_human_lineage_and_a_durable_record(
             str(sampled.observations)) == before
 
 
-def test_a_reviewed_item_leaves_the_pending_queue(researched, m3):
-    item = _pending(m3)
-    waiting = {c.evidence_item_id for c in review.pending_candidates(m3, limit=500)}
-    assert item.id in waiting
-    review.review_evidence(m3, evidence_item_id=item.id, decision="REJECT",
-                           actor="analyst", now=LATER)
+def test_a_reviewed_observation_leaves_the_pending_queue(researched, m3):
+    candidate = _pending(m3)
+    waiting = {c.id for c in review.pending_candidates(m3, limit=500)}
+    assert candidate.id in waiting
+    review.review_candidate(m3, candidate_id=candidate.id, decision="REJECT",
+                            actor="analyst", now=LATER)
     m3.flush()
-    still = {c.evidence_item_id for c in review.pending_candidates(m3, limit=500)}
-    assert item.id not in still
+    still = {c.id for c in review.pending_candidates(m3, limit=500)}
+    assert candidate.id not in still
 
 
 def test_the_review_table_is_append_only(researched, m3):
-    item = _pending(m3)
-    outcome = review.review_evidence(m3, evidence_item_id=item.id,
-                                     decision="REJECT", actor="a", now=LATER)
+    outcome = review.review_candidate(m3, candidate_id=_pending(m3).id,
+                                      decision="REJECT", actor="a", now=LATER)
     m3.flush()
     with pytest.raises(DBAPIError):
         with m3.begin_nested():

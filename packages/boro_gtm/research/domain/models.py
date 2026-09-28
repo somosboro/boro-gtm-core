@@ -621,7 +621,12 @@ class ResearchReviewCandidate(Base):
 
     __tablename__ = "research_review_candidates"
     __table_args__ = (
-        UniqueConstraint("evidence_item_id", "run_id", name="uq_candidate_identity"),
+        # One candidate per **observation**, not per evidence item. Evidence
+        # identity is keyed on the locator, so two rules matching one span share
+        # one evidence item — and keying candidates on it silently dropped the
+        # second observation (M3-ADR-064).
+        UniqueConstraint("run_id", "observation_fingerprint",
+                         name="uq_candidate_observation"),
         CheckConstraint(
             "reason IN ('SAMPLED_REQUIRES_CONFIRMATION',"
             "'LOW_CONFIDENCE_REQUIRES_REVIEW')",
@@ -634,6 +639,7 @@ class ResearchReviewCandidate(Base):
         Index("ix_review_candidates_company", "company_id"),
         Index("ix_review_candidates_reason", "reason"),
         Index("ix_review_candidates_attribute", "run_id", "attribute_key"),
+        Index("ix_review_candidates_evidence", "evidence_item_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
@@ -653,6 +659,11 @@ class ResearchReviewCandidate(Base):
         ForeignKey("companies.id", ondelete="RESTRICT"), nullable=False
     )
     attribute_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: Identity of the exact machine observation this candidate is about, so
+    #: two observations sharing one span stay independently reviewable. It also
+    #: locates the observation inside the extraction's stored payload, which is
+    #: how a confirmation reads what the machine said without re-running it.
+    observation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(String(40), nullable=False)
     extractor_confidence: Mapped[float | None] = mapped_column(
         Numeric(6, 4), nullable=True
@@ -663,11 +674,11 @@ class ResearchReviewCandidate(Base):
 class ResearchEvidenceReview(Base):
     """A human decision about one observation. Append-only.
 
-    Keyed on the **evidence item**, not on a claim: a sampled reading awaiting
-    confirmation has no claim yet, so a review resource keyed by claim could
-    not represent the workflow it existed for. The evidence item exists from
-    the moment the reading is recorded, which is exactly when it becomes
-    reviewable (M3-ADR-056).
+    Keyed on the **review candidate**, which is one exact observation. Keying it
+    on a claim could not represent the workflow at all — a sampled reading has
+    no claim until it is confirmed (M3-ADR-056) — and keying it on the evidence
+    item was ambiguous whenever one evidence item backed two observations
+    (M3-ADR-064).
 
     A rejection asserts nothing — a CHECK forbids it from naming an extraction
     or a claim. "A reviewer did not believe this" is not evidence that the
@@ -676,7 +687,7 @@ class ResearchEvidenceReview(Base):
 
     __tablename__ = "research_evidence_reviews"
     __table_args__ = (
-        UniqueConstraint("evidence_item_id", "actor", "reviewed_at",
+        UniqueConstraint("review_candidate_id", "actor", "reviewed_at",
                          name="uq_review_identity"),
         CheckConstraint("decision IN ('CONFIRM','REJECT')",
                         name="decision_vocabulary"),
@@ -691,13 +702,18 @@ class ResearchEvidenceReview(Base):
             "decision <> 'CONFIRM' OR human_extraction_id IS NOT NULL",
             name="confirmation_has_provenance",
         ),
-        Index("ix_reviews_evidence_item", "evidence_item_id"),
+        Index("ix_reviews_candidate", "review_candidate_id"),
         Index("ix_reviews_decision", "decision"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("research_evidence_items.id", ondelete="RESTRICT"), nullable=False
+    #: The observation reviewed. The evidence item is derived through it —
+    #: storing both would be two sources of truth that can disagree, which is
+    #: what made a rejection ambiguous when one evidence item backed two
+    #: observations.
+    review_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("research_review_candidates.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     decision: Mapped[str] = mapped_column(String(16), nullable=False)
     actor: Mapped[str] = mapped_column(String(128), nullable=False)

@@ -1276,17 +1276,36 @@ This queue is **not** wired into M2 (§20.1). M3 owns it end to end.
 **Human evidence review**
 
 ```
-GET  /research-reviews/pending                   sampled readings awaiting a human
-POST /research-evidence-items/{id}/review        confirm or reject — appends
-GET  /research-evidence-items/{id}/reviews       every decision recorded
+GET  /research-review-candidates                 observations awaiting a human
+POST /research-review-candidates/{id}/decision   confirm or reject — appends
+GET  /research-review-candidates/{id}/reviews    every decision recorded
 ```
 
 > *Corrected in revision 5.1 (M3-ADR-056).* This read
 > `POST /research-claims/{id}/review`, which cannot express the workflow it
 > describes: a `SAMPLED` reading reaches a claim only *after* confirmation, so
 > at the moment it becomes reviewable there is no claim to key a route on. The
-> review resource is the **evidence item**, which exists from the moment the
-> reading is recorded. The claim-keyed route is superseded and removed.
+> review resource must exist from the moment the reading is recorded. The
+> claim-keyed route is superseded and removed.
+>
+> *Corrected again in revision 5.3 (M3-ADR-064).* Revision 5.1 made the resource
+> the **evidence item**. That is still too coarse: an evidence item is keyed on
+> its locator, so two extraction rules matching one span share one, and the route
+> could not say which observation a decision was about. The resource is the
+> **review candidate** — one observation. The item-keyed routes are removed, not
+> aliased.
+
+The queue is per candidate and closes on the **first** decision. Later reviewers
+may still record an opinion — the log is append-only and a disagreement is
+information — but the queue does not reopen and nothing adjudicates. The first
+decision is operative; the rest are recorded dissent. M3 has no consensus
+mechanism, by decision rather than by omission (M3-ADR-064).
+
+A confirmation copies the observation already persisted on the machine
+extraction, located by fingerprint. Nothing is re-executed, so a confirmation
+survives its extractor being upgraded or withdrawn and its body being pruned, and
+it is **not** recorded as usage of the research attempt that produced the reading
+— that attempt has terminated, and nothing ran (M3-ADR-065).
 
 Confirmation appends a `HUMAN` extraction and its own evidence, and may then
 assert a claim. Rejection records the decision, the actor, the time and the
@@ -1549,8 +1568,8 @@ The brief's seven conditions, each checked mechanically rather than asserted:
 **M3 DESIGN REVISION 4 — IMPLEMENTATION READY.** Revision 5 added no freeze
 criterion: it changed meaning, not structure.
 
-Counts, computed from the documents at revision 5: **23 tables · 42 registry
-attributes · 139 acceptance scenarios (+1 withdrawn) · 63 ADRs.** Three M2 objects are touched, all additively:
+Counts, recomputed from the documents at revision 5.3: **25 tables · 42 registry
+attributes · 150 acceptance scenarios (+1 withdrawn) · 65 ADRs.** Three M2 objects are touched, all additively:
 `attribute_definitions.owner_milestone`,
 `company_claims.assertion_fingerprint` with a partial unique index, and a
 deferred constraint trigger on `company_claims`.

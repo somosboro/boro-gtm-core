@@ -479,7 +479,7 @@ def test_the_identity_review_path_writes_no_m2_identity(seeded):
 
 
 def _pending_item(seeded) -> dict:
-    items = _ok(seeded["client"].get(f"{API}/research-reviews/pending"))
+    items = _ok(seeded["client"].get(f"{API}/research-review-candidates"))
     assert items, "the corpus leaves a sampled reading awaiting review"
     return items[0]
 
@@ -487,7 +487,9 @@ def _pending_item(seeded) -> dict:
 def test_the_review_queue_lists_sampled_readings_with_no_claim(seeded):
     """The state a claim-keyed route could not address at all."""
     item = _pending_item(seeded)
+    assert item["candidate_id"]
     assert item["evidence_item_id"]
+    assert item["attribute_key"]
     assert item["extraction_id"]
     assert item["source"].startswith("https://")
     assert item["locator"]["kind"] == "PDF_SPAN"
@@ -502,13 +504,15 @@ def test_the_review_queue_lists_sampled_readings_with_no_claim(seeded):
 def test_confirming_an_observation_appends_a_human_lineage(seeded):
     item = _pending_item(seeded)
     response = seeded["client"].post(
-        f"{API}/research-evidence-items/{item['evidence_item_id']}/review",
+        f"{API}/research-review-candidates/{item['candidate_id']}/decision",
         json={"decision": "CONFIRM", "actor": "analyst",
               "company_id": seeded["company_id"]},
     )
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["decision"] == "CONFIRM"
+    assert body["review_candidate_id"] == item["candidate_id"]
+    assert body["attribute_key"] == item["attribute_key"]
     assert body["human_extraction_id"]
     assert body["model_extraction_unchanged"] is True
     assert body["reviewed_at"]
@@ -528,7 +532,7 @@ def test_rejecting_an_observation_persists_and_asserts_nothing(seeded):
     )
 
     response = seeded["client"].post(
-        f"{API}/research-evidence-items/{item['evidence_item_id']}/review",
+        f"{API}/research-review-candidates/{item['candidate_id']}/decision",
         json={"decision": "REJECT", "actor": "analyst", "note": "not convinced"},
     )
     assert response.status_code == 201, response.text
@@ -551,21 +555,23 @@ def test_rejecting_an_observation_persists_and_asserts_nothing(seeded):
 def test_reviews_are_listed_for_an_observation(seeded):
     item = _pending_item(seeded)
     seeded["client"].post(
-        f"{API}/research-evidence-items/{item['evidence_item_id']}/review",
+        f"{API}/research-review-candidates/{item['candidate_id']}/decision",
         json={"decision": "REJECT", "actor": "first"},
     )
     rows = _ok(seeded["client"].get(
-        f"{API}/research-evidence-items/{item['evidence_item_id']}/reviews"
+        f"{API}/research-review-candidates/{item['candidate_id']}/reviews"
     ))
     assert len(rows) == 1
     assert rows[0]["actor"] == "first"
     assert rows[0]["decision"] == "REJECT"
+    assert rows[0]["review_candidate_id"] == item["candidate_id"]
+    assert rows[0]["attribute_key"] == item["attribute_key"]
 
 
 def test_an_invalid_review_decision_is_422(seeded):
     item = _pending_item(seeded)
     response = seeded["client"].post(
-        f"{API}/research-evidence-items/{item['evidence_item_id']}/review",
+        f"{API}/research-review-candidates/{item['candidate_id']}/decision",
         json={"decision": "MAYBE", "actor": "analyst"},
     )
     assert response.status_code == 422
@@ -574,10 +580,31 @@ def test_an_invalid_review_decision_is_422(seeded):
 
 def test_reviewing_an_unknown_observation_is_404(seeded):
     response = seeded["client"].post(
-        f"{API}/research-evidence-items/{uuid.uuid4()}/review",
+        f"{API}/research-review-candidates/{uuid.uuid4()}/decision",
         json={"decision": "REJECT", "actor": "analyst"},
     )
     assert response.status_code == 404
+
+
+def test_the_item_keyed_review_route_is_gone(seeded):
+    """Superseded, not aliased.
+
+    `POST /research-evidence-items/{id}/review` could not say which observation
+    a decision was about when an item backed several, so it is removed rather
+    than kept working (M3-ADR-064).
+    """
+    item = _pending_item(seeded)
+    for path in (
+        f"{API}/research-evidence-items/{item['evidence_item_id']}/review",
+        f"{API}/research-reviews/pending",
+    ):
+        response = seeded["client"].post(
+            path, json={"decision": "REJECT", "actor": "analyst"}
+        )
+        assert response.status_code in (404, 405), path
+    assert seeded["client"].get(
+        f"{API}/research-evidence-items/{item['evidence_item_id']}/reviews"
+    ).status_code == 404
 
 
 def test_the_claim_keyed_review_route_is_gone(seeded):
@@ -663,9 +690,10 @@ def test_the_openapi_document_is_structurally_sound(api_client):
             "/operational-research", "/research-sources", "/research-artifacts",
             "/research-bodies", "/research-extractions", "/research-evidence-items",
             "/research-claims", "/identity-review-signals",
+            "/research-review-candidates",
         )) or p.endswith("/research") or "/research/" in p
     ]
-    assert len(m3_paths) >= 26, sorted(m3_paths)
+    assert len(m3_paths) >= 28, sorted(m3_paths)
 
     # The run schema must not have acquired execution state.
     run_schema = spec["components"]["schemas"]["RunOut"]["properties"]
@@ -684,6 +712,7 @@ def test_every_m3_operation_documents_the_error_envelope(api_client):
             "/operational-research", "/research-sources", "/research-artifacts",
             "/research-bodies", "/research-extractions", "/research-evidence-items",
             "/research-claims", "/identity-review-signals",
+            "/research-review-candidates",
         )):
             continue
         has_path_param = "{" in path
