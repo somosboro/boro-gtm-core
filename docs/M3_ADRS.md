@@ -153,7 +153,11 @@ candidate and a gap.
 
 ## M3-ADR-005 — Source location identity is separate from content identity
 
-**Status:** accepted
+**Status:** accepted; the **three-object split below was superseded in revision
+2** by M3-ADR-016, which replaced `research_artifact_versions` with
+`research_artifact_bodies`, `research_artifact_derivations` and
+`research_text_derivations`. The separation of *where we looked* from *what we
+got* — the actual decision — stands.
 
 ### Context
 
@@ -306,7 +310,9 @@ lived on the body itself.
 
 ## M3-ADR-009 — Identity conflicts raise a signal; M3 never acts on them
 
-**Status:** accepted
+**Status:** accepted originally; **amended in revision 4** — the M2 integration
+it assumed was verified not to exist. The core decision (M3 raises, M3 never
+acts) stands; the consumer named below does not. See the amendment at the end.
 
 ### Context
 
@@ -327,6 +333,50 @@ alters a resolution decision and never changes a domain role.
   it rather than inventing a second review mechanism.
 * An M2 row-count fingerprint test across a full research run proves the
   firewall, the same way M2 proves its M1 firewall today.
+
+### Amendment (revision 4) — the M2 consumer does not exist
+
+The decision above was written from the *intent* of M2's review flow rather
+than from its signature. Checked against live code, the integration it names is
+not reachable:
+
+```python
+# packages/boro_gtm/discovery/services/resolution.py
+def append_human_decision(session, entity: ProviderEntity, *, decision, ...)
+
+# packages/boro_gtm/discovery/api/schemas.py
+class HumanReviewRequest(BaseModel):
+    provider_entity_id: uuid.UUID      # required, not optional
+```
+
+M2's review is **provider-entity based**. An M3 signal such as
+`POSSIBLE_CEASED_TRADING` is raised against a *company* and has no provider
+entity behind it, so there is nothing to pass. The only way to route it through
+M2 would be to **fabricate a `ProviderEntity` row** — an identity write, by the
+component this very ADR forbids from writing identity.
+
+What changes:
+
+* `identity_review_signals` is **M3-owned end to end**: M3 raises the concern,
+  records the evidence, and a human works the queue in M3.
+* A future integration may consume `ACTIONED` outcomes, but it must be designed
+  explicitly. **None exists today**, and no M3 code may assume one does.
+* **M3 must never create a `ProviderEntity` to make a signal routable.** That
+  is the specific failure this amendment exists to name.
+
+What does not change: M3 never creates, merges or splits a company, never
+alters a resolution decision and never changes a domain role. The M2 row-count
+fingerprint test still proves it, and now proves it across the whole pipeline.
+
+Current behaviour is owned by **M3-ADR-034** (durable concern, review episodes
+as occurrences) and described in
+[M3_SCHEMA_GRAPH.md](M3_SCHEMA_GRAPH.md) §5a and
+[M3_OPERATIONAL_RESEARCH_DESIGN.md](M3_OPERATIONAL_RESEARCH_DESIGN.md) §20.1.
+
+This is recorded as an amendment rather than an edit because the original
+reasoning is the useful part: it shows how a plausible integration was assumed
+into existence from a description, and only fell over when someone read the
+function signature.
 
 ---
 
@@ -555,7 +605,13 @@ Three tables where there was one:
 
 ## M3-ADR-017 — Text extraction is versioned separately, and a claim belongs to a lineage
 
-**Status:** accepted (revision 2)
+**Status:** accepted; two details below were **superseded later**. A lineage is
+the sorted set of `(source_id, artifact_id)` **evidence origins**, not artifact
+ids (schema graph §4.2, M3-ADR-049), and `corroborating_lineage_count` was
+replaced by `corroborating_publisher_count`, which applies an independence test
+the original count lacked (schema graph §4.2a). The decision that a claim
+belongs to a lineage, and that text versioning is separate from semantics,
+stands. (revision 2)
 
 ### Context
 
@@ -637,7 +693,11 @@ source where applicable, and the resolving claim where one exists.
 
 ## M3-ADR-019 — The research question and its execution are different objects
 
-**Status:** accepted (revision 2)
+**Status:** accepted (revision 2); the run key below was **superseded in
+revision 3** by M3-ADR-025, which replaced
+`UNIQUE (company_id, research_policy_version, target_set_hash)` with
+`research_plan_hash` over every input that defines the question. Splitting the
+question from its executions — the decision itself — stands.
 
 ### Context
 

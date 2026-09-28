@@ -1053,7 +1053,8 @@ M3 may **extend** company evidence. It may not touch identity.
 Research *will* discover identity conflicts: the site says "a division of X",
 or two companies share a phone number and address. M3 records this and stops.
 
-`identity_review_signals` — append-only, M3-written, **M2-consumed**:
+`identity_review_signals` — append-only, **M3-written and M3-owned end to
+end**:
 
 `company_id`, `signal_kind` (`POSSIBLE_DUPLICATE | POSSIBLE_PARENT |
 POSSIBLE_ACQUISITION | DOMAIN_MISMATCH | NAME_MISMATCH |
@@ -1061,10 +1062,23 @@ POSSIBLE_CEASED_TRADING`), `related_company_id` (nullable), `evidence_summary`,
 `claim_evidence_link_ids`, `raised_at`, `raised_by_run_id`, plus an
 append-only `status` chain (`OPEN → ACKNOWLEDGED → ACTIONED | DISMISSED`).
 
-It is a **queue for M2's existing human-review path**, not an instruction. M2's
-`AMBIGUOUS` review flow already exists and already appends decisions rather
-than mutating them; this feeds it. M3 autonomously rewriting identity is
-exactly the failure this table prevents.
+**This queue is not wired into M2.** Revisions 1–3 said it was "a queue for
+M2's existing human-review path", and revision 4 verified that against the
+live code and found it false: M2's review is provider-entity based —
+`append_human_decision(session, entity: ProviderEntity, …)` and
+`HumanReviewRequest.provider_entity_id` is required — while a company-level M3
+signal has no provider entity. Routing one through M2 would mean **fabricating
+a `ProviderEntity` row**, which is exactly the identity write this section
+exists to forbid.
+
+So M3 raises the concern, records the evidence, and a human works the queue in
+M3. A later, explicitly designed integration may consume `ACTIONED` outcomes;
+none exists today, and nothing in M3 may assume one does. See
+[M3_SCHEMA_GRAPH.md](M3_SCHEMA_GRAPH.md) §5a, M3-ADR-009 as amended, and
+M3-ADR-034.
+
+M3 autonomously rewriting identity is the failure this table prevents, and
+that part of the original decision is unchanged.
 
 ---
 
@@ -1222,7 +1236,7 @@ POST /identity-review-signals/{id}/occurrences/{n}/status
                                                  acknowledge / action / dismiss
 ```
 
-This queue is **not** wired into M2 (§21.1). M3 owns it end to end.
+This queue is **not** wired into M2 (§20.1). M3 owns it end to end.
 
 **Human evidence review**
 
@@ -1467,7 +1481,7 @@ issues under a third rule added to the first two:
 | 9 | `NOT_MODIFIED` had no defined `body_id` semantics, so a 304 either fabricated bytes or dropped out of provenance | A 304 references the validated body and records the validator; CHECK per outcome (M3-ADR-037) |
 | 10 | A `SAMPLED` contract was treated as idempotent because a UNIQUE key kept the first sample | Deterministic contracts assert; sampled ones carry a sample slot and reach a claim only via human confirmation (M3-ADR-038) |
 | 11 | `attempt_seed_inputs` was promised in prose and in acceptance L11 and never declared | Declared, canonicalized, hashed, frozen at start (M3-ADR-036) |
-| 12 | Docs claimed signals are "consumed by M2's existing human-review path" — **verified false against live code**: `append_human_decision` takes a `ProviderEntity` and `HumanReviewRequest.provider_entity_id` is required, while a company-level signal has none | The queue is M3-owned end to end; the M2 workflow that might consume it is explicitly future work (§21.1) |
+| 12 | Docs claimed signals are "consumed by M2's existing human-review path" — **verified false against live code**: `append_human_decision` takes a `ProviderEntity` and `HumanReviewRequest.provider_entity_id` is required, while a company-level signal has none | The queue is M3-owned end to end; the M2 workflow that might consume it is explicitly future work (§20.1) |
 | 13 | `evidence_digest` was an identity key *and* the docs said evidence is appended to an open signal — a hash over a growing set cannot be both | Identity is the semantic concern; review episodes are occurrences (M3-ADR-034) |
 | 14 | Stale revision-2 names survived in live design text and in the API surface | Mechanically swept; historical mentions retained only where labelled |
 
