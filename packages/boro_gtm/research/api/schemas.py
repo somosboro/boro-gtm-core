@@ -65,7 +65,6 @@ class AttemptOut(BaseModel):
 class AttemptCreate(BaseModel):
     """Fixture execution is explicit, so nothing implies a live crawler."""
 
-    confirm_sampled: bool = False
     conditional: bool = True
 
 
@@ -343,11 +342,16 @@ class SignalEventOut(BaseModel):
 
 
 class EvidenceReviewIn(BaseModel):
+    """What a reviewer supplies. **Not** the subject company.
+
+    The company is derived from the evidence's own provenance. When it was a
+    request field, evidence captured while researching one organisation could
+    be confirmed into another.
+    """
+
     decision: str            # CONFIRM | REJECT
     actor: str
     note: str | None = None
-    #: Required to assert on confirmation; a rejection needs no company.
-    company_id: uuid.UUID | None = None
 
 
 class EvidenceReviewOut(BaseModel):
@@ -360,6 +364,8 @@ class EvidenceReviewOut(BaseModel):
 
     review_id: uuid.UUID
     evidence_item_id: uuid.UUID
+    #: Derived from provenance, never supplied.
+    company_id: uuid.UUID
     decision: str
     actor: str
     note: str | None = None
@@ -371,14 +377,24 @@ class EvidenceReviewOut(BaseModel):
 
 
 class PendingReviewOut(BaseModel):
-    """A sampled reading awaiting a human. It supports no claim yet."""
+    """An observation awaiting a human. It supports no claim yet.
 
+    Durable: it outlives the process that raised it, which is what lets a
+    reviewer arriving tomorrow find what is waiting and why.
+    """
+
+    candidate_id: uuid.UUID
     evidence_item_id: uuid.UUID
     extraction_id: uuid.UUID
+    company_id: uuid.UUID
+    run_id: uuid.UUID
+    attribute_key: str
+    reason: str              # SAMPLED_REQUIRES_CONFIRMATION | LOW_CONFIDENCE_…
+    extractor_confidence: float | None = None
     source: str
     quote: str | None = None
     locator: dict[str, Any]
-    created_at: datetime
+    raised_at: datetime
 
 
 # --- retention --------------------------------------------------------------

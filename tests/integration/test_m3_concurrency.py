@@ -455,87 +455,165 @@ def _lifecycle_setup(session, company_id):
     return gap.id, occurrence.id, result.attempt.id
 
 
-def test_two_workers_ending_one_gap_differently_produce_one_terminal(two_sessions):
-    """G16: RESOLVED and ABANDONED are alternatives, so ordering cannot separate
-    them — and before the unique index, a gap ended holding both.
+def _interleaved(engine_url, first, second, *, timeout=30.0):
+    """Run two writers whose transactions genuinely overlap.
 
-    Both transactions read the pre-terminal state before either writes, which
-    is the only arrangement in which the race exists at all.
+    A preliminary SELECT does **not** freeze a READ COMMITTED snapshot, so the
+    previous version — read, read, write, commit, write, commit — let the second
+    writer see the first commit and never reproduced the race.
+
+    The shape here follows from the fix being a *lock*: writer one takes the
+    parent row and inserts without committing; writer two then attempts the
+    same lifecycle and blocks on that lock; writer one commits; writer two
+    wakes, re-reads the now-terminal state and is refused. Both orderings —
+    — blocked-then-refused, or arriving after the commit and refused on the
+    re-read — produce the same domain error, which is the property under test.
+
+    No sleeps: an `Event` set by writer two immediately before it attempts is
+    the synchronisation.
     """
-    left, right = two_sessions
+    import threading
+
+    from sqlalchemy import create_engine as _create_engine
+    from sqlalchemy.orm import sessionmaker as _sessionmaker
+    from sqlalchemy.pool import NullPool
+
+    engine = _create_engine(engine_url, poolclass=NullPool, future=True)
+    factory = _sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    first_in_flight = threading.Event()
+    second_attempting = threading.Event()
+    results: dict[str, Exception | None] = {}
+
+    def run_first():
+        session = factory()
+        try:
+            session.execute(text("SET LOCAL lock_timeout = '20s'"))
+            first(session)
+            first_in_flight.set()
+            # Hold the lock until the other writer is at the door.
+            second_attempting.wait(timeout=timeout)
+            session.commit()
+            results["first"] = None
+        except Exception as exc:                      # noqa: BLE001
+            session.rollback()
+            results["first"] = exc
+            first_in_flight.set()
+        finally:
+            session.close()
+
+    def run_second():
+        session = factory()
+        try:
+            assert first_in_flight.wait(timeout=timeout), "writer one never started"
+            session.execute(text("SET LOCAL lock_timeout = '20s'"))
+            second_attempting.set()
+            second(session)
+            session.commit()
+            results["second"] = None
+        except Exception as exc:                      # noqa: BLE001
+            session.rollback()
+            results["second"] = exc
+        finally:
+            second_attempting.set()
+            session.close()
+
+    threads = [threading.Thread(target=run_first), threading.Thread(target=run_second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=timeout + 15)
+        assert not thread.is_alive(), "a writer did not finish"
+    engine.dispose()
+    return results
+
+
+def test_two_workers_ending_one_gap_differently_produce_one_terminal(
+    two_sessions, migrated_engine
+):
+    """G16: RESOLVED and ABANDONED are alternatives, so ordering cannot separate
+    them. Genuinely interleaved: both INSERTs are open before either commits.
+    """
+    from boro_gtm.research.services.gaps import IllegalGapTransitionError, resolve_gap
+
+    left, _ = two_sessions
     company = _company(left)
     gap_id, _, attempt_id = _lifecycle_setup(left, company.id)
+    claim_id = left.scalar(select(CompanyClaim.id).limit(1))
+    left.commit()
 
-    for sess in (left, right):
-        sess.execute(text("SET LOCAL lock_timeout = '5s'"))
-        sess.execute(text(
-            "SELECT event_kind FROM operational_research_gap_events "
-            "WHERE gap_id = :g"), {"g": gap_id}).all()
+    def resolve(session):
+        resolve_gap(session, gap_id=gap_id, attempt_id=attempt_id,
+                    claim_id=claim_id, now=NOW + timedelta(minutes=2))
 
-    insert = text(
-        "INSERT INTO operational_research_gap_events "
-        "(id, gap_id, event_kind, attempt_id, occurred_at) "
-        "VALUES (:i, :g, :k, :a, :t)")
-    refusals = []
-    for sess, kind, minute in ((left, "RESOLVED", 2), (right, "ABANDONED", 3)):
-        try:
-            sess.execute(insert, {"i": uuid.uuid4(), "g": gap_id, "k": kind,
-                                  "a": attempt_id,
-                                  "t": NOW + timedelta(minutes=minute)})
-            sess.commit()
-        except Exception as exc:
-            sess.rollback()
-            refusals.append((kind, type(exc).__name__))
+    def abandon(session):
+        from boro_gtm.research.services.gaps import abandon_gap
 
-    check = left
+        abandon_gap(session, gap_id=gap_id, attempt_id=attempt_id,
+                    now=NOW + timedelta(minutes=3))
+
+    results = _interleaved(str(migrated_engine.url), resolve, abandon)
+
+    losers = [e for e in results.values() if e is not None]
+    assert len(losers) == 1, f"exactly one writer must lose: {results}"
+    assert isinstance(losers[0], IllegalGapTransitionError), (
+        f"the loser must get a domain conflict, got {type(losers[0]).__name__}: "
+        f"{losers[0]}"
+    )
+
+    check = two_sessions[1]
+    check.rollback()
     kinds = check.execute(text(
         "SELECT event_kind FROM operational_research_gap_events WHERE gap_id = :g"),
         {"g": gap_id}).scalars().all()
     terminals = [k for k in kinds if k in ("RESOLVED", "ABANDONED")]
     assert len(terminals) == 1, f"both terminals landed: {kinds}"
-    assert len(refusals) == 1, f"exactly one writer must be refused: {refusals}"
 
 
 def test_two_workers_ending_one_occurrence_differently_produce_one_terminal(
-    two_sessions,
+    two_sessions, migrated_engine
 ):
-    """The same race on the review lifecycle.
+    """The same race on the review lifecycle, equally interleaved."""
+    from boro_gtm.research.services.review import (
+        IllegalSignalTransitionError,
+        append_signal_status,
+    )
 
-    The signal side only ever serialised because the transition trigger also
-    UPDATEs `is_open`, taking a row lock. That is an accident of an unrelated
-    statement; the unique index is the invariant.
-    """
-    left, right = two_sessions
+    left, _ = two_sessions
     company = _company(left)
     _, occurrence_id, _ = _lifecycle_setup(left, company.id)
+    signal_id = left.scalar(select(m.IdentityReviewSignalOccurrence.signal_id).where(
+        m.IdentityReviewSignalOccurrence.id == occurrence_id))
+    number = left.scalar(
+        select(m.IdentityReviewSignalOccurrence.occurrence_number).where(
+            m.IdentityReviewSignalOccurrence.id == occurrence_id))
+    left.commit()
 
-    for sess in (left, right):
-        sess.execute(text("SET LOCAL lock_timeout = '5s'"))
-        sess.execute(text(
-            "SELECT status FROM identity_review_signal_events "
-            "WHERE occurrence_id = :o"), {"o": occurrence_id}).all()
+    def action(status, minute):
+        def run(session):
+            append_signal_status(
+                session, signal_id=signal_id, occurrence_number=number,
+                status=status, actor="worker", now=NOW + timedelta(minutes=minute),
+            )
+        return run
 
-    insert = text(
-        "INSERT INTO identity_review_signal_events "
-        "(id, occurrence_id, status, actor, occurred_at) "
-        "VALUES (:i, :o, :s, 'worker', :t)")
-    refusals = []
-    for sess, status, minute in ((left, "ACTIONED", 2), (right, "DISMISSED", 3)):
-        try:
-            sess.execute(insert, {"i": uuid.uuid4(), "o": occurrence_id,
-                                  "s": status,
-                                  "t": NOW + timedelta(minutes=minute)})
-            sess.commit()
-        except Exception as exc:
-            sess.rollback()
-            refusals.append((status, type(exc).__name__))
+    results = _interleaved(
+        str(migrated_engine.url), action("ACTIONED", 2), action("DISMISSED", 3)
+    )
 
-    statuses = left.execute(text(
+    losers = [e for e in results.values() if e is not None]
+    assert len(losers) == 1, f"exactly one writer must lose: {results}"
+    assert isinstance(losers[0], IllegalSignalTransitionError), (
+        f"the loser must get a domain conflict, got {type(losers[0]).__name__}: "
+        f"{losers[0]}"
+    )
+
+    check = two_sessions[1]
+    check.rollback()
+    statuses = check.execute(text(
         "SELECT status FROM identity_review_signal_events WHERE occurrence_id = :o"),
         {"o": occurrence_id}).scalars().all()
     terminals = [s for s in statuses if s in ("ACTIONED", "DISMISSED")]
     assert len(terminals) == 1, f"both terminals landed: {statuses}"
-    assert len(refusals) == 1, f"exactly one writer must be refused: {refusals}"
 
 
 def test_two_reviewers_deciding_one_evidence_item_both_persist(two_sessions):
@@ -563,8 +641,7 @@ def test_two_reviewers_deciding_one_evidence_item_both_persist(two_sessions):
                     actor="first", now=NOW + timedelta(minutes=1))
     left.commit()
     review_evidence(right, evidence_item_id=item.id, decision="CONFIRM",
-                    actor="second", company_id=company.id,
-                    now=NOW + timedelta(minutes=2))
+                    actor="second", now=NOW + timedelta(minutes=2))
     right.commit()
 
     rows = right.scalars(select(m.ResearchEvidenceReview).where(

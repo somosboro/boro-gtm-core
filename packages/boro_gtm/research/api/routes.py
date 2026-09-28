@@ -45,6 +45,7 @@ from boro_gtm.research.domain.models import (
     ResearchSourceDiscovery,
     ResearchSourceEdge,
 )
+from boro_gtm.research.enums import ReviewReason as _ReviewReason
 from boro_gtm.research.enums import SignalKind, SignalStatus
 from boro_gtm.research.registry import RESEARCH_REGISTRY_VERSION
 from boro_gtm.research.services import application, gaps, review
@@ -136,8 +137,7 @@ def create_attempt(
     """
     options = body or s.AttemptCreate()
     view = application.execute_attempt(
-        db, run_id=run_id, confirm_sampled=options.confirm_sampled,
-        conditional=options.conditional,
+        db, run_id=run_id, conditional=options.conditional
     )
     db.commit()
     return s.AttemptOut(**dataclasses.asdict(view))
@@ -668,6 +668,8 @@ def append_signal_status(
 @router.get("/research-reviews/pending",
             response_model=list[s.PendingReviewOut], tags=["operational-research"])
 def list_pending_reviews(
+    company: uuid.UUID | None = Query(None, description="Filter by company"),
+    reason: str | None = Query(None, description="Filter by why it is waiting"),
     limit: int = Query(50, ge=1, le=MAX_PAGE),
     db: Session = Depends(get_db),
 ) -> list[s.PendingReviewOut]:
@@ -677,15 +679,26 @@ def list_pending_reviews(
     there is a real interval in which it is reviewable and no claim exists. A
     review route keyed by claim could not address that interval at all.
     """
-    items = review.pending_review_items(db, limit=limit)
-    return [
-        s.PendingReviewOut(
-            evidence_item_id=item.id, extraction_id=item.extraction_id,
+    if reason is not None:
+        reason = coerce_vocabulary(reason, _ReviewReason, "reason")
+    out = []
+    for candidate in review.pending_candidates(
+        db, company_id=company, reason=reason, limit=limit
+    ):
+        item = db.get(ResearchEvidenceItem, candidate.evidence_item_id)
+        out.append(s.PendingReviewOut(
+            candidate_id=candidate.id, evidence_item_id=item.id,
+            extraction_id=item.extraction_id, company_id=candidate.company_id,
+            run_id=candidate.run_id, attribute_key=candidate.attribute_key,
+            reason=candidate.reason,
+            extractor_confidence=(
+                float(candidate.extractor_confidence)
+                if candidate.extractor_confidence is not None else None
+            ),
             source=db.get(ResearchSource, item.source_id).normalized_locator,
-            quote=item.quote, locator=item.locator, created_at=item.created_at,
-        )
-        for item in items
-    ]
+            quote=item.quote, locator=item.locator, raised_at=candidate.raised_at,
+        ))
+    return out
 
 
 @router.post("/research-evidence-items/{item_id}/review",
@@ -703,7 +716,7 @@ def review_evidence_item(
     """
     outcome = review.review_evidence(
         db, evidence_item_id=item_id, decision=body.decision, actor=body.actor,
-        company_id=body.company_id, note=body.note,
+        note=body.note,
     )
     db.commit()
     return s.EvidenceReviewOut(**outcome.as_dict())
@@ -716,14 +729,19 @@ def list_evidence_reviews(
 ) -> list[s.EvidenceReviewOut]:
     """Every decision recorded about this observation, oldest first."""
     _get_or_404(db, ResearchEvidenceItem, item_id, "research evidence item")
+    # `created_evidence_item_ids` is reconstructed from the persisted human
+    # extraction, not invented. The previous version emitted an empty list for
+    # every historical row, which is false for every confirmation.
     return [
         s.EvidenceReviewOut(
             review_id=row.id, evidence_item_id=row.evidence_item_id,
+            company_id=review.company_of_evidence(db, row.evidence_item_id),
             decision=row.decision, actor=row.actor, note=row.note,
             reviewed_at=row.reviewed_at,
             human_extraction_id=row.human_extraction_id,
             resulting_claim_id=row.resulting_claim_id,
-            created_evidence_item_ids=[], model_extraction_unchanged=True,
+            created_evidence_item_ids=review.evidence_created_by(db, row),
+            model_extraction_unchanged=True,
         )
         for row in review.reviews_for(db, item_id)
     ]

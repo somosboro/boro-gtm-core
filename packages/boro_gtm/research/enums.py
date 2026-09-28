@@ -238,6 +238,17 @@ EVIDENCE_CLASS_FACT_CEILING: dict[str, str] = {
 }
 
 
+class ReviewReason(StrEnum):
+    """Why an observation is waiting for a human.
+
+    The two are genuinely different states: one is a reading that cannot assert
+    on its own, the other a reading too weak to assert (M3-ADR-061).
+    """
+
+    SAMPLED_REQUIRES_CONFIRMATION = "SAMPLED_REQUIRES_CONFIRMATION"
+    LOW_CONFIDENCE_REQUIRES_REVIEW = "LOW_CONFIDENCE_REQUIRES_REVIEW"
+
+
 class SourceClass(StrEnum):
     COMPANY_OWN_SITE = "COMPANY_OWN_SITE"
     GOVERNMENT_REGISTRY = "GOVERNMENT_REGISTRY"

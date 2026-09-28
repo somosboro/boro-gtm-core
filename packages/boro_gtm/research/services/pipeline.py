@@ -58,10 +58,10 @@ from boro_gtm.research.services import (
     identity,
     inference,
     profiles,
+    review,
 )
 from boro_gtm.research.services.evidence import EvidenceContext, create_evidence_item
 from boro_gtm.research.services.extraction import (
-    HUMAN_EXTRACTOR,
     Observation,
     extractors_for,
     run_extraction,
@@ -253,7 +253,6 @@ def run_pipeline(
     company_id: uuid.UUID,
     transport: FixtureTransport | None = None,
     now: datetime | None = None,
-    confirm_sampled: bool = False,
     vertical_id: uuid.UUID | None = None,
     conditional: bool = True,
 ) -> PipelineResult:
@@ -287,7 +286,9 @@ def run_pipeline(
     _advance(session, attempt, "EXTRACTING", "fetch_completed_at", now)
 
     # -- EXTRACTING --------------------------------------------------------
-    observations = _extract(session, attempt, fetched, now, result, confirm_sampled)
+    observations = _extract(
+        session, run, attempt, company_id, fetched, now, result
+    )
     _relate_sources(session, fetched, now, result)
     _advance(session, attempt, "ASSERTING", "extraction_completed_at", now)
 
@@ -515,9 +516,9 @@ def _relate_sources(
 
 
 def _extract(
-    session: Session, attempt: OperationalResearchAttempt,
+    session: Session, run: OperationalResearchRun,
+    attempt: OperationalResearchAttempt, company_id: uuid.UUID,
     fetched: list[_Retrieved], now: datetime, result: PipelineResult,
-    confirm_sampled: bool,
 ) -> list[tuple[Observation, uuid.UUID]]:
     observations: list[tuple[Observation, uuid.UUID]] = []
     for item in fetched:
@@ -569,61 +570,41 @@ def _extract(
                 )
                 if created:
                     result.evidence_created += 1
-                if (
+                weak = (
                     extractor.extractor_confidence is not None
                     and extractor.extractor_confidence < REVIEW_CONFIDENCE_THRESHOLD
                     and extractor.determinism != "SAMPLED"
-                ):
-                    # Too weak to assert, but observed: that is a different
-                    # state from "found nothing", and it gets its own gap kind.
+                )
+                if weak:
+                    # Too weak to assert, but *observed* — a different state
+                    # from finding nothing. The evidence is created and a
+                    # durable candidate records why it is waiting, so a
+                    # reviewer arriving after the process ended can still find
+                    # it (D3, M3-ADR-061).
                     result.low_confidence_deferred.append(observation.attribute_key)
+                    review.raise_candidate(
+                        session, evidence_item_id=evidence.id, run_id=run.id,
+                        attempt_id=attempt.id, company_id=company_id,
+                        attribute_key=observation.attribute_key,
+                        reason=review.LOW_CONFIDENCE_REASON, now=now,
+                        extractor_confidence=extractor.extractor_confidence,
+                    )
                     continue
-                if extractor.determinism == "SAMPLED" and not confirm_sampled:
-                    # Sampled output may create evidence, but may not on its own
-                    # assert a company claim. It waits for a human.
+                if extractor.determinism == "SAMPLED":
+                    # Sampled output may create evidence and may not assert.
+                    # It waits for a human, and the wait is durable.
                     result.sampled_pending_review.append(evidence.id)
+                    review.raise_candidate(
+                        session, evidence_item_id=evidence.id, run_id=run.id,
+                        attempt_id=attempt.id, company_id=company_id,
+                        attribute_key=observation.attribute_key,
+                        reason=review.SAMPLED_REASON, now=now,
+                        extractor_confidence=extractor.extractor_confidence,
+                    )
                     continue
                 observations.append((observation, evidence.id))
 
-            if extractor.determinism == "SAMPLED" and confirm_sampled:
-                observations.extend(_confirm_sampled(
-                    session, attempt=attempt, text_derivation=text_derivation,
-                    item=item, derivation_id=derivation.id, now=now, result=result,
-                ))
     return observations
-
-
-def _confirm_sampled(
-    session: Session, *, attempt: OperationalResearchAttempt, text_derivation,
-    item: _Retrieved, derivation_id: uuid.UUID, now: datetime,
-    result: PipelineResult,
-) -> list[tuple[Observation, uuid.UUID]]:
-    """A human confirming a sampled read is a separate, deterministic extraction.
-
-    The sampled evidence stays exactly as it was; confirmation does not edit it.
-    What changes is that an assertable lineage now exists.
-    """
-    outcome = run_extraction(
-        session, extractor=HUMAN_EXTRACTOR, text_derivation=text_derivation,
-        attempt_id=attempt.id, now=now,
-    )
-    if outcome.created:
-        result.extractions_created += 1
-    else:
-        result.extractions_reused += 1
-    context = EvidenceContext(
-        extraction_id=outcome.extraction.id, fetch_event_id=item.fetch_event_id,
-        artifact_derivation_id=derivation_id, body_id=item.body_id, source=item.source,
-    )
-    confirmed: list[tuple[Observation, uuid.UUID]] = []
-    for observation in outcome.observations:
-        evidence, created = create_evidence_item(
-            session, context=context, observation=observation, now=now
-        )
-        if created:
-            result.evidence_created += 1
-        confirmed.append((observation, evidence.id))
-    return confirmed
 
 
 def _assert(

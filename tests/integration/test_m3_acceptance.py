@@ -51,8 +51,7 @@ def transport() -> FixtureTransport:
 
 @pytest.fixture
 def researched(m3, company, transport):
-    return run_pipeline(m3, company_id=company.id, transport=transport, now=NOW,
-                        confirm_sampled=True)
+    return run_pipeline(m3, company_id=company.id, transport=transport, now=NOW)
 
 
 def _count(session, model) -> int:
@@ -488,9 +487,13 @@ def test_a_model_version_change_is_a_distinct_extraction_contract(researched, m3
 
 def test_a_human_confirmation_appends_an_assertable_lineage(researched, m3, company):
     """D6: the review targets the *evidence*, which exists before any claim."""
-    from boro_gtm.research.services.review import pending_review_items, review_evidence
+    from boro_gtm.research.services import review as review_service
+    from boro_gtm.research.services.review import review_evidence
 
-    item = pending_review_items(m3)[0]
+    candidate = review_service.pending_candidates(
+        m3, reason=review_service.SAMPLED_REASON
+    )[0]
+    item = m3.get(m.ResearchEvidenceItem, candidate.evidence_item_id)
     sampled = m3.get(m.ResearchExtraction, item.extraction_id)
     assert sampled.determinism == "SAMPLED"
     fingerprint = (sampled.raw_output_sha256, sampled.extraction_contract_hash,
@@ -498,7 +501,7 @@ def test_a_human_confirmation_appends_an_assertable_lineage(researched, m3, comp
 
     outcome = review_evidence(
         m3, evidence_item_id=item.id, decision="CONFIRM", actor="analyst",
-        company_id=company.id, now=LATER,
+        now=LATER,
     )
     m3.flush()
 

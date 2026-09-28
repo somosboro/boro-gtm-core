@@ -18,12 +18,27 @@ from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from boro_gtm.core.errors import GtmError
 from boro_gtm.research.domain.models import (
     OperationalResearchGap,
     OperationalResearchGapEvent,
 )
+
+
+class IllegalGapTransitionError(GtmError):
+    """A gap event the lifecycle does not permit, or a terminal race lost.
+
+    `RESOLVED` and `ABANDONED` are alternatives, so two writers can both find
+    their move legal from `ATTEMPTED`. The parent row lock serializes them and
+    the loser is told, rather than meeting `uq_gap_terminal_event` as a raw
+    `IntegrityError` (M3-ADR-062).
+    """
+
+    code = "GAP_TRANSITION_ILLEGAL"
+    http_status = 409
 
 
 @dataclass(slots=True)
@@ -121,6 +136,9 @@ def abandon_gap(
     )
 
 
+TERMINAL_GAP_KINDS = frozenset({"RESOLVED", "ABANDONED"})
+
+
 def _append_event(
     session: Session,
     *,
@@ -133,23 +151,56 @@ def _append_event(
     resolved_by_claim_id: uuid.UUID | None = None,
     note: str | None = None,
 ) -> bool:
-    result = session.execute(
-        pg_insert(OperationalResearchGapEvent)
-        .values(
-            id=uuid.uuid4(), gap_id=gap_id, event_kind=kind, attempt_id=attempt_id,
-            source_id=source_id, fetch_event_id=fetch_event_id,
-            resolved_by_claim_id=resolved_by_claim_id, note=note, occurred_at=now,
-        )
-        .on_conflict_do_nothing(index_elements=[
-            OperationalResearchGapEvent.gap_id,
-            OperationalResearchGapEvent.event_kind,
-            OperationalResearchGapEvent.attempt_id,
-            OperationalResearchGapEvent.source_id,
-            OperationalResearchGapEvent.fetch_event_id,
-        ])
-        .returning(OperationalResearchGapEvent.id)
-    )
-    return result.first() is not None
+    if kind in TERMINAL_GAP_KINDS:
+        # Serialize the lifecycle deliberately before deciding. Two writers
+        # reading `ATTEMPTED` both find their terminal move legal, and without
+        # this one of them meets the unique index instead of a domain error.
+        session.execute(
+            select(OperationalResearchGap.id)
+            .where(OperationalResearchGap.id == gap_id)
+            .with_for_update()
+        ).all()
+        existing = session.scalars(
+            select(OperationalResearchGapEvent.event_kind).where(
+                OperationalResearchGapEvent.gap_id == gap_id,
+                OperationalResearchGapEvent.event_kind.in_(TERMINAL_GAP_KINDS),
+            )
+        ).first()
+        if existing is not None:
+            raise IllegalGapTransitionError(
+                f"gap {gap_id} already reached {existing}; a gap ends once",
+                {"gap_id": str(gap_id), "existing": existing, "requested": kind},
+            )
+
+    values = {
+        "id": uuid.uuid4(), "gap_id": gap_id, "event_kind": kind,
+        "attempt_id": attempt_id, "source_id": source_id,
+        "fetch_event_id": fetch_event_id,
+        "resolved_by_claim_id": resolved_by_claim_id, "note": note,
+        "occurred_at": now,
+    }
+    try:
+        with session.begin_nested():
+            result = session.execute(
+                pg_insert(OperationalResearchGapEvent)
+                .values(**values)
+                .on_conflict_do_nothing(index_elements=[
+                    OperationalResearchGapEvent.gap_id,
+                    OperationalResearchGapEvent.event_kind,
+                    OperationalResearchGapEvent.attempt_id,
+                    OperationalResearchGapEvent.source_id,
+                    OperationalResearchGapEvent.fetch_event_id,
+                ])
+                .returning(OperationalResearchGapEvent.id)
+            )
+            first = result.first()
+    except IntegrityError as exc:
+        # `uq_gap_terminal_event`, for a writer that bypassed the lock above.
+        raise IllegalGapTransitionError(
+            f"gap {gap_id} already reached a terminal state; a gap ends once",
+            {"gap_id": str(gap_id), "requested": kind},
+        ) from exc
+    return first is not None
 
 
 #: Where each event sits in the lifecycle. The graph is a DAG

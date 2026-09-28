@@ -2156,3 +2156,128 @@ outranks an older one.
 * The bug only surfaced when fact type, trust and publication date all tied,
   which is why the fixture corpus never showed it. Rungs below the first
   distinguishing one need their own test, not coverage by accident.
+
+---
+
+## M3-ADR-061 — A review targets one observation, about the company that captured it
+
+**Status:** accepted (second audit; **new migration** `0008_m3_candidates`)
+
+### Context
+
+Three defects in one operation, all demonstrated on this branch.
+
+**The caller chose the company.** `EvidenceReviewIn.company_id` flowed straight
+into `assert_claim`. Evidence captured while researching company A could be
+confirmed into company B — not a permissions problem, but evidence about one
+organisation asserted about another.
+
+**One review confirmed a whole document.** Confirmation ran the human extractor
+across the entire text derivation. The sampled PDF reading holds four
+observations, so reviewing *one* created four HUMAN evidence items and four
+claims, and the stored HUMAN extraction recorded that the reviewer had
+confirmed all four. They had seen one.
+
+**"Reviewable" meant knowing a UUID.** Any evidence item was accepted, so an
+ordinary deterministic observation could be pushed through confirmation and
+acquire a HUMAN extraction nobody asked for. And a low-confidence observation
+left no durable trace at all: `low_confidence_deferred` was transient state, so
+once the process ended nothing connected the `INSUFFICIENT_EVIDENCE` gap to the
+evidence behind it. D3 was passing without being implemented.
+
+### Decision
+
+* The subject company is **derived** — evidence → fetch event → attempt → run →
+  company — and a chain that does not resolve uniquely is refused. There is no
+  longer a field to supply.
+* Confirmation is scoped to **one attribute at one span**. Both halves are
+  needed: two rules can match the same text, so the locator alone is not one
+  observation. The scope is inside the extraction contract hash, so each
+  confirmed observation is its own extraction whose stored `observations` are
+  exactly what was confirmed.
+* `research_review_candidates` makes reviewability a durable state, carrying
+  why the observation is waiting, which question raised it, and which attribute
+  it concerns. Low-confidence observations now create evidence and a candidate
+  rather than being dropped.
+
+### Consequences
+
+* `resulting_claim_id` stays singular and is now **true**: one attribute at one
+  span is one value from one origin, so at most one claim. The service raises
+  rather than silently recording the first of several.
+* The review must re-run the source extractor under the same context the
+  pipeline used — an HTML locator carries a structural path computed from the
+  raw document, and re-running without it produces a different locator hash. A
+  pruned body therefore makes a confirmation impossible, and says so.
+* **Generalisable:** an operation that can affect several things must not
+  record one of them. Either scope the operation or record the set — and
+  scoping was right here, because a reviewer confirms what they read.
+
+---
+
+## M3-ADR-062 — Terminal siblings serialize on the parent, not on a unique index
+
+**Status:** accepted (second audit)
+
+### Context
+
+`0007`'s partial unique indexes made two terminal siblings unrepresentable, and
+the previous report claimed the loser received a domain conflict. It did not.
+The services caught only `uq_signal_event`; the sibling race raises
+`uq_signal_terminal_event`, and gaps had no translation at all.
+
+The test that was supposed to prove otherwise was also not the race: both
+sessions ran a preliminary `SELECT`, which does not freeze a READ COMMITTED
+snapshot, then wrote and committed sequentially — so the second writer saw the
+first commit and the race never occurred.
+
+### Decision
+
+Take the parent row `FOR UPDATE` before deciding a terminal transition, re-read
+the state under that lock, and refuse with a domain error. The unique indexes
+remain as the backstop for a writer that bypasses the service, and that path is
+translated too.
+
+The tests interleave with threads and an `Event` — no sleeps. The shape follows
+from the fix being a lock: writer one holds the row and its insert open, writer
+two blocks, writer one commits, writer two wakes and is refused.
+
+### Consequences
+
+* The loser is told which state was reached, rather than an index name.
+* A serialized writer *blocks*, which is what a correct lock does — the test
+  had to be rewritten to expect that rather than expecting both to proceed.
+
+---
+
+## M3-ADR-063 — C10: a stated negative is an observation, not a fact type
+
+**Status:** accepted (second audit; acceptance corrected)
+
+### Context
+
+C10 read *"A stated negative is a fact … `emergency_service = false` is
+asserted as `FACT`"*, and the test traced to it asserted only that a negative
+claim existed and was `OBSERVED`. The scenario was not being tested as written
+— and could not be. The fixture's negative comes from a third-party directory,
+which the registry and the trust policy type as `PROXY`.
+
+Promoting it to `FACT` to satisfy the sentence would have broken the rule the
+whole milestone rests on: fact type follows the source and its evidence class,
+not the shape of the claim.
+
+### Decision
+
+C10 becomes *"a stated negative is an observation, not absence"*: `false` is
+representable, `availability = OBSERVED`, no `NO_EVIDENCE` gap is raised — and
+the fact type follows the normal policy, which for a directory is `PROXY`. J3
+already covers an explicit company statement reaching `FACT`.
+
+The test is renamed so its name no longer claims something it does not assert,
+and now checks the fact type and the source class it follows from.
+
+### Consequences
+
+* **Generalisable:** a scenario that requires an exception to a governing rule
+  is usually a wrong scenario, not a needed exception. The fix was to the
+  sentence.

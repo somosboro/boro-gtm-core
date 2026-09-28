@@ -127,9 +127,18 @@ class Extractor:
     #: Media types this extractor is willing to read.
     media_types: tuple[str, ...] = ("text/html",)
     extractor_confidence: float | None = None
+    #: What this reading covers, when it covers less than the whole document.
+    #: A human confirming one observation is not a reading of the document, and
+    #: an extraction keyed only by the document would record that they had
+    #: confirmed every observation in it.
+    scope: str | None = None
 
     def contract_hash(self) -> str:
-        """Identity of *how* text was read — never of the text itself."""
+        """Identity of *how* text was read — never of the text itself.
+
+        ``scope`` is inside it, so two humans confirming two observations of one
+        document produce two extractions rather than colliding on one.
+        """
         return sha256_json({
             "extractor_id": self.extractor_id,
             "extractor_version": self.extractor_version,
@@ -141,6 +150,7 @@ class Extractor:
             "model_version": self.model_version,
             "prompt_template_version": self.prompt_template_version,
             "temperature": self.temperature,
+            "scope": self.scope,
         })
 
 
@@ -629,11 +639,43 @@ PDF_MODEL_EXTRACTOR = Extractor(
     media_types=("application/pdf",), extractor_confidence=0.55,
 )
 
-HUMAN_EXTRACTOR = Extractor(
-    extractor_id="analyst_confirmation", extractor_version="1.0.0", extractor_kind="HUMAN",
-    output_schema_version="1", run=_extract_pdf_narrative,
-    media_types=("application/pdf",), extractor_confidence=1.0,
-)
+def scoped_human_extractor(
+    *, locator_hash: str, attribute_key: str, source_extractor: Extractor
+) -> Extractor:
+    """A HUMAN reading of **one** observation: one attribute, at one span.
+
+    Both halves are needed. Two rules can match the same text — "58 field
+    technicians" yields `technician_count` *and* `field_workforce_present` at
+    one offset — so the locator alone is not one observation, and scoping by it
+    would confirm an attribute the reviewer never considered.
+
+    A reviewer who confirms one span has confirmed one span. An extractor keyed
+    only by the text derivation produced a stored reading whose `observations`
+    listed every model finding in the document — a durable record asserting the
+    reviewer had approved things they never saw.
+
+    The scope is in the contract hash, so each confirmed observation is its own
+    extraction, and the observations it stores are exactly what was confirmed.
+    """
+
+    def run(text: str, context: dict[str, Any]) -> list[Observation]:
+        return [
+            observation
+            for observation in source_extractor.run(text, context)
+            if observation.attribute_key == attribute_key
+            and locator_hash_of(observation) == locator_hash
+        ]
+
+    return Extractor(
+        extractor_id="analyst_confirmation", extractor_version="1.0.0",
+        extractor_kind="HUMAN", output_schema_version="1", run=run,
+        media_types=source_extractor.media_types, extractor_confidence=1.0,
+        scope=f"{attribute_key}@{locator_hash}",
+    )
+
+
+def locator_hash_of(observation: Observation) -> str:
+    return locator_hash(observation.locator)
 
 DEFAULT_EXTRACTORS: tuple[Extractor, ...] = (
     PROSE_EXTRACTOR, SERVICE_EXTRACTOR, PROCESS_EXTRACTOR, CHANGE_EXTRACTOR,

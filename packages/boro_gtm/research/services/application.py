@@ -263,7 +263,6 @@ def execute_attempt(
     *,
     run_id: uuid.UUID,
     transport: FixtureTransport | None = None,
-    confirm_sampled: bool = False,
     conditional: bool = True,
 ) -> AttemptView:
     """Start and run one execution of an existing question.
@@ -276,8 +275,7 @@ def execute_attempt(
         raise RunNotFoundError(f"no research run {run_id}")
     result = run_pipeline(
         session, company_id=run.company_id, transport=transport,
-        vertical_id=run.vertical_id, confirm_sampled=confirm_sampled,
-        conditional=conditional, now=_now(),
+        vertical_id=run.vertical_id, conditional=conditional, now=_now(),
     )
     return _attempt_view(result.attempt)
 

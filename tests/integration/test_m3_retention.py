@@ -40,8 +40,7 @@ def researched(m3):
                       lifecycle_status="ACTIVE")
     m3.add(company)
     m3.flush()
-    run_pipeline(m3, company_id=company.id, transport=FixtureTransport(),
-                 now=NOW, confirm_sampled=True)
+    run_pipeline(m3, company_id=company.id, transport=FixtureTransport(), now=NOW)
     return company
 
 

@@ -122,7 +122,7 @@ executable**.
 ## 2b. Phase 2 — the internal pipeline
 
 `tests/integration/test_m3_pipeline.py` (70) and
-`tests/integration/test_m3_concurrency.py` (17) execute the acquisition
+`tests/integration/test_m3_concurrency.py` (16) execute the acquisition
 pipeline end to end against real PostgreSQL and a fictional HVAC contractor.
 `tests/unit/test_assertion_fingerprint.py` (9) covers the lineage key alone.
 
@@ -163,14 +163,19 @@ adjacent to it.
 | C8b | A newer extractor disagreeing creates a claim | `test_a_newer_extractor_disagreeing_with_itself_creates_a_claim` |
 | C8c | One assertion, three distinct spans | `test_one_assertion_may_cite_several_spans` |
 | C9 | Absence is a gap, never a false claim | `test_absence_is_a_gap_and_never_a_false_claim` |
-| C10 | A stated negative is a FACT | `test_a_stated_negative_is_a_fact_and_silence_is_not` |
+| C10 | A stated negative is an observation; its fact type follows the source | `test_a_stated_negative_is_an_observation_not_absence` |
 | C11 | Provenance is single-valued and terminates at one body | `test_evidence_provenance_is_single_valued_and_agrees_on_one_body` |
 | D1 | Extractor provenance is complete, and a model names its model | `test_extractor_provenance_is_complete` |
 | D2 | Extractor confidence is not claim confidence | `test_model_confidence_does_not_become_claim_confidence` |
-| D3 | A low-confidence reading yields INSUFFICIENT_EVIDENCE, not a claim | `test_a_low_confidence_extraction_yields_a_gap_not_a_claim` |
+| D3 | A low-confidence reading yields INSUFFICIENT_EVIDENCE and a durable candidate, not a claim | `test_a_low_confidence_extraction_yields_a_gap_not_a_claim`, `test_a_low_confidence_observation_is_discoverable_after_the_process_ends` |
 | D4 | Re-extraction reuses; the earlier row is byte-identical | `test_re_extraction_adds_evidence_and_never_rewrites` |
 | D5 | Re-running the same extractor version creates no row | `test_an_extraction_reused_by_a_second_attempt_is_not_duplicated` |
 | D6 | A confirmation appends a HUMAN lineage and a durable record; the sampled extraction is byte-identical | `test_a_human_confirmation_appends_an_assertable_lineage`, `test_a_confirmation_appends_a_human_lineage_and_a_durable_record`, `test_confirming_an_observation_appends_a_human_lineage` |
+| D8 | The subject company is derived from provenance; a second company gets nothing | `test_the_subject_company_comes_from_provenance`, `test_evidence_captured_for_one_company_cannot_be_confirmed_into_another`, `test_the_api_contract_has_no_company_field` |
+| D9 | One confirmation covers one attribute at one span | `test_confirming_one_observation_confirms_only_that_observation`, `test_two_observations_on_one_document_need_two_decisions`, `test_a_confirmation_produces_at_most_one_claim_and_records_it` |
+| D10 | Only a durable candidate is reviewable | `test_an_ordinary_deterministic_observation_is_not_reviewable`, `test_both_reviewable_reasons_are_distinguished` |
+| D11 | A candidate outlives the process that raised it | `test_a_low_confidence_observation_is_discoverable_after_the_process_ends` |
+| D12 | Review history reports only persisted or derivable values | `test_review_history_round_trips_through_a_fresh_session`, `test_a_rejection_history_row_reports_no_created_evidence`, `test_reviews_are_listed_for_an_observation` |
 | D7 | A rejection persists actor, time and rationale, and asserts nothing | `test_a_rejection_is_durable_and_asserts_nothing`, `test_a_rejection_never_asserts_the_negative`, `test_the_database_forbids_a_rejection_that_names_a_claim`, `test_rejecting_an_observation_persists_and_asserts_nothing` |
 | E1 | The retrieval date is never the observation date | `test_a_retrieval_date_is_never_used_as_the_observation_date` |
 | E2 | A stated date keeps its own granularity; none is invented | `test_an_invented_publication_date_is_unrepresentable` |
@@ -200,7 +205,8 @@ adjacent to it.
 | G13 | A different target attribute set is a different run | `test_a_different_question_is_a_different_run` |
 | G14 | The same question reuses the run | `test_a_retry_advances_the_same_question` |
 | G15 | Only one attempt may be live, and the caller gets a domain error | `test_only_one_attempt_can_be_live_for_a_question`, `test_a_second_live_attempt_is_409_not_an_integrity_error` |
-| G16 | Two terminal transitions cannot both land, over two real connections | `test_two_workers_ending_one_gap_differently_produce_one_terminal`, `test_two_workers_ending_one_occurrence_differently_produce_one_terminal`, `test_a_gap_cannot_hold_two_terminal_events`, `test_an_occurrence_cannot_hold_two_terminal_events` |
+| G16 | Two terminal transitions cannot both land | `test_a_gap_cannot_hold_two_terminal_events`, `test_an_occurrence_cannot_hold_two_terminal_events` |
+| G17 | The losing terminal writer gets a domain conflict, under true interleaving | `test_two_workers_ending_one_gap_differently_produce_one_terminal`, `test_two_workers_ending_one_occurrence_differently_produce_one_terminal` |
 | H1 | A full research run writes no M2 row | `test_m2_is_unchanged_by_a_research_run` |
 | H2 | M3 creates no company | `test_m2_is_unchanged_by_a_research_run` |
 | H3 | M3 alters no resolution decision | `test_m2_is_unchanged_by_a_research_run` |
@@ -279,14 +285,14 @@ same value from two origins staying two lineages; projections rebuilding
 byte-identically from empty; the API's raw-payload, pagination and error
 contracts; the CLI's fixture-only execution gate.
 
-**353 M3 tests in total** across thirteen files.
+**367 M3 tests in total** across fourteen files.
 
 ### Acceptance status, counted mechanically
 
 | | Count |
 | --- | --- |
-| Scenarios in the contract | 139 |
-| Executable, and passing | 139 |
+| Scenarios in the contract | 145 |
+| Executable, and passing | 145 |
 | Failing | 0 |
 | Not yet executable | 0 |
 
@@ -294,10 +300,24 @@ Parsed from the documents by `tests/unit/test_traceability_counts.py`, which
 also refuses a citation to a scenario that does not exist, refuses ranges, and
 refuses to let the withdrawn G8 be claimed.
 
-The count moved from 134 to 139 in phase 3.1, and upward is the only direction
-it should ever move for this reason: an independent audit proved five
-behaviours the branch did not have, so five scenarios were added rather than
-the implementation being declared adequate.
+The count moved 134 → 139 → **145**, and upward is the only direction it should
+move for this reason: each audit proved behaviours the branch did not have, so
+scenarios were added rather than the implementation being declared adequate.
+
+Phase 3.2 added **D8–D12** and **G17**, and corrected **C10**:
+
+* **D8** — a caller-supplied company id let evidence captured for one company
+  be confirmed into another.
+* **D9** — confirming one span created four claims and recorded that the
+  reviewer had approved all four.
+* **D10** — "reviewable" meant knowing an evidence UUID.
+* **D11** — a low-confidence deferral lived in transient state, so D3's review
+  candidate did not survive the process. D3 was passing unimplemented.
+* **D12** — the history endpoint emitted an invented empty list.
+* **G17** — the losing terminal writer still met a raw `IntegrityError`, and
+  the test that claimed otherwise was not the race.
+* **C10** demanded a `FACT` that the source policy forbids; the scenario was
+  wrong, not the implementation.
 
 * **D6 split into D6 and D7.** D6 read "a model claim a reviewer *rejects* …
   a HUMAN extraction and a *new claim* are appended" — a rejection must not

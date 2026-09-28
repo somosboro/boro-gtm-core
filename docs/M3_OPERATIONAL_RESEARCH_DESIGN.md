@@ -1550,7 +1550,7 @@ The brief's seven conditions, each checked mechanically rather than asserted:
 criterion: it changed meaning, not structure.
 
 Counts, computed from the documents at revision 5: **23 tables · 42 registry
-attributes · 139 acceptance scenarios (+1 withdrawn) · 60 ADRs.** Three M2 objects are touched, all additively:
+attributes · 139 acceptance scenarios (+1 withdrawn) · 63 ADRs.** Three M2 objects are touched, all additively:
 `attribute_definitions.owner_milestone`,
 `company_claims.assertion_fingerprint` with a partial unique index, and a
 deferred constraint trigger on `company_claims`.

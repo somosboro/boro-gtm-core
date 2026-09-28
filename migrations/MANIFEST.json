@@ -6,6 +6,7 @@
     "0004_m3_operational_research.py": "939642be7bbc29fe399caae9f06692122237a3a8ca87cb5024cd62ca9a2420e1",
     "0005_m3_extraction_retention.py": "df6dda989c063643178baedfa21f38489d0d4cfd4852e98bdd395885cdd5e8a9",
     "0006_m3_lifecycle_tiebreak.py": "49079e09ea1799cfe8e3dd1e0c27e089c77d8e3fdf5823a98a4feb9af49edcb8",
-    "0007_m3_review_and_invariants.py": "c66b51ebab059d9c6c43bd5974bfff0907e0c81dd732a6f00f780a0357f1bb8c"
+    "0007_m3_review_and_invariants.py": "c66b51ebab059d9c6c43bd5974bfff0907e0c81dd732a6f00f780a0357f1bb8c",
+    "0008_m3_review_candidates.py": "5d20cbfd0ae9de9580a48087ac7fda84246d482e93a62ee40b933dd41f183ca9"
   }
 }

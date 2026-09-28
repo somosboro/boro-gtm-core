@@ -337,9 +337,10 @@ def test_the_claim_id_remains_the_final_tiebreak(m3):
 
 
 def _pending(m3):
-    items = review.pending_review_items(m3)
-    assert items, "the corpus produces a sampled reading awaiting review"
-    return items[0]
+    """The first sampled candidate. Reviewability is a durable state now."""
+    candidates = review.pending_candidates(m3, reason=review.SAMPLED_REASON)
+    assert candidates, "the corpus produces a sampled reading awaiting review"
+    return m3.get(m.ResearchEvidenceItem, candidates[0].evidence_item_id)
 
 
 def test_a_sampled_reading_is_reviewable_before_any_claim_exists(researched, m3):
@@ -426,7 +427,7 @@ def test_a_confirmation_appends_a_human_lineage_and_a_durable_record(
 
     outcome = review.review_evidence(
         m3, evidence_item_id=item.id, decision="CONFIRM", actor="analyst",
-        company_id=company.id, now=LATER,
+        now=LATER,
     )
     m3.flush()
 
@@ -444,11 +445,13 @@ def test_a_confirmation_appends_a_human_lineage_and_a_durable_record(
 
 def test_a_reviewed_item_leaves_the_pending_queue(researched, m3):
     item = _pending(m3)
-    assert item.id in {i.id for i in review.pending_review_items(m3)}
+    waiting = {c.evidence_item_id for c in review.pending_candidates(m3, limit=500)}
+    assert item.id in waiting
     review.review_evidence(m3, evidence_item_id=item.id, decision="REJECT",
                            actor="analyst", now=LATER)
     m3.flush()
-    assert item.id not in {i.id for i in review.pending_review_items(m3)}
+    still = {c.evidence_item_id for c in review.pending_candidates(m3, limit=500)}
+    assert item.id not in still
 
 
 def test_the_review_table_is_append_only(researched, m3):

@@ -325,8 +325,23 @@ def test_redaction_removes_contact_details_from_derived_text(first_run, m3):
 
 
 def test_every_extractor_kind_is_exercised(m3, company, transport):
-    run_pipeline(m3, company_id=company.id, transport=transport, now=NOW,
-                 confirm_sampled=True)
+    """HUMAN only appears through a review, because only a human makes one."""
+    from boro_gtm.research.services import review as review_service
+
+    run_pipeline(m3, company_id=company.id, transport=transport, now=NOW)
+    machine = set(m3.scalars(select(m.ResearchExtraction.extractor_kind)).all())
+    assert machine == {"RULE", "PARSER", "MODEL"}, (
+        "the pipeline cannot produce a HUMAN reading on its own"
+    )
+
+    candidate = review_service.pending_candidates(
+        m3, reason=review_service.SAMPLED_REASON
+    )[0]
+    review_service.review_evidence(
+        m3, evidence_item_id=candidate.evidence_item_id, decision="CONFIRM",
+        actor="analyst", now=LATER,
+    )
+    m3.flush()
     kinds = set(m3.scalars(select(m.ResearchExtraction.extractor_kind)).all())
     assert kinds == {"RULE", "PARSER", "MODEL", "HUMAN"}
 
@@ -376,9 +391,20 @@ def test_sampled_output_creates_evidence_but_asserts_no_claim(first_run, m3):
 
 
 def test_human_confirmation_makes_a_sampled_reading_assertable(m3, company, transport):
-    result = run_pipeline(m3, company_id=company.id, transport=transport, now=NOW,
-                          confirm_sampled=True)
-    assert result.sampled_pending_review == []
+    """A sampled reading asserts only after a human says so, one span at a time."""
+    from boro_gtm.research.services import review as review_service
+
+    result = run_pipeline(m3, company_id=company.id, transport=transport, now=NOW)
+    assert result.sampled_pending_review, "sampled readings wait for a human"
+
+    candidate = review_service.pending_candidates(
+        m3, reason=review_service.SAMPLED_REASON
+    )[0]
+    review_service.review_evidence(
+        m3, evidence_item_id=candidate.evidence_item_id, decision="CONFIRM",
+        actor="analyst", now=LATER,
+    )
+    m3.flush()
 
     human_linked = m3.scalars(
         select(m.ClaimEvidenceLink.id)
@@ -513,8 +539,14 @@ def test_a_job_ad_mention_never_becomes_a_fact_about_the_operation(first_run, m3
     assert seen_capped > 0
 
 
-def test_a_stated_negative_is_a_fact_and_silence_is_not(first_run, m3):
-    """The directory says emergency service is not offered; that is evidence."""
+def test_a_stated_negative_is_an_observation_not_absence(first_run, m3):
+    """C10: denial is evidence; its fact type still follows the source.
+
+    The directory states "Emergency service: not offered". That is an
+    observation, so it is OBSERVED and `false` rather than missing — and it is
+    `PROXY`, because a third-party listing does not become a fact by being
+    negative. A first-party statement reaching FACT is J3.
+    """
     negatives = m3.scalars(
         select(CompanyClaim).where(
             CompanyClaim.attribute_key == "emergency_service",
@@ -523,6 +555,23 @@ def test_a_stated_negative_is_a_fact_and_silence_is_not(first_run, m3):
     ).all()
     assert negatives, "a stated negative must be representable"
     assert all(c.availability == "OBSERVED" for c in negatives)
+    assert {c.fact_type for c in negatives} == {"PROXY"}
+
+    # Its source is the third-party directory, which is why PROXY is right.
+    classes = set(m3.scalars(
+        select(m.ClaimEvidenceLink.source_class).where(
+            m.ClaimEvidenceLink.claim_id.in_([c.id for c in negatives])
+        )
+    ).all())
+    assert classes == {"THIRD_PARTY_DIRECTORY"}
+
+    # And silence is still different: something was found, so no NO_EVIDENCE.
+    kinds = set(m3.scalars(
+        select(m.OperationalResearchGap.gap_kind).where(
+            m.OperationalResearchGap.attribute_key == "emergency_service"
+        )
+    ).all())
+    assert "NO_EVIDENCE" not in kinds
 
 
 def test_absence_is_a_gap_and_never_a_false_claim(first_run, m3, company):

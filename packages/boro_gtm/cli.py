@@ -411,9 +411,6 @@ def research_run(
         help="Required. M3 ships no production research provider; execution "
              "reads the deterministic fixture corpus.",
     ),
-    confirm_sampled: bool = typer.Option(
-        False, help="Also create the HUMAN confirmation for sampled readings."
-    ),
     conditional: bool = typer.Option(
         True, help="Send If-None-Match from the last successful retrieval."
     ),
@@ -436,8 +433,7 @@ def research_run(
 
     with session_scope() as session:
         view = execute_attempt(
-            session, run_id=_uuid.UUID(run), confirm_sampled=confirm_sampled,
-            conditional=conditional,
+            session, run_id=_uuid.UUID(run), conditional=conditional
         )
         _echo({
             "attempt_id": str(view.id), "attempt_number": view.attempt_number,

@@ -606,6 +606,60 @@ class ResearchEvidenceItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ResearchReviewCandidate(Base):
+    """One observation awaiting a human decision. Append-only.
+
+    This is what makes an evidence item *reviewable*. Before it existed,
+    "reviewable" meant "the caller knows an evidence UUID", so a perfectly
+    ordinary deterministic observation could be pushed through confirmation.
+
+    It is also the durable half of D3. A low-confidence observation used to
+    live only in transient pipeline state, so once the process ended nothing
+    connected the `INSUFFICIENT_EVIDENCE` gap to the evidence behind it and a
+    reviewer had nothing to open (M3-ADR-061).
+    """
+
+    __tablename__ = "research_review_candidates"
+    __table_args__ = (
+        UniqueConstraint("evidence_item_id", "run_id", name="uq_candidate_identity"),
+        CheckConstraint(
+            "reason IN ('SAMPLED_REQUIRES_CONFIRMATION',"
+            "'LOW_CONFIDENCE_REQUIRES_REVIEW')",
+            name="reason_vocabulary",
+        ),
+        # Prefixed `ix_review_candidates_*`: index names are schema-global in
+        # PostgreSQL, and M2's `entity_resolution_candidates` already owns
+        # `ix_candidates_company`. "candidates" is not a unique enough noun in
+        # a system that also resolves entity candidates.
+        Index("ix_review_candidates_company", "company_id"),
+        Index("ix_review_candidates_reason", "reason"),
+        Index("ix_review_candidates_attribute", "run_id", "attribute_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    evidence_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("research_evidence_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    #: The question that raised it, and through it the company. Stored rather
+    #: than walked so the queue can be filtered without four joins.
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("operational_research_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    attempt_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("operational_research_attempts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="RESTRICT"), nullable=False
+    )
+    attribute_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    extractor_confidence: Mapped[float | None] = mapped_column(
+        Numeric(6, 4), nullable=True
+    )
+    raised_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ResearchEvidenceReview(Base):
     """A human decision about one observation. Append-only.
 
@@ -630,6 +684,12 @@ class ResearchEvidenceReview(Base):
             "decision = 'CONFIRM' OR "
             "(human_extraction_id IS NULL AND resulting_claim_id IS NULL)",
             name="rejection_asserts_nothing",
+        ),
+        # And the other half: a confirmation with no human extraction behind it
+        # is a confirmation nobody made.
+        CheckConstraint(
+            "decision <> 'CONFIRM' OR human_extraction_id IS NOT NULL",
+            name="confirmation_has_provenance",
         ),
         Index("ix_reviews_evidence_item", "evidence_item_id"),
         Index("ix_reviews_decision", "decision"),

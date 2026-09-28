@@ -258,11 +258,21 @@ its own locator, and `corroborating_publisher_count` counts one lineage.
 `erp` gap of kind `NO_EVIDENCE` exists instead.
 *Protects:* the rule M3 is under the most pressure to break.
 
-### C10 [MUST] — A stated negative is a fact
-**Given** a page stating "we do not offer emergency service"
+### C10 [MUST] — A stated negative is an observation, not absence
+**Given** a source stating "Emergency service: not offered"
 **When** it is extracted
-**Then** `emergency_service = false` is asserted as `FACT`.
+**Then** `emergency_service = false` is asserted with `availability = OBSERVED`
+and a fact type set by the **normal source and evidence-class policy** — for a
+third-party directory that is `PROXY`, not `FACT` — and the attribute receives
+no `NO_EVIDENCE` gap, because something *was* found.
 *Protects:* silence and denial are different, and both are representable.
+
+> *Corrected in revision 5.2.* This read "a stated negative is a **fact** …
+> asserted as `FACT`", and the test traced to it asserted only that a negative
+> claim existed — so the scenario was not being tested as written, and could
+> not have been: the fixture's negative comes from a directory, and promoting
+> it to `FACT` would break the rule that fact type follows the source. A
+> first-party statement reaching `FACT` is J3's job, which tests exactly that.
 
 ### C11 [MUST] — The provenance walk always terminates at bytes or a hash
 **Given** any M3 claim
@@ -289,6 +299,24 @@ blog post
 **Then** its `fact_type` is `PROXY` (determined by the source) and its
 `confidence` is computed from evidence type and source trust, not from 0.99.
 *Protects:* a model cannot upgrade weak evidence by being sure.
+
+### D11 [MUST] — A review candidate outlives the process that raised it
+**Given** a low-confidence observation deferred during a research attempt
+**When** the process ends and a reviewer opens the queue in a fresh session
+**Then** the exact evidence item is still discoverable with
+`reason = LOW_CONFIDENCE_REQUIRES_REVIEW`, its company, question and attribute
+are recoverable, and confirming it asserts only that observation.
+*Protects:* the deferral used to live in transient state, so nothing connected
+the `INSUFFICIENT_EVIDENCE` gap to the evidence behind it.
+
+### D12 [MUST] — Review history reports only what is persisted or derivable
+**Given** a recorded confirmation
+**When** the review history is read in a new session
+**Then** the human extraction, the resulting claim and the created evidence ids
+agree with the original response — the evidence ids reconstructed from the
+persisted extraction, never invented.
+*Protects:* the endpoint emitted an empty created-evidence list for every
+historical row, which is false for every confirmation.
 
 ### D3 [MUST] — A low-confidence extraction yields a gap, not a claim
 **Given** an extraction below the review threshold
@@ -323,6 +351,29 @@ decision, and the sampled extraction is byte-identical to before.
 > the review resource is keyed on the evidence item rather than on a claim.
 > Confirmation and rejection are genuinely different behaviours and are now
 > D6 and D7 (M3-ADR-056).
+
+### D8 [MUST] — A review asserts only about the company its evidence came from
+**Given** evidence captured while researching company A, and a second company B
+**When** the evidence is confirmed
+**Then** the subject company is **derived** from
+evidence → fetch event → attempt → run, every resulting claim names A, nothing
+is written about B, and the review contract exposes no company input at all.
+*Protects:* a caller-supplied company id let evidence about one organisation be
+asserted about another.
+
+### D9 [MUST] — A confirmation covers one attribute at one span
+**Given** a sampled reading holding several observations of one document
+**When** a reviewer confirms one of them
+**Then** exactly one HUMAN evidence item is created, at most one claim is
+asserted, the stored HUMAN extraction records **only** the confirmed
+observation, and the others remain in the review queue.
+*Protects:* confirming one span used to create four claims and record that the
+reviewer had approved all four.
+
+### D10 [MUST] — Only an observation awaiting review is reviewable
+**Given** an ordinary deterministic evidence item that is not a review candidate
+**When** a confirmation is attempted against it
+**Then** it is refused. "Reviewable" is a durable state, not knowledge of an id.
 
 ### D7 [MUST] — A human rejection is durable and asserts nothing
 **Given** a sampled reading recorded as an evidence item
@@ -403,6 +454,17 @@ the gap is raised only for an attribute every pursued source failed for.
 *Protects:* an earlier implementation attached `UNRESOLVABLE_SOURCE` to
 `targets[0]` whenever any source failed, and duly reported `branch_count`
 unreachable while `branch_count` held three good claims.
+
+### G17 [MUST] — The losing terminal writer receives a domain conflict
+**Given** two genuinely concurrent writers, the first holding its terminal
+insert open and the second attempting the sibling terminal state
+**When** the first commits
+**Then** the second receives `GAP_TRANSITION_ILLEGAL` or
+`SIGNAL_TRANSITION_ILLEGAL` — never a raw `IntegrityError` naming an index —
+and exactly one terminal event exists.
+*Protects:* the unique index made two terminals unrepresentable but the service
+translated only the wrong constraint, so the sibling race still surfaced a
+database exception.
 
 ### G16 [MUST] — Two terminal transitions cannot both land
 **Given** a gap at `ATTEMPTED`, or a signal occurrence at `ACKNOWLEDGED`
@@ -1088,9 +1150,11 @@ any mismatch fails rather than warns.
 * A terminal-state test: no attempt may transition out of `COMPLETED`,
   `PARTIAL` or `FAILED`.
 
-**Scenario count: 139 MUST + 1 withdrawn = 140** — A:14, B:5, C:14, D:7, E:6,
-F:8, G:15 (+G8 withdrawn), H:7, I:4, J:4, L:19, M:16, N:2, O:18.
+**Scenario count: 145 MUST + 1 withdrawn = 146** — A:14, B:5, C:14, D:12, E:6,
+F:8, G:16 (+G8 withdrawn), H:7, I:4, J:4, L:19, M:16, N:2, O:18.
 
-Revision 5.1 added D7, F7, F8, G16 and I4, and split D6: each records a
-behaviour an audit proved the branch did not have. The count rose because the
-contract got more truthful, which is the only reason it should ever move.
+Revision 5.1 added D7, F7, F8, G16 and I4, and split D6. Revision 5.2 added
+D8–D12 and G17, and corrected C10. Every one records a behaviour an audit
+proved the branch did not have, or a sentence that could not be satisfied
+without breaking a governing rule. The count rises because the contract gets
+more truthful, which is the only reason it should ever move.
