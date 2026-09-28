@@ -370,8 +370,10 @@ def get_company_research(
             best_fact_type=state.get("best_fact_type"),
             unit=state.get("unit"),
             confidence=state.get("confidence"),
+            source_published_at=state.get("source_published_at"),
+            source_published_granularity=state.get("source_published_granularity"),
             observed_at=state.get("observed_at"),
-            observed_granularity=state.get("observed_granularity"),
+            period_granularity=state.get("period_granularity"),
             contradiction=bool(contradiction.get("contradiction")),
             contradicting_claim_ids=contradiction.get("claim_ids", []),
             corroborating_publisher_count=(

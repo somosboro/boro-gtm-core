@@ -1215,7 +1215,17 @@ POST /operational-research/runs/{id}/attempts    start an execution
 GET  /operational-research/attempts              filter: status, company, run
 GET  /operational-research/attempts/{id}         stages, timings, error, seed inputs
 POST /operational-research/attempts/{id}/retry   creates attempt n+1 on the same run
+GET  /operational-research/attempts/{id}/extractions   readings this execution
+                                                 created or reused
 ```
+
+> *Added in revision 5.1.* The extractions endpoint was not in the frozen
+> surface and the branch added it; rather than leave undocumented expansion in
+> a release candidate, it is amended in here. It is required because
+> `research_attempt_extractions` is the only record of *which* execution
+> created or reused a reading, and L6 — one extraction row, two attempt usages
+> — is otherwise unanswerable from the API. It exposes no new data: every field
+> is already served by `GET /research-extractions/{id}`.
 
 **Evidence, addressable in its own right**
 
@@ -1266,12 +1276,24 @@ This queue is **not** wired into M2 (§20.1). M3 owns it end to end.
 **Human evidence review**
 
 ```
-POST /research-claims/{id}/review                confirm or reject — appends
+GET  /research-reviews/pending                   sampled readings awaiting a human
+POST /research-evidence-items/{id}/review        confirm or reject — appends
+GET  /research-evidence-items/{id}/reviews       every decision recorded
 ```
 
-Appends a `HUMAN` extraction and, on confirmation, a new claim. It never edits
-the model's extraction or claim. A `SAMPLED` extraction reaches a canonical
-claim only through this path (§9.3).
+> *Corrected in revision 5.1 (M3-ADR-056).* This read
+> `POST /research-claims/{id}/review`, which cannot express the workflow it
+> describes: a `SAMPLED` reading reaches a claim only *after* confirmation, so
+> at the moment it becomes reviewable there is no claim to key a route on. The
+> review resource is the **evidence item**, which exists from the moment the
+> reading is recorded. The claim-keyed route is superseded and removed.
+
+Confirmation appends a `HUMAN` extraction and its own evidence, and may then
+assert a claim. Rejection records the decision, the actor, the time and the
+rationale in `research_evidence_reviews`, and asserts nothing — a reviewer's
+disbelief is not evidence that the opposite is true. Neither edits the model's
+extraction. A `SAMPLED` extraction reaches a canonical claim only through
+confirmation (§9.3).
 
 Not exposed: the job queue, fetch internals, raw model output by default, and
 locator internals beyond what an evidence item needs.

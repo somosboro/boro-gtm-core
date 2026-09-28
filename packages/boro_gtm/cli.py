@@ -498,6 +498,9 @@ def research_show(
                     "best": facts.get(key, {}).get("best"),
                     "fact_type": facts.get(key, {}).get("best_fact_type"),
                     "confidence": facts.get(key, {}).get("confidence"),
+                    "source_published_at": facts.get(key, {}).get(
+                        "source_published_at"),
+                    "observed_at": facts.get(key, {}).get("observed_at"),
                     "contradiction": (profile.contradictions or {})
                         .get(key, {}).get("contradiction", False),
                     "corroborating_publishers": (

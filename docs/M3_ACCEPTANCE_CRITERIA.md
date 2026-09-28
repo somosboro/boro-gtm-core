@@ -135,6 +135,16 @@ without removing the first.
 **Then** the evidence link carries a locator with a CSS path, a heading path,
 the quote and its sha256, and the claim resolves back to that exact text.
 
+> *Precision stated in revision 5.1.* Exactness comes from the **quote hash and
+> the character offsets**, which resolve the citation without the document
+> structure (B4). `css_path` is a **structural tag path** — element types and
+> nth-of-type position, e.g. `html > body > p:nth-of-type(1)` — and a heading
+> trail. It is context a person can check a citation against, not a selector
+> guaranteed to re-query every page shape: it carries no ids, classes or
+> attribute predicates, and a page that reflows will move it. It is named
+> `css_path` because it is CSS-shaped, and this note exists so nothing reads
+> that name as a promise of replayable exactness. Exactness lives in the hash.
+
 ### B2 [MUST] — A PDF claim cites a page and span
 **Given** a licence PDF whose page 2 names a certification
 **When** `certification` is asserted

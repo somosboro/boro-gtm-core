@@ -210,8 +210,13 @@ class AttributeStateOut(BaseModel):
     best_fact_type: str | None = None
     unit: str | None = None
     confidence: float | None = None
+    #: When the *source document* says it was published.
+    source_published_at: date | None = None
+    source_published_granularity: str | None = None
+    #: When the asserted fact was true, per the source. Distinct from the
+    #: publication date, and NULL wherever no source dates the fact itself.
     observed_at: date | None = None
-    observed_granularity: str | None = None
+    period_granularity: str | None = None
     contradiction: bool = False
     contradicting_claim_ids: list[uuid.UUID] = Field(default_factory=list)
     corroborating_publisher_count: int = 0

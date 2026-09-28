@@ -202,10 +202,24 @@ def _envelope(attribute_key: str, group: list[ClaimFacts]) -> dict[str, Any]:
             float(best.claim.confidence) if best.claim.confidence is not None else None
         ),
         "unit": best.claim.unit,
-        "observed_at": (
+        # The *document's* publication date, not the claim's `observed_at`.
+        # The design keeps four times apart — `retrieved_at`,
+        # `source_published_at`, `observed_at` and the claim's validity window
+        # — and labelling this one `observed_at` quietly merged two of them.
+        "source_published_at": (
             best.source_published_at.isoformat() if best.source_published_at else None
         ),
-        "observed_granularity": "DATE" if best.source_published_at else "UNDATED",
+        "source_published_granularity": (
+            "DATE" if best.source_published_at else "UNDATED"
+        ),
+        # NULL throughout the fixture corpus: the extractors observe what a
+        # source *says*, and none of the fixture sources dates the fact itself
+        # as distinct from dating the page. Retained as NULL rather than
+        # back-filled from the publication date, which would be inventing one.
+        "observed_at": (
+            best.claim.observed_at.isoformat() if best.claim.observed_at else None
+        ),
+        "period_granularity": best.claim.period_granularity,
     }
 
 
