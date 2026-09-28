@@ -266,7 +266,10 @@ PUBLISHER_BY_DOMAIN: dict[str, Publisher] = {
         "meridianmechanical", SourceClass.COMPANY_OWN_SITE.value
     ),
     "hvacjobsboard.example": Publisher("hvacjobsboard", SourceClass.JOB_BOARD.value),
-    "sos.ohio.example": Publisher("ohio-sos", SourceClass.GOVERNMENT_REGISTRY.value),
+    # Keyed on the *registrable* domain, which is the last two labels: the
+    # registry lives at `sos.ohio.example`, so keying it there made every
+    # registry filing fall through to UNKNOWN and lose a whole trust tier.
+    "ohio.example": Publisher("ohio-sos", SourceClass.GOVERNMENT_REGISTRY.value),
     "contractordirectory.example": Publisher(
         "contractordirectory", SourceClass.THIRD_PARTY_DIRECTORY.value
     ),

@@ -252,6 +252,8 @@ DIRECTORY_COPY_URL = "https://contractordirectory.example/copy/meridian-emergenc
 PDF_URL = "https://www.meridianmechanical.com/docs/maintenance-agreement.pdf"
 NEWS_URL = "https://tradepress.example/2026/meridian-cincinnati"
 SPANISH_URL = "https://www.meridianmechanical.com/es/servicios"
+#: A share link for the services page. Declares the canonical elsewhere.
+SERVICES_SHARE_URL = "https://www.meridianmechanical.com/s/commercial-services"
 REDIRECT_URL = "http://meridianmechanical.com/company"
 
 
@@ -288,6 +290,15 @@ def build_web() -> dict[str, FixtureResource]:
         DIRECTORY_COPY_URL: FixtureResource(
             body=_html("24/7 Emergency Service", _EMERGENCY_BODY, published="2025-06-30"),
             etag='"copy-v1"',
+        ),
+        # A tracking-tagged share link that declares the real page canonical.
+        # The services page declares *itself* canonical, which is correct and
+        # produces no edge; this is the case where the declaration points
+        # somewhere else and is therefore evidence worth recording.
+        SERVICES_SHARE_URL: FixtureResource(
+            body=_html("Commercial Mechanical Services", _SERVICES_BODY_V1,
+                       canonical=SERVICES_URL, published="2025-09-18"),
+            etag='"services-share-v1"',
         ),
         SPANISH_URL: FixtureResource(
             body=_html(
@@ -367,6 +378,7 @@ HUMAN_SEEDS: tuple[str, ...] = (HOME,)
 #: What the fixture sitemap advertises.
 SITEMAP: tuple[str, ...] = (
     HOME, SERVICES_URL, PM_URL, EMERGENCY_URL, SPANISH_URL, PDF_URL,
+    SERVICES_SHARE_URL,
     "https://www.meridianmechanical.com/customer-portal",
     "https://www.meridianmechanical.com/legacy/old-service-page",
     "https://www.meridianmechanical.com/internal/dispatch-board",

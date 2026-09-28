@@ -624,9 +624,17 @@ DEFAULT_EXTRACTORS: tuple[Extractor, ...] = (
 )
 
 
-def extractors_for(media_type: str,
-                   extractors: Iterable[Extractor] = DEFAULT_EXTRACTORS) -> list[Extractor]:
-    return [x for x in extractors if media_type in x.media_types]
+def extractors_for(
+    media_type: str, extractors: Iterable[Extractor] | None = None
+) -> list[Extractor]:
+    """Resolve the default set at call time, not at import time.
+
+    A default argument is bound once, so patching `DEFAULT_EXTRACTORS` had no
+    effect and a test that swapped in a low-confidence extractor silently ran
+    the original.
+    """
+    pool = DEFAULT_EXTRACTORS if extractors is None else extractors
+    return [x for x in pool if media_type in x.media_types]
 
 
 # ---------------------------------------------------------------------------

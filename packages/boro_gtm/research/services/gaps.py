@@ -152,17 +152,34 @@ def _append_event(
     return result.first() is not None
 
 
+#: Where each event sits in the lifecycle. The graph is a DAG
+#: (RAISED → ATTEMPTED → RESOLVED | ABANDONED), so "furthest along" is a total
+#: order and a safe tiebreak.
+_LIFECYCLE_RANK: dict[str, int] = {
+    "RAISED": 0, "ATTEMPTED": 1, "RESOLVED": 2, "ABANDONED": 2,
+}
+
+
 def current_status(session: Session, gap_id: uuid.UUID) -> str | None:
-    """The latest event, because the gap row itself holds no status."""
-    return session.scalars(
-        select(OperationalResearchGapEvent.event_kind)
-        .where(OperationalResearchGapEvent.gap_id == gap_id)
-        .order_by(
-            OperationalResearchGapEvent.occurred_at.desc(),
-            OperationalResearchGapEvent.id.desc(),
-        )
-        .limit(1)
-    ).first()
+    """The latest event, because the gap row itself holds no status.
+
+    Ties on `occurred_at` are broken by **lifecycle position**, not by row id.
+    Ordering by a random UUID made the answer depend on which id happened to
+    sort higher, so a gap raised and resolved in the same transaction reported
+    either state at random. Two events at the same instant are ordered by which
+    is further along, which is what "current" means.
+    """
+    events = session.execute(
+        select(
+            OperationalResearchGapEvent.event_kind,
+            OperationalResearchGapEvent.occurred_at,
+        ).where(OperationalResearchGapEvent.gap_id == gap_id)
+    ).all()
+    if not events:
+        return None
+    return max(
+        events, key=lambda row: (row[1], _LIFECYCLE_RANK.get(row[0], -1))
+    )[0]
 
 
 def open_gap_count(session: Session, run_id: uuid.UUID) -> int:

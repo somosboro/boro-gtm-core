@@ -17,7 +17,7 @@ These describe the system **as built**.
 | [M2_COMPANY_DISCOVERY_DESIGN.md](M2_COMPANY_DISCOVERY_DESIGN.md) | Identity anchors vs projections, provider versioning and capability, the attribute registry, entity resolution, run lifecycle, domain policy, temporal relationships |
 | [M2_SCHEMA_GRAPH.md](M2_SCHEMA_GRAPH.md) | The table graph as built: ownership, cardinality and indexes |
 | [M2_ACCEPTANCE_CRITERIA.md](M2_ACCEPTANCE_CRITERIA.md) | The scenarios M2 satisfies, each naming the test that executes it |
-| [M2_ADRS.md](M2_ADRS.md) | 34 decision records, including every correction found while implementing |
+| [M2_ADRS.md](M2_ADRS.md) | 54 decision records, including every correction found while implementing |
 
 The design is at **revision 6**, and the code implements it.
 
@@ -69,7 +69,7 @@ acquisition, extraction, claim and projection services are not built.
 | [M3_OPERATIONAL_RESEARCH_DESIGN.md](M3_OPERATIONAL_RESEARCH_DESIGN.md) | Responsibility and boundaries, source/artifact/version model, the claim-ledger audit, operational attribute taxonomy, extraction and model-assisted evidence, contradictions, temporal semantics, gaps and coverage, fetch policy, firewalls |
 | [M3_SCHEMA_GRAPH.md](M3_SCHEMA_GRAPH.md) | Proposed table graph: ownership, mutability, keys, indexes and what is deliberately *not* created |
 | [M3_ACCEPTANCE_CRITERIA.md](M3_ACCEPTANCE_CRITERIA.md) | 134 Given/When/Then scenarios M3 must satisfy |
-| [M3_ADRS.md](M3_ADRS.md) | 52 decision records, including the one-ledger decision and the M3/M4 boundary |
+| [M3_ADRS.md](M3_ADRS.md) | 54 decision records, including the one-ledger decision and the M3/M4 boundary |
 | [M3_CANONICAL_COMMERCIAL_ALIGNMENT.md](M3_CANONICAL_COMMERCIAL_ALIGNMENT.md) | How M3 maps to the canonical commercial ontology: the 18-signal coverage matrix, the eleven process-observation primitives, and the firewalls |
 | [GTM_MILESTONE_OWNERSHIP.md](GTM_MILESTONE_OWNERSHIP.md) | The revised milestone roadmap and the 14 canonical sales stages mapped to it |
 | [GTM_ACCOUNT_FIELD_OWNERSHIP.md](GTM_ACCOUNT_FIELD_OWNERSHIP.md) | All 25 canonical account fields: owner, earliest legitimate stage, mutability, who may write |

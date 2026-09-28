@@ -12,6 +12,7 @@ a comment asking future readers to be careful.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from datetime import UTC, date, datetime
 from typing import Any
@@ -91,7 +92,7 @@ def list_runs(
 ) -> list[s.RunOut]:
     limit, offset = _page(limit, offset)
     return [
-        s.RunOut(**view.__dict__) for view in application.list_runs(
+        s.RunOut(**dataclasses.asdict(view)) for view in application.list_runs(
             db, company_id=company, policy_version=policy, vertical_id=vertical,
             limit=limit, offset=offset,
         )
@@ -101,7 +102,7 @@ def list_runs(
 @router.get("/operational-research/runs/{run_id}", response_model=s.RunOut,
             tags=["operational-research"])
 def get_run(run_id: uuid.UUID, db: Session = Depends(get_db)) -> s.RunOut:
-    return s.RunOut(**application.get_run(db, run_id).__dict__)
+    return s.RunOut(**dataclasses.asdict(application.get_run(db, run_id)))
 
 
 @router.post("/operational-research/runs", response_model=s.RunOut, status_code=201,
@@ -118,7 +119,7 @@ def create_run(body: s.RunCreate, db: Session = Depends(get_db)) -> s.RunOut:
         target_attribute_keys=keys, plan_inputs=body.plan_inputs,
     )
     db.commit()
-    return s.RunOut(**view.__dict__)
+    return s.RunOut(**dataclasses.asdict(view))
 
 
 @router.post("/operational-research/runs/{run_id}/attempts",
@@ -139,7 +140,7 @@ def create_attempt(
         conditional=options.conditional,
     )
     db.commit()
-    return s.AttemptOut(**view.__dict__)
+    return s.AttemptOut(**dataclasses.asdict(view))
 
 
 @router.get("/operational-research/attempts", response_model=list[s.AttemptOut],
@@ -158,7 +159,7 @@ def list_attempts(
     if status is not None:
         status = coerce_vocabulary(status, AttemptStatus, "status")
     return [
-        s.AttemptOut(**view.__dict__) for view in application.list_attempts(
+        s.AttemptOut(**dataclasses.asdict(view)) for view in application.list_attempts(
             db, run_id=run, company_id=company, status=status,
             limit=limit, offset=offset,
         )
@@ -168,7 +169,7 @@ def list_attempts(
 @router.get("/operational-research/attempts/{attempt_id}",
             response_model=s.AttemptOut, tags=["operational-research"])
 def get_attempt(attempt_id: uuid.UUID, db: Session = Depends(get_db)) -> s.AttemptOut:
-    return s.AttemptOut(**application.get_attempt(db, attempt_id).__dict__)
+    return s.AttemptOut(**dataclasses.asdict(application.get_attempt(db, attempt_id)))
 
 
 @router.post("/operational-research/attempts/{attempt_id}/retry",
@@ -180,7 +181,7 @@ def retry_attempt(
     """Retry advances the question as attempt n+1; it never reopens one."""
     view = application.retry_attempt(db, attempt_id)
     db.commit()
-    return s.AttemptOut(**view.__dict__)
+    return s.AttemptOut(**dataclasses.asdict(view))
 
 
 # ---------------------------------------------------------------------------

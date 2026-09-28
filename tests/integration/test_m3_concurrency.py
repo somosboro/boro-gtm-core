@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import func, select
 
-from boro_gtm.discovery.domain.models import Company
+from boro_gtm.discovery.domain.models import Company, CompanyClaim
 from boro_gtm.research.domain import models as m
 from boro_gtm.research.fixtures.transport import DiscoveredLocator
 from boro_gtm.research.seeds import seed_all
@@ -194,3 +194,230 @@ def test_only_one_attempt_can_be_live_for_a_question(two_sessions):
     with pytest.raises(IntegrityError):
         right.commit()
     right.rollback()
+
+
+# --- extraction, claim and projection races --------------------------------
+
+
+def _researched(session, company_id, *, now=NOW):
+    from boro_gtm.research.fixtures.transport import FixtureTransport
+    from boro_gtm.research.services.pipeline import run_pipeline
+
+    result = run_pipeline(session, company_id=company_id,
+                         transport=FixtureTransport(), now=now)
+    session.commit()
+    return result
+
+
+def test_two_workers_extracting_one_text_derivation_produce_one_result(two_sessions):
+    """G6: the deterministic contract key converges both writers."""
+    from boro_gtm.research.services.extraction import PROSE_EXTRACTOR, run_extraction
+
+    left, right = two_sessions
+    company = _company(left)
+    result = _researched(left, company.id)
+
+    derivation = left.scalars(
+        select(m.ResearchTextDerivation)
+        .join(m.ResearchExtraction,
+              m.ResearchExtraction.text_derivation_id == m.ResearchTextDerivation.id)
+        .where(m.ResearchExtraction.extractor_id == PROSE_EXTRACTOR.extractor_id)
+        .limit(1)
+    ).first()
+    before = left.scalar(
+        select(func.count()).select_from(m.ResearchExtraction).where(
+            m.ResearchExtraction.text_derivation_id == derivation.id,
+            m.ResearchExtraction.extractor_id == PROSE_EXTRACTOR.extractor_id,
+        )
+    )
+
+    first = run_extraction(
+        left, extractor=PROSE_EXTRACTOR, text_derivation=derivation,
+        attempt_id=result.attempt.id, now=NOW,
+    )
+    left.commit()
+    second = run_extraction(
+        right, extractor=PROSE_EXTRACTOR,
+        text_derivation=right.get(m.ResearchTextDerivation, derivation.id),
+        attempt_id=result.attempt.id, now=NOW,
+    )
+    right.commit()
+
+    assert first.extraction.id == second.extraction.id
+    assert right.scalar(
+        select(func.count()).select_from(m.ResearchExtraction).where(
+            m.ResearchExtraction.text_derivation_id == derivation.id,
+            m.ResearchExtraction.extractor_id == PROSE_EXTRACTOR.extractor_id,
+        )
+    ) == before
+
+
+def test_two_workers_asserting_one_claim_converge_on_one_row(two_sessions):
+    """The partial unique fingerprint index, over two real connections."""
+    from boro_gtm.research.services.claims import PendingAssertion, assert_claim
+
+    left, right = two_sessions
+    company = _company(left)
+    _researched(left, company.id)
+
+    evidence = left.scalars(select(m.ResearchEvidenceItem.id).limit(1)).all()
+    before = left.scalar(select(func.count()).select_from(CompanyClaim))
+
+    def pending():
+        return PendingAssertion(
+            attribute_key="fleet_size", value={"min": 9, "max": 9},
+            unit="VEHICLES", fact_type="ESTIMATE", support_kind="DERIVED",
+            evidence_item_ids=list(evidence),
+        )
+
+    first = assert_claim(left, company_id=company.id, pending=pending(), now=NOW)
+    left.commit()
+    second = assert_claim(right, company_id=company.id, pending=pending(), now=NOW)
+    right.commit()
+
+    assert first.claim.id == second.claim.id
+    assert first.created is True
+    assert second.created is False
+    assert right.scalar(select(func.count()).select_from(CompanyClaim)) == before + 1
+
+
+def test_two_concurrent_company_profile_rebuilds_converge(two_sessions):
+    """One row, one result, and no raw IntegrityError."""
+    from boro_gtm.research.services import profiles
+
+    left, right = two_sessions
+    company = _company(left)
+    _researched(left, company.id)
+
+    profiles.rebuild_company_profile(left, company.id)
+    left.commit()
+    first = left.get(m.OperationalResearchProfile, company.id)
+    snapshot = (first.facts, first.contradictions,
+                first.corroborating_publisher_counts)
+
+    profiles.rebuild_company_profile(right, company.id)
+    right.commit()
+
+    assert right.scalar(
+        select(func.count()).select_from(m.OperationalResearchProfile)
+    ) == 1
+    second = right.get(m.OperationalResearchProfile, company.id)
+    assert (second.facts, second.contradictions,
+            second.corroborating_publisher_counts) == snapshot
+
+
+def test_two_concurrent_plan_profile_rebuilds_converge(two_sessions):
+    from boro_gtm.research.services import profiles
+
+    left, right = two_sessions
+    company = _company(left)
+    result = _researched(left, company.id)
+    run_id = result.attempt.run_id
+
+    profiles.rebuild_plan_profile(left, run_id)
+    left.commit()
+    first = left.get(m.OperationalResearchPlanProfile, run_id)
+    snapshot = (float(first.coverage), first.required_attribute_count,
+                first.covered_attribute_count, first.open_gap_count)
+
+    profiles.rebuild_plan_profile(right, run_id)
+    right.commit()
+
+    assert right.scalar(
+        select(func.count()).select_from(m.OperationalResearchPlanProfile)
+    ) == 1
+    second = right.get(m.OperationalResearchPlanProfile, run_id)
+    assert (float(second.coverage), second.required_attribute_count,
+            second.covered_attribute_count, second.open_gap_count) == snapshot
+
+
+def test_a_decision_computed_from_a_stale_read_does_not_land(two_sessions):
+    """Two reviewers, one occurrence: the loser is told, not silently applied.
+
+    The stale read is made explicit rather than left to transaction timing — a
+    test that depends on which snapshot a session happens to hold is a test that
+    passes or fails for reasons unrelated to the invariant.
+
+    The second reviewer decides what to do while the state is `OPEN`, the first
+    reviewer commits `ACKNOWLEDGED`, and the second then tries to apply the move
+    that was legal when it looked. It is refused.
+    """
+    from boro_gtm.research.services.review import (
+        IllegalSignalTransitionError,
+        append_signal_status,
+        occurrence_status,
+    )
+
+    left, right = two_sessions
+    company = _company(left)
+    _researched(left, company.id)
+
+    signal = left.scalars(select(m.IdentityReviewSignal)).one()
+    occurrence = right.scalars(select(m.IdentityReviewSignalOccurrence)).one()
+
+    # What the second reviewer saw, and therefore what it decided to do.
+    observed = occurrence_status(right, occurrence.id)
+    assert observed == "OPEN"
+    intended = "ACKNOWLEDGED"          # legal from OPEN
+
+    # Meanwhile the first reviewer acknowledges it.
+    append_signal_status(left, signal_id=signal.id, occurrence_number=1,
+                         status="ACKNOWLEDGED", actor="left", now=NOW)
+    left.commit()
+
+    with pytest.raises(IllegalSignalTransitionError) as raised:
+        append_signal_status(right, signal_id=signal.id, occurrence_number=1,
+                             status=intended, actor="right", now=NOW)
+    assert "ACKNOWLEDGED" in str(raised.value)
+    right.rollback()
+
+    # Having re-read, the same reviewer can make the move that is now legal.
+    assert occurrence_status(right, occurrence.id) == "ACKNOWLEDGED"
+    append_signal_status(right, signal_id=signal.id, occurrence_number=1,
+                         status="ACTIONED", actor="right", now=NOW)
+    right.commit()
+    assert occurrence_status(right, occurrence.id) == "ACTIONED"
+
+
+def test_two_workers_creating_one_evidence_item_converge(two_sessions):
+    """The evidence identity key, over two connections."""
+    from boro_gtm.research.services.evidence import (
+        EvidenceContext,
+        create_evidence_item,
+    )
+    from boro_gtm.research.services.extraction import Observation
+
+    left, right = two_sessions
+    company = _company(left)
+    _researched(left, company.id)
+
+    item = left.scalars(select(m.ResearchEvidenceItem).limit(1)).first()
+    before = left.scalar(select(func.count()).select_from(m.ResearchEvidenceItem))
+    observation = Observation(
+        attribute_key="installation", value={"value": True}, fact_type="FACT",
+        locator={"kind": "HTML_SPAN", "start": 4242, "end": 4250, "resolved": True},
+        quote="installed", support_kind="DIRECT_STATEMENT",
+    )
+
+    def context(session):
+        return EvidenceContext(
+            extraction_id=item.extraction_id, fetch_event_id=item.fetch_event_id,
+            artifact_derivation_id=item.artifact_derivation_id,
+            body_id=item.body_id,
+            source=session.get(m.ResearchSource, item.source_id),
+        )
+
+    first, created_first = create_evidence_item(
+        left, context=context(left), observation=observation, now=NOW
+    )
+    left.commit()
+    second, created_second = create_evidence_item(
+        right, context=context(right), observation=observation, now=NOW
+    )
+    right.commit()
+
+    assert first.id == second.id
+    assert created_first is True and created_second is False
+    assert right.scalar(
+        select(func.count()).select_from(m.ResearchEvidenceItem)
+    ) == before + 1

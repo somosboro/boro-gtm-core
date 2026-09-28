@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from boro_gtm.core.errors import GtmError, NotFoundError, ValidationError
@@ -210,17 +211,32 @@ def _confirm(
 # ---------------------------------------------------------------------------
 
 
+#: Position in the review lifecycle. The graph is a DAG
+#: (OPEN → ACKNOWLEDGED → ACTIONED | DISMISSED), so "furthest along" is a total
+#: order and a safe tiebreak for two events at the same instant.
+_REVIEW_RANK: dict[str, int] = {
+    "OPEN": 0, "ACKNOWLEDGED": 1, "ACTIONED": 2, "DISMISSED": 2,
+}
+
+
 def occurrence_status(session: Session, occurrence_id: uuid.UUID) -> str | None:
-    """The latest event. The occurrence row itself stores no status."""
-    return session.scalars(
-        select(IdentityReviewSignalEvent.status)
-        .where(IdentityReviewSignalEvent.occurrence_id == occurrence_id)
-        .order_by(
-            IdentityReviewSignalEvent.occurred_at.desc(),
-            IdentityReviewSignalEvent.id.desc(),
-        )
-        .limit(1)
-    ).first()
+    """The latest event. The occurrence row itself stores no status.
+
+    Ties on `occurred_at` are broken by **lifecycle position**, not by row id.
+    A signal raised and acknowledged within one second — which the fixture
+    pipeline does every run — otherwise reported either state depending on which
+    random UUID happened to sort higher. The same defect existed in the gap
+    status and is fixed the same way.
+    """
+    events = session.execute(
+        select(
+            IdentityReviewSignalEvent.status,
+            IdentityReviewSignalEvent.occurred_at,
+        ).where(IdentityReviewSignalEvent.occurrence_id == occurrence_id)
+    ).all()
+    if not events:
+        return None
+    return max(events, key=lambda row: (row[1], _REVIEW_RANK.get(row[0], -1)))[0]
 
 
 def append_signal_status(
@@ -256,10 +272,28 @@ def append_signal_status(
             {"from": current, "to": status,
              "legal": sorted(LEGAL_SIGNAL_TRANSITIONS.get(current, frozenset()))},
         )
-    event = IdentityReviewSignalEvent(
-        id=uuid.uuid4(), occurrence_id=occurrence.id, status=status, actor=actor,
-        note=note, occurred_at=now,
+    # A Core insert with ON CONFLICT, the pattern M2's resolution service uses:
+    # an ORM `add` is flushed outside the savepoint, so the failure escapes as a
+    # PendingRollbackError instead of something this function can translate.
+    event_id = uuid.uuid4()
+    result = session.execute(
+        pg_insert(IdentityReviewSignalEvent)
+        .values(
+            id=event_id, occurrence_id=occurrence.id, status=status, actor=actor,
+            note=note, occurred_at=now,
+        )
+        .on_conflict_do_nothing(constraint="uq_signal_event")
+        .returning(IdentityReviewSignalEvent.id)
     )
-    session.add(event)
+    if result.first() is None:
+        # `uq_signal_event` is the backstop for a decision computed from a stale
+        # read: the legality check above passed because this transaction still
+        # saw the earlier state, and another reviewer had already recorded
+        # exactly this decision. The caller gets the domain error, not an index.
+        raise IllegalSignalTransitionError(
+            f"another reviewer already recorded {status} for occurrence "
+            f"{occurrence.occurrence_number}; re-read before deciding",
+            {"occurrence": occurrence.occurrence_number, "status": status},
+        )
     session.flush()
-    return event
+    return session.get(IdentityReviewSignalEvent, event_id)

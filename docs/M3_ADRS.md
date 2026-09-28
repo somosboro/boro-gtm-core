@@ -1854,3 +1854,70 @@ migrated past it.
 * **Generalisable:** `gtm_reject_update()` is the right default and the wrong
   choice wherever a retention class exists. A table with a payload and a
   documented retention horizon needs the parameterised trigger from the start.
+
+---
+
+## M3-ADR-053 — Event status ties break on lifecycle position, not row id
+
+**Status:** accepted (phase-3 implementation defect)
+
+### Context
+
+Gap status and identity-review status are both derived from an append-only
+event log: the latest event wins. Both read `ORDER BY occurred_at DESC, id
+DESC`, and the row id is a random UUID.
+
+Two events on one entity at the same `occurred_at` are not hypothetical — the
+pipeline raises a signal and records `OPEN` in the same call, and a gap can be
+raised and resolved inside one transaction. When the timestamps tie, a random
+UUID decides, so the same data reported either state run to run. It surfaced as
+a test that passed and failed alternately, which is the worst way to find it.
+
+### Decision
+
+Both lifecycle graphs are DAGs — `RAISED → ATTEMPTED → RESOLVED | ABANDONED`
+and `OPEN → ACKNOWLEDGED → ACTIONED | DISMISSED` — so "furthest along" is a
+total order. Ties on `occurred_at` break on lifecycle position.
+
+### Consequences
+
+* "Current status" is now a function of the data, not of UUID luck.
+* The `current_operational_research_gaps` view in `0004_m3` still carries the
+  old `id DESC` tiebreak. It is not on any code path — the services do their own
+  read — and the migration is protected, so it is left as-is and recorded here
+  rather than silently patched. A reader using that view directly for ad-hoc SQL
+  should know the tiebreak is arbitrary.
+* **Generalisable:** a derived "latest" over an append-only log needs a
+  deterministic tiebreak, and a surrogate key is not one. Where a lifecycle
+  exists, the lifecycle is the tiebreak.
+
+---
+
+## M3-ADR-054 — A stale-read decision is refused, and told so
+
+**Status:** accepted (phase-3 implementation defect)
+
+### Context
+
+`append_signal_status` checks the transition graph against the status it reads,
+then inserts. Two reviewers can both read `OPEN`, both decide `ACKNOWLEDGED` is
+legal, and the second insert then collides with `uq_signal_event` — surfacing a
+raw `IntegrityError`, which the API contract forbids.
+
+An ORM `add` inside a `try` does not help: the flush happens outside the
+savepoint, so the session lands in `PendingRollbackError` and the error cannot
+be translated where it was raised.
+
+### Decision
+
+The insert is a Core `ON CONFLICT DO NOTHING ... RETURNING`, the pattern M2's
+resolution service already uses. No returned row means another reviewer got
+there first, and the caller gets `IllegalSignalTransitionError` naming the
+decision — not an index name.
+
+### Consequences
+
+* The service check is the fast path and the unique key is the real guarantee,
+  which is the right division: a check over a value another transaction can
+  change is advisory by nature.
+* The caller is told to re-read rather than silently losing its decision.
