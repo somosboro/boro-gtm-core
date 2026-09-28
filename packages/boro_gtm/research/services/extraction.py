@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from boro_gtm.core.errors import GtmError
 from boro_gtm.research.domain.models import (
     ResearchAttemptExtraction,
     ResearchExtraction,
@@ -35,8 +36,11 @@ from boro_gtm.research.policies import sha256_json, sha256_text
 from boro_gtm.research.registry import get_attribute
 
 
-class ExtractorContractError(ValueError):
+class ExtractorContractError(GtmError):
     """An extractor tried to emit something the registry does not permit."""
+
+    code = "EXTRACTOR_CONTRACT_VIOLATION"
+    http_status = 422
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from boro_gtm.core.errors import GtmError
 from boro_gtm.research.domain.models import (
     ResearchArtifactBody,
     ResearchExtraction,
@@ -45,13 +46,16 @@ RAW_BODY_RETENTION_BY_MEDIA_TYPE: dict[str, int] = {
 }
 
 
-class PrunedPayloadError(RuntimeError):
+class PrunedPayloadError(GtmError):
     """A payload that retention removed was needed again.
 
     Raised instead of silently deriving from nothing. A caller that needs the
     bytes must re-fetch the source, and if the page is gone, that is a research
     gap — not an empty derivation that looks like a successful one.
     """
+
+    code = "PAYLOAD_PRUNED"
+    http_status = 409
 
 
 @dataclass(slots=True)

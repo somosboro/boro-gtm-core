@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from boro_gtm.core.errors import GtmError
 from boro_gtm.discovery.domain.models import CompanyClaim
 from boro_gtm.research.domain.models import (
     OperationalResearchAttempt,
@@ -142,13 +143,17 @@ def get_or_create_run(
     ).one(), False
 
 
-class AttemptAlreadyLiveError(RuntimeError):
+class AttemptAlreadyLiveError(GtmError):
     """A second attempt was requested while one is still running.
 
     The partial unique index `uq_attempt_live` already makes this
     unrepresentable. Raising here turns that into a sentence the caller can act
-    on, rather than an `IntegrityError` naming an index (G15).
+    on, and a documented 409, rather than an `IntegrityError` naming an index
+    (G15).
     """
+
+    code = "RESEARCH_ATTEMPT_ALREADY_LIVE"
+    http_status = 409
 
 
 def start_attempt(

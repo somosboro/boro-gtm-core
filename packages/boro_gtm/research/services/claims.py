@@ -28,6 +28,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from boro_gtm.core.errors import GtmError
 from boro_gtm.discovery.domain.models import CompanyClaim
 from boro_gtm.research.domain.models import (
     ClaimEvidenceLink,
@@ -54,7 +55,7 @@ from boro_gtm.research.services.extraction import Observation
 
 
 @dataclass(slots=True)
-class ConfidenceDivergenceError(ValueError):
+class ConfidenceDivergenceError(GtmError):
     """Appending evidence would change a confidence that cannot be rewritten.
 
     `company_claims` is append-only, and design rule 1 forbids an append-only
@@ -67,6 +68,9 @@ class ConfidenceDivergenceError(ValueError):
     that promise, and the fix is to the key — not to the append-only rule.
     See M3-ADR-047.
     """
+
+    code = "CLAIM_CONFIDENCE_DIVERGENCE"
+    http_status = 409
 
 
 @dataclass(slots=True)

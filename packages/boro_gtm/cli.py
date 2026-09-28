@@ -8,6 +8,16 @@
     python -m boro_gtm.cli discovery run --provider fixture_json_directory \
         --fixture ./data/fixtures/discovery_sample.json
     python -m boro_gtm.cli discovery project
+    python -m boro_gtm.cli research seed
+    python -m boro_gtm.cli research ask --company <uuid>
+    python -m boro_gtm.cli research run --run <uuid> --fixture-corpus
+    python -m boro_gtm.cli research show --company <uuid>
+    python -m boro_gtm.cli research coverage --run <uuid>
+    python -m boro_gtm.cli research gaps --run <uuid>
+    python -m boro_gtm.cli research signals
+    python -m boro_gtm.cli research project --company <uuid>
+    python -m boro_gtm.cli research prune --as-of 2027-01-01          # dry run
+    python -m boro_gtm.cli research prune --as-of 2027-01-01 --execute
 """
 
 from __future__ import annotations
@@ -27,10 +37,14 @@ app = typer.Typer(help="BoRo GTM Core — working codename", no_args_is_help=Tru
 mi_app = typer.Typer(help="Market intelligence commands", no_args_is_help=True)
 strategy_app = typer.Typer(help="Strategy registry commands", no_args_is_help=True)
 discovery_app = typer.Typer(help="Company discovery commands", no_args_is_help=True)
+research_app = typer.Typer(
+    help="Operational evidence commands (M3)", no_args_is_help=True
+)
 db_app = typer.Typer(help="Database health commands", no_args_is_help=True)
 app.add_typer(mi_app, name="market-intelligence")
 app.add_typer(strategy_app, name="strategy")
 app.add_typer(discovery_app, name="discovery")
+app.add_typer(research_app, name="research")
 app.add_typer(db_app, name="db")
 
 
@@ -337,6 +351,369 @@ def db_record_migrations() -> None:
         raise typer.Exit(code=1)
     _echo({"recorded": sorted(write_manifest())})
 
+
+
+# ---------------------------------------------------------------------------
+# M3 — operational evidence
+# ---------------------------------------------------------------------------
+
+
+@research_app.command("seed")
+def research_seed() -> None:
+    """Seed the M3 operational attribute registry (idempotent)."""
+    _bootstrap()
+    from boro_gtm.research.seeds import seed_all
+
+    with session_scope() as session:
+        _echo(seed_all(session))
+
+
+@research_app.command("ask")
+def research_ask(
+    company: str = typer.Option(..., help="Canonical company id."),
+    vertical: str | None = typer.Option(None, help="Vertical id, if the plan has one."),
+    attribute: list[str] = typer.Option(
+        None, "--attribute", help="Target attribute key; repeatable. "
+                                 "Defaults to every required attribute."
+    ),
+) -> None:
+    """Create or reuse a research question.
+
+    Asking the same question twice reuses it: the plan hash covers every input
+    that defines the question, so a second ask is not a second question.
+    """
+    _bootstrap()
+    import uuid as _uuid
+
+    from boro_gtm.research.registry import DEFAULT_TARGET_ATTRIBUTES
+    from boro_gtm.research.services.application import create_or_reuse_run
+
+    with session_scope() as session:
+        view, created = create_or_reuse_run(
+            session,
+            company_id=_uuid.UUID(company),
+            vertical_id=_uuid.UUID(vertical) if vertical else None,
+            target_attribute_keys=tuple(attribute or DEFAULT_TARGET_ATTRIBUTES),
+            created_by="cli",
+        )
+        _echo({
+            "run_id": str(view.id), "created": created,
+            "research_plan_hash": view.research_plan_hash,
+            "target_attribute_keys": view.target_attribute_keys,
+        })
+
+
+@research_app.command("run")
+def research_run(
+    run: str = typer.Option(..., help="Research question id to execute."),
+    fixture_corpus: bool = typer.Option(
+        False, "--fixture-corpus",
+        help="Required. M3 ships no production research provider; execution "
+             "reads the deterministic fixture corpus.",
+    ),
+    confirm_sampled: bool = typer.Option(
+        False, help="Also create the HUMAN confirmation for sampled readings."
+    ),
+    conditional: bool = typer.Option(
+        True, help="Send If-None-Match from the last successful retrieval."
+    ),
+) -> None:
+    """Execute one attempt of a research question against the fixture corpus.
+
+    ``--fixture-corpus`` is mandatory and not a default, so nobody can run this
+    believing it crawls the internet. It does not.
+    """
+    _bootstrap()
+    import uuid as _uuid
+
+    if not fixture_corpus:
+        raise typer.BadParameter(
+            "pass --fixture-corpus. M3 has no production research provider, and "
+            "this command reads local fixtures; the flag exists so the output "
+            "cannot be mistaken for live research."
+        )
+    from boro_gtm.research.services.application import execute_attempt
+
+    with session_scope() as session:
+        view = execute_attempt(
+            session, run_id=_uuid.UUID(run), confirm_sampled=confirm_sampled,
+            conditional=conditional,
+        )
+        _echo({
+            "attempt_id": str(view.id), "attempt_number": view.attempt_number,
+            "status": view.status, "error": view.error,
+            "source": "fixture-corpus",
+        })
+
+
+@research_app.command("retry")
+def research_retry(
+    attempt: str = typer.Option(..., help="Terminal attempt to retry as n+1."),
+    fixture_corpus: bool = typer.Option(False, "--fixture-corpus"),
+) -> None:
+    """Retry a terminal attempt. It never reopens one."""
+    _bootstrap()
+    import uuid as _uuid
+
+    if not fixture_corpus:
+        raise typer.BadParameter("pass --fixture-corpus; see `research run`.")
+    from boro_gtm.research.services.application import retry_attempt
+
+    with session_scope() as session:
+        view = retry_attempt(session, _uuid.UUID(attempt))
+        _echo({
+            "attempt_id": str(view.id), "attempt_number": view.attempt_number,
+            "status": view.status,
+        })
+
+
+@research_app.command("show")
+def research_show(
+    company: str = typer.Option(..., help="Canonical company id."),
+    attribute: str | None = typer.Option(None, help="Show one attribute only."),
+) -> None:
+    """Company-global operational knowledge, with read-time staleness."""
+    _bootstrap()
+    import uuid as _uuid
+    from datetime import UTC, datetime
+
+    from boro_gtm.research.domain.models import OperationalResearchProfile
+    from boro_gtm.research.services.staleness import company_staleness
+
+    company_id = _uuid.UUID(company)
+    with session_scope() as session:
+        profile = session.get(OperationalResearchProfile, company_id)
+        if profile is None:
+            raise NotFoundError(f"no operational research profile for {company_id}")
+        verdicts = company_staleness(session, company_id, datetime.now(UTC).date())
+        facts = profile.facts or {}
+        keys = [attribute] if attribute else sorted(facts)
+        _echo({
+            "company_id": company,
+            "assertion_policy_version": profile.assertion_policy_version,
+            "publisher_policy_version": profile.publisher_policy_version,
+            "attributes": {
+                key: {
+                    "envelope": facts.get(key, {}).get("envelope"),
+                    "best": facts.get(key, {}).get("best"),
+                    "fact_type": facts.get(key, {}).get("best_fact_type"),
+                    "confidence": facts.get(key, {}).get("confidence"),
+                    "contradiction": (profile.contradictions or {})
+                        .get(key, {}).get("contradiction", False),
+                    "corroborating_publishers": (
+                        profile.corroborating_publisher_counts or {}
+                    ).get(key, 0),
+                    "staleness": verdicts[key].state if key in verdicts else None,
+                }
+                for key in keys if key in facts
+            },
+        })
+
+
+@research_app.command("coverage")
+def research_coverage(run: str = typer.Option(..., help="Research question id.")) -> None:
+    """Coverage, confidence and contradiction rate for one question.
+
+    Three separate numbers. Collapsing them would produce something that reads
+    like a score, and M3 does not score.
+    """
+    _bootstrap()
+    import uuid as _uuid
+
+    from boro_gtm.research.domain.models import OperationalResearchPlanProfile
+
+    with session_scope() as session:
+        profile = session.get(OperationalResearchPlanProfile, _uuid.UUID(run))
+        if profile is None:
+            raise NotFoundError(f"no plan profile for research run {run}")
+        _echo({
+            "run_id": run,
+            "coverage": float(profile.coverage),
+            "confidence_summary": (
+                float(profile.confidence_summary)
+                if profile.confidence_summary is not None else None
+            ),
+            "contradiction_rate": float(profile.contradiction_rate),
+            "required_attribute_count": profile.required_attribute_count,
+            "covered_attribute_count": profile.covered_attribute_count,
+            "not_applicable_attribute_count": profile.not_applicable_attribute_count,
+            "open_gap_count": profile.open_gap_count,
+        })
+
+
+@research_app.command("gaps")
+def research_gaps(
+    run: str = typer.Option(..., help="Research question id."),
+    kind: str | None = typer.Option(None, help="Filter by gap kind."),
+) -> None:
+    """What this question looked for and has not found."""
+    _bootstrap()
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from boro_gtm.research.domain.models import OperationalResearchGap
+    from boro_gtm.research.services.gaps import attempt_count, current_status
+
+    with session_scope() as session:
+        statement = select(OperationalResearchGap).where(
+            OperationalResearchGap.run_id == _uuid.UUID(run)
+        )
+        if kind:
+            statement = statement.where(OperationalResearchGap.gap_kind == kind.upper())
+        rows = session.scalars(
+            statement.order_by(
+                OperationalResearchGap.gap_kind, OperationalResearchGap.attribute_key
+            )
+        ).all()
+        _echo([
+            {
+                "attribute_key": row.attribute_key, "gap_kind": row.gap_kind,
+                "status": current_status(session, row.id),
+                "attempts": attempt_count(session, row.id),
+            }
+            for row in rows
+        ])
+
+
+@research_app.command("signals")
+def research_signals(
+    company: str | None = typer.Option(None, help="Filter by company."),
+    open_only: bool = typer.Option(True, help="Only concerns with an open episode."),
+) -> None:
+    """The identity-review queue. M3-owned; nothing here writes M2 identity."""
+    _bootstrap()
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from boro_gtm.research.domain.models import (
+        IdentityReviewSignal,
+        IdentityReviewSignalOccurrence,
+    )
+    from boro_gtm.research.services.review import occurrence_status
+
+    with session_scope() as session:
+        statement = select(IdentityReviewSignal)
+        if company:
+            statement = statement.where(
+                IdentityReviewSignal.company_id == _uuid.UUID(company)
+            )
+        if open_only:
+            statement = statement.where(IdentityReviewSignal.id.in_(
+                select(IdentityReviewSignalOccurrence.signal_id).where(
+                    IdentityReviewSignalOccurrence.is_open.is_(True)
+                )
+            ))
+        rows = session.scalars(
+            statement.order_by(IdentityReviewSignal.first_raised_at)
+        ).all()
+        out = []
+        for signal in rows:
+            occurrences = session.scalars(
+                select(IdentityReviewSignalOccurrence).where(
+                    IdentityReviewSignalOccurrence.signal_id == signal.id
+                ).order_by(IdentityReviewSignalOccurrence.occurrence_number)
+            ).all()
+            out.append({
+                "signal_id": str(signal.id),
+                "kind": signal.signal_kind,
+                "concern": signal.normalized_concern,
+                "occurrences": [
+                    {
+                        "number": o.occurrence_number, "open": o.is_open,
+                        "status": occurrence_status(session, o.id),
+                    }
+                    for o in occurrences
+                ],
+            })
+        _echo(out)
+
+
+@research_app.command("project")
+def research_project(
+    company: str = typer.Option(..., help="Canonical company id."),
+    run: str | None = typer.Option(None, help="Also rebuild this question's profile."),
+) -> None:
+    """Rebuild the projections from the claim ledger.
+
+    Derived and idempotent: truncating them and rebuilding reproduces the same
+    result, which is why this is safe to run at any time.
+    """
+    _bootstrap()
+    import uuid as _uuid
+
+    from boro_gtm.research.services.application import rebuild_profiles
+
+    with session_scope() as session:
+        _echo(rebuild_profiles(
+            session, company_id=_uuid.UUID(company),
+            run_id=_uuid.UUID(run) if run else None,
+        ))
+
+
+@research_app.command("prune")
+def research_prune(
+    as_of: str = typer.Option(
+        ..., help="Date to measure retention horizons against, ISO-8601."
+    ),
+    execute: bool = typer.Option(
+        False, "--execute",
+        help="Actually prune. Without this the command only reports counts.",
+    ),
+    body_days: int | None = typer.Option(
+        None, help="Override the raw-body horizon for every content type."
+    ),
+) -> None:
+    """Prune retained payloads. **Dry run unless --execute is passed.**
+
+    Pruning removes payloads and never provenance: hashes, quotes, sources,
+    fetch history and claims all survive. The selection is deterministic, so the
+    dry run reports exactly what an execute would touch.
+    """
+    _bootstrap()
+    from datetime import UTC, datetime
+
+    from boro_gtm.research.services.retention import apply_retention, plan_retention
+
+    moment = datetime.fromisoformat(as_of)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    settings = get_settings()
+    with session_scope() as session:
+        plan = plan_retention(session, as_of=moment, body_days=body_days)
+        payload = {
+            "database": settings.database_url.rsplit("/", 1)[-1],
+            "as_of": moment.isoformat(),
+            "dry_run": not execute,
+            **plan.as_counts(),
+            "total": plan.total,
+        }
+        if execute:
+            apply_retention(session, plan, as_of=moment)
+            payload["pruned"] = True
+        _echo(payload)
+
+
+@research_app.command("worker")
+def research_worker(
+    fixture_corpus: bool = typer.Option(False, "--fixture-corpus"),
+    max_jobs: int = typer.Option(1, help="How many queued jobs to claim and run."),
+) -> None:
+    """Claim and run queued M3 jobs from the existing PostgreSQL queue."""
+    _bootstrap()
+    if not fixture_corpus:
+        raise typer.BadParameter("pass --fixture-corpus; see `research run`.")
+    from boro_gtm.research.services.application import run_worker_once
+
+    done = []
+    with session_scope() as session:
+        for _ in range(max_jobs):
+            outcome = run_worker_once(session)
+            if outcome is None:
+                break
+            done.append(outcome)
+    _echo({"jobs_run": len(done), "outcomes": done})
 
 if __name__ == "__main__":
     app()

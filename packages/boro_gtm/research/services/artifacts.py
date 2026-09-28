@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from boro_gtm.core.errors import GtmError
 from boro_gtm.research.domain.models import (
     ResearchArtifact,
     ResearchArtifactDerivation,
@@ -42,8 +43,11 @@ from boro_gtm.research.policies import (
 )
 
 
-class CanonicalizationMismatchError(ValueError):
+class CanonicalizationMismatchError(GtmError):
     """A strategy was applied to a media type it does not fit."""
+
+    code = "CANONICALIZATION_MISMATCH"
+    http_status = 422
 
 
 # ---------------------------------------------------------------------------

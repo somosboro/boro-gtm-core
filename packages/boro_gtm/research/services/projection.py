@@ -24,6 +24,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from boro_gtm.core.errors import GtmError
 from boro_gtm.discovery.domain.models import CompanyClaim
 from boro_gtm.research.domain.models import (
     ClaimEvidenceLink,
@@ -36,8 +37,11 @@ from boro_gtm.research.services.claims import claim_observation_date
 from boro_gtm.research.services.evidence import independent_publisher_count
 
 
-class UnsupportedClaimError(ValueError):
+class UnsupportedClaimError(GtmError):
     """A claim reached the projection with no surviving evidence behind it."""
+
+    code = "CLAIM_UNSUPPORTED"
+    http_status = 409
 
 
 @dataclass(frozen=True, slots=True)
