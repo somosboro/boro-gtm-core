@@ -473,6 +473,17 @@ class ResearchExtraction(Base):
             "determinism = 'DETERMINISTIC' OR sample_execution_id IS NOT NULL",
             name="ck_sampled_requires_execution_slot",
         ),
+        # Model raw output has a retention class (design §26). Added in
+        # `0005_m3_retention`: `0004_m3` forbade every UPDATE here, which made
+        # the retention the design mandates unrepresentable (M3-ADR-052).
+        _vocab("raw_output_retention", e._v(e.RetentionState),
+               "ck_extraction_raw_output_retention_vocabulary"),
+        CheckConstraint(
+            "(raw_output_retention = 'RETAINED' AND raw_output_pruned_at IS NULL) OR "
+            "(raw_output_retention = 'PRUNED' AND raw_output_pruned_at IS NOT NULL)",
+            name="ck_extraction_raw_output_prune_consistency",
+        ),
+        Index("ix_extractions_raw_output_retention", "raw_output_retention"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
@@ -499,7 +510,14 @@ class ResearchExtraction(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="OK")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The hash outlives the payload, so a pruned extraction is still auditable.
     raw_output_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    raw_output_retention: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="RETAINED", server_default="RETAINED"
+    )
+    raw_output_pruned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

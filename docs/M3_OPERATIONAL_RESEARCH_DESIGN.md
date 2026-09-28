@@ -1,10 +1,20 @@
 # M3 — Operational Research
 
-**Status:** **revision 5 — reconciled with the canonical commercial ontology.**
-Schema implemented (migration `0004_m3`), registry and seeds implemented,
-acquisition and extraction services pending. See
+**Status:** **revision 5 — reconciled with the canonical commercial ontology;
+implemented on `feat/m3-operational-research`.** Schema (migration `0004_m3`),
+registry, seeds, source discovery, retrieval, canonicalization, text derivation,
+extraction, evidence, claims, gaps, the identity-review queue, projections, the
+API, the CLI and retention are implemented. See
 [M3_CANONICAL_COMMERCIAL_ALIGNMENT.md](M3_CANONICAL_COMMERCIAL_ALIGNMENT.md)
-for what revision 5 changed and why.
+for what revision 5 changed and why, and
+[M3_IMPLEMENTATION_TRACEABILITY.md](M3_IMPLEMENTATION_TRACEABILITY.md) for what
+each acceptance scenario is executed by.
+
+**Not implemented, deliberately:** any **production** research provider. The
+only adapters M3 ships are deterministic fixtures reading local files, and no
+M3 test touches the public internet (§14). M4 interpretation, M5 buyer
+discovery, M6 outreach, M7 qualification and later commercialization are out of
+scope by design.
 
 **Naming.** This milestone is now called **M3 Operational Evidence**. The old
 name, "Operational Research", invited the reading that M3 researches
@@ -894,8 +904,16 @@ rather than in a guideline.
 
 ## 14. Source discovery
 
-An interface, not an implementation. **No provider is selected and none is
-implemented.**
+An interface, and **fixture implementations only**. No *production* research
+provider has been selected or implemented, and M3 ships none: the adapters in
+`research/fixtures/` read local files deterministically, which is what makes
+the acceptance suite reproducible and network-free.
+
+> Implementation status, stated precisely because the two halves are easy to
+> conflate: the **interface** below is implemented and the **fixture adapters
+> are the only adapters that exist**. Choosing, contracting and integrating a
+> real web-research provider is out of scope for M3 — nothing here should be
+> read as a claim that M3 researches the live internet.
 
 ```
 ResearchSourceProvider
@@ -1503,7 +1521,7 @@ The brief's seven conditions, each checked mechanically rather than asserted:
 criterion: it changed meaning, not structure.
 
 Counts, computed from the documents at revision 5: **23 tables · 42 registry
-attributes · 134 acceptance scenarios (+1 withdrawn) · 51 ADRs.** Three M2 objects are touched, all additively:
+attributes · 134 acceptance scenarios (+1 withdrawn) · 52 ADRs.** Three M2 objects are touched, all additively:
 `attribute_definitions.owner_milestone`,
 `company_claims.assertion_fingerprint` with a partial unique index, and a
 deferred constraint trigger on `company_claims`.

@@ -1804,3 +1804,53 @@ is now deliberate rather than a side effect of grouping by value.
   `emergency_service = true`: the contractor states it on two of its own pages,
   a trade publication states it independently, and a directory republishes the
   contractor's page byte for byte. Four claims, **two** witnesses.
+
+---
+
+## M3-ADR-052 — Model raw output needs a retention class the schema forbade
+
+**Status:** accepted (phase-3 implementation defect; **new migration**
+`0005_m3_retention`)
+
+### Context
+
+Design §26 assigns model `raw_output` a retention class: *"Default 90 days; hash
+permanent."* Implementing it showed the schema cannot represent that.
+`0004_m3` gave `research_extractions` a blanket `gtm_reject_update()` trigger
+and no retention columns, so the prune the design mandates is refused outright:
+
+```
+RestrictViolation: relation research_extractions is append-only:
+UPDATE is not permitted
+```
+
+This is a **design/schema contradiction**, not an implementation bug: no
+service-layer change can produce the behaviour, because the database forbids it.
+Bodies and text derivations already have exactly the right mechanism — the
+parameterised `gtm_m3_one_way_prune` — and extractions were simply not given it.
+
+### Decision
+
+A **new migration**, `0005_m3_retention`, adds `raw_output_retention` and
+`raw_output_pruned_at`, two CHECK constraints keeping the pair consistent, and
+swaps the blanket rejection for
+`gtm_m3_one_way_prune('raw_output', 'raw_output_retention')`.
+
+`0004_m3` is left **byte-identical**. It is published in this branch and
+protected by the migration manifest; editing it to hide the defect would make
+the manifest a formality and would silently diverge from every database already
+migrated past it.
+
+### Consequences
+
+* Exactly one mutation is now permitted on an extraction, and it is the same
+  one-way prune the other two payload tables use. Every other UPDATE is still
+  refused by the database, not by convention.
+* `raw_output_sha256` is unaffected, so a pruned extraction remains auditable:
+  the audit trail survives the bulk.
+* The retention service raises `PrunedPayloadError` rather than deriving from a
+  missing payload. "Silently produced an empty extraction" and "the bytes are
+  gone, refetch or record a gap" must not look the same.
+* **Generalisable:** `gtm_reject_update()` is the right default and the wrong
+  choice wherever a retention class exists. A table with a payload and a
+  documented retention horizon needs the parameterised trigger from the start.

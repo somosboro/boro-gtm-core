@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from boro_gtm.discovery.domain.models import CompanyClaim
 from boro_gtm.research.domain.models import (
     OperationalResearchAttempt,
+    OperationalResearchProfile,
     OperationalResearchRun,
     ResearchArtifactDerivation,
     ResearchSource,
@@ -46,7 +47,15 @@ from boro_gtm.research.registry import (
     RESEARCH_POLICY_VERSION,
     RESEARCH_REGISTRY_VERSION,
 )
-from boro_gtm.research.services import acquisition, artifacts, claims, gaps, identity
+from boro_gtm.research.services import (
+    acquisition,
+    artifacts,
+    claims,
+    gaps,
+    identity,
+    inference,
+    profiles,
+)
 from boro_gtm.research.services.evidence import EvidenceContext, create_evidence_item
 from boro_gtm.research.services.extraction import (
     HUMAN_EXTRACTOR,
@@ -54,9 +63,16 @@ from boro_gtm.research.services.extraction import (
     extractors_for,
     run_extraction,
 )
+from boro_gtm.research.services.staleness import stale_required_attributes
 
 #: Queries the fixture plan issues. Two of them share a result, on purpose.
 PLAN_SEARCH_QUERIES: tuple[str, ...] = tuple(corpus.SEARCH_RESULTS)
+
+#: Below this extractor confidence an observation becomes a review candidate
+#: rather than a claim. A policy number nobody has calibrated, named as such —
+#: an uncalibrated threshold that looks authoritative is worse than one that
+#: admits it.
+REVIEW_CONFIDENCE_THRESHOLD = 0.60
 
 
 def _now() -> datetime:
@@ -206,6 +222,9 @@ class PipelineResult:
     claims_created: int = 0
     evidence_links_created: int = 0
     gaps_raised: int = 0
+    gaps_by_kind: dict[str, int] = field(default_factory=dict)
+    inferences_created: int = 0
+    low_confidence_deferred: list[str] = field(default_factory=list)
     signals_raised: int = 0
     edges_created: int = 0
     failed_sources: list[str] = field(default_factory=list)
@@ -267,8 +286,16 @@ def run_pipeline(
 
     # -- ASSERTING ---------------------------------------------------------
     _assert(session, run, attempt, company_id, observations, now, result)
+    _infer(session, company_id, now, result)
+    # The company profile is rebuilt *before* gaps, because a CONTRADICTED gap
+    # is derived from the profile's contradiction state. Rebuilding afterwards
+    # made contradictions appear only on the *next* run, which looked like a
+    # gap that took two attempts to notice a disagreement already on record.
+    profiles.rebuild_company_profile(session, company_id)
     _raise_gaps(session, run, attempt, company_id, observations, now, result)
     _raise_identity_signals(session, attempt, company_id, fetched, now, result)
+    # The plan profile is last: its open_gap_count reads the gaps just raised.
+    profiles.rebuild_plan_profile(session, run.id)
 
     terminal = "PARTIAL" if result.failed_sources else "COMPLETED"
     attempt.status = terminal
@@ -531,6 +558,15 @@ def _extract(
                 )
                 if created:
                     result.evidence_created += 1
+                if (
+                    extractor.extractor_confidence is not None
+                    and extractor.extractor_confidence < REVIEW_CONFIDENCE_THRESHOLD
+                    and extractor.determinism != "SAMPLED"
+                ):
+                    # Too weak to assert, but observed: that is a different
+                    # state from "found nothing", and it gets its own gap kind.
+                    result.low_confidence_deferred.append(observation.attribute_key)
+                    continue
                 if extractor.determinism == "SAMPLED" and not confirm_sampled:
                     # Sampled output may create evidence, but may not on its own
                     # assert a company claim. It waits for a human.
@@ -606,6 +642,15 @@ def _raise_gaps(
     that gets 304 for every page extracts nothing, and an attempt-local view
     would then declare every attribute a gap — turning "nothing changed" into
     "we know nothing", which is the inverse of what a 304 means.
+
+    Five kinds, and the distinction between them is the useful part:
+
+    * `NO_EVIDENCE` — we looked and found nothing;
+    * `INSUFFICIENT_EVIDENCE` — we found something too weak to assert, which is
+      not the same as finding nothing;
+    * `STALE_EVIDENCE` — we found something, a while ago;
+    * `CONTRADICTED` — we found two things that disagree;
+    * `UNRESOLVABLE_SOURCE` — a source we needed could not be retrieved at all.
     """
     evidenced = {observation.attribute_key for observation, _ in observations}
     evidenced |= {
@@ -617,20 +662,61 @@ def _raise_gaps(
             )
         ).all()
     }
-    for key in run.target_attribute_keys:
-        if key in evidenced:
-            continue
+
+    def raise_kind(key: str, kind: str, note: str) -> None:
         outcome = gaps.raise_gap(
             session, run_id=run.id, company_id=company_id, attribute_key=key,
-            gap_kind="NO_EVIDENCE", attempt_id=attempt.id, now=now,
-            note="no evidence found in this attempt",
+            gap_kind=kind, attempt_id=attempt.id, now=now, note=note,
         )
         if outcome.created:
             result.gaps_raised += 1
+            result.gaps_by_kind[kind] = result.gaps_by_kind.get(kind, 0) + 1
         else:
             gaps.record_attempt(
                 session, gap_id=outcome.gap.id, attempt_id=attempt.id, now=now
             )
+
+    targets = list(run.target_attribute_keys)
+
+    for key in targets:
+        if key not in evidenced:
+            raise_kind(key, "NO_EVIDENCE", "no evidence found in this attempt")
+
+    for key in sorted(set(result.low_confidence_deferred) & set(targets)):
+        if key not in evidenced:
+            raise_kind(
+                key, "INSUFFICIENT_EVIDENCE",
+                "observed below the review confidence threshold; awaiting review",
+            )
+
+    for key in stale_required_attributes(
+        session, company_id, targets, now.date()
+    ):
+        raise_kind(key, "STALE_EVIDENCE", "freshest evidence is past its horizon")
+
+    profile = session.get(OperationalResearchProfile, company_id)
+    if profile is not None:
+        for key, state in (profile.contradictions or {}).items():
+            if key in targets and state.get("contradiction"):
+                raise_kind(key, "CONTRADICTED", "sources disagree on this attribute")
+
+    if result.failed_sources:
+        # One gap for the question, not one per attribute: the failure is about
+        # a source, and attributing it to every target would overstate it.
+        for key in targets[:1]:
+            raise_kind(
+                key, "UNRESOLVABLE_SOURCE",
+                f"{len(result.failed_sources)} source(s) could not be retrieved",
+            )
+
+
+def _infer(
+    session: Session, company_id: uuid.UUID, now: datetime, result: PipelineResult,
+) -> None:
+    """Derived claims, by stated rule, never FACT."""
+    for outcome in inference.apply_all(session, company_id=company_id, now=now):
+        if outcome.created:
+            result.inferences_created += 1
 
 
 def _raise_identity_signals(
