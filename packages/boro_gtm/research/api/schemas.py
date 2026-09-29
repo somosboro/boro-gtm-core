@@ -52,6 +52,8 @@ class AttemptOut(BaseModel):
     error: str | None = None
     failure_stage: str | None = None
     allow_partial_assertion: bool
+    #: Carries `provider` — `"fixture"` or `"boro_first_party"` — plus, for a
+    #: live attempt, the M2 domain scope and the crawl budget it ran under.
     attempt_seed_inputs: dict[str, Any] | None = None
     attempt_seed_inputs_hash: str | None = None
     created_at: datetime
@@ -63,7 +65,18 @@ class AttemptOut(BaseModel):
 
 
 class AttemptCreate(BaseModel):
-    """Fixture execution is explicit, so nothing implies a live crawler."""
+    """Execution over the API is fixture-only, deliberately.
+
+    A live research attempt reaches the public internet on BoRo's behalf, which
+    is an operator action with a budget and a cohort behind it — not something
+    an HTTP request should start. It is triggered from the CLI
+    (`research run --company <id> --live`).
+
+    Which provider an attempt used is still visible here: `attempt_seed_inputs`
+    carries `provider`, the domain scope and the budget, so a reader can always
+    tell a live attempt from a fixture one without a new field or a new route
+    (M3-ADR-071).
+    """
 
     conditional: bool = True
 

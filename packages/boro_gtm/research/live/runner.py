@@ -207,9 +207,15 @@ def _fill(
 
     profile = session.get(OperationalResearchProfile, report.company_id)
     if profile is not None:
-        facts = profile.facts or {}
-        report.observed_attributes = sorted(facts)
-        report.contradicted_attributes = sorted(profile.contradictions or {})
+        report.observed_attributes = sorted(profile.facts or {})
+        # `contradictions` is a status map with an entry for every attribute
+        # that has claims, most of them `false`. Listing its keys told the
+        # operator every observed attribute was contradicted — a false alarm on
+        # the one screen that has to be trustworthy.
+        report.contradicted_attributes = sorted(
+            key for key, state in (profile.contradictions or {}).items()
+            if isinstance(state, dict) and state.get("contradiction")
+        )
 
     open_gaps: dict[str, int] = {}
     for gap in session.scalars(select(OperationalResearchGap).where(

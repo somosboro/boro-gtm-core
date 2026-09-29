@@ -2959,3 +2959,54 @@ A genuine cycle (`/a → /b → /a`) now ends at the first repeated request with
   outside that purpose looks like consistency while being a bug. "Which thing is
   this" and "what do I send on the wire" are not the same question, and a server
   that disagrees with your normalizer is not wrong.
+
+---
+
+## M3-ADR-077 — Most of BoRo's cohort is behind bot mitigation, and that stays a gap
+
+**Status:** accepted (BoRo-first live pilot; **finding, not a code change**)
+
+### Context
+
+The first live cohort run met a wall that no amount of implementation quality
+gets past. Of seventeen real U.S. commercial HVAC and mechanical contractor
+sites, a majority answered an honest, identified, robots-respecting fetcher with
+`403`.
+
+Diagnosed at the response, without attempting a bypass:
+
+| Site | Response |
+| --- | --- |
+| `metromech.com` | Cloudflare `cf-mitigated: challenge`, "Just a moment" interstitial |
+| `comfortsystemsusa.com` | plain `nginx` 403 |
+| `campbellinc.com` | Cloudflare, denial after redirect |
+
+These are interactive bot challenges and server-side blocks. Passing them means
+executing a JavaScript challenge, solving a CAPTCHA, or presenting a browser's
+`User-Agent` while not being one.
+
+### Decision
+
+Nothing. The denial is recorded as `DENIED`, the attributes become
+`NO_EVIDENCE` gaps, and the account reads as unresearched — which is true.
+
+M3 does not evade bot mitigation. Not because it would be difficult, but because
+a site returning `403` to an identified research bot has stated a preference, and
+the value of this system rests on its evidence being defensible. Evidence
+obtained by pretending to be a browser is not.
+
+### Consequences
+
+* **First-party-only research cannot cover this cohort.** Roughly a third of the
+  sample was reachable. That is a property of the market, not a defect, and no
+  change to the transport improves it.
+* The decision this forces belongs to BoRo, not to this milestone: accept
+  partial coverage, or add a lawful second source — a licensed data provider,
+  job boards, registry filings — in a later version. It is recorded here so the
+  choice is made with the number in hand.
+* The sites that *are* reachable are researched properly, and the ones that are
+  not are visibly and honestly empty. An operator can tell which is which, which
+  is the minimum the system owed them.
+* **Generalisable:** when the constraint is someone else's stated preference, the
+  engineering question is closed. What remains is a commercial question, and
+  pretending otherwise just moves the cost somewhere less visible.

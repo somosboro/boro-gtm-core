@@ -536,3 +536,25 @@ def test_two_companies_researched_in_turn_do_not_share_evidence(session):
                 assert host in source.normalized_locator, (
                     f"{company.id} cites {source.normalized_locator}"
                 )
+
+
+def test_the_report_does_not_invent_contradictions(researchable, session):
+    """`contradictions` is a status map, and most of its entries are `false`.
+
+    Listing its keys reported every observed attribute as contradicted. An
+    operator deciding whether an account's evidence is trustworthy reads exactly
+    this field, and a false alarm there is worse than no field at all.
+    """
+    with _transport() as transport:
+        report = research_company_live(
+            session, company_id=researchable.id, transport=transport,
+        )
+
+    profile = session.get(m.OperationalResearchProfile, researchable.id)
+    states = profile.contradictions or {}
+    assert states, "the site produced claims, so there are contradiction states"
+    assert any(s.get("contradiction") is False for s in states.values())
+
+    truly = {k for k, s in states.items() if s.get("contradiction")}
+    assert report.contradicted_attributes == sorted(truly)
+    assert set(report.contradicted_attributes) <= set(report.observed_attributes)
