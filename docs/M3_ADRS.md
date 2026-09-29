@@ -2662,3 +2662,192 @@ reproducible.
 * **Generalisable:** a write that leaves a derived view contradicting the ledger
   has not finished. If the view is what a person acts on, "eventually" is a
   decision to mislead them for a while.
+
+---
+
+## M3-ADR-071 — Two providers, chosen explicitly, and no framework between them
+
+**Status:** accepted (BoRo-first live research)
+
+### Context
+
+`run_pipeline` named `FixtureDiscoveryProvider` in its body, and `_discover`
+named the fixture corpus directly: `corpus.HOME` for the sitemap and crawl
+roots, `PLAN_SEARCH_QUERIES` for search, and two corpus constants seeded by
+hand. There was no way to research a real website without editing the pipeline.
+
+The obvious response — a provider registry, an entry-point plugin system, a
+configuration schema — would be building a platform for users who do not exist.
+BoRo is the only customer, and BoRo needs one production adapter.
+
+### Decision
+
+Two protocols, `Transport` and `DiscoveryProvider`, with two implementations
+each chosen at the call site:
+
+* `FixtureTransport` + `FixtureDiscoveryProvider` — deterministic QA, no network.
+* `ProductionWebTransport` + `BoRoFirstPartyDiscoveryProvider` — real research.
+
+*What to look for* moves onto the provider as `plan()` and `seed_inputs()`;
+*how it is recorded* stays in the pipeline. The fixture corpus's home page and
+query list are the fixture provider's business and now live there.
+
+No registry, no entry points, no configuration file naming a class. Selection is
+an argument.
+
+`run_pipeline` assembles the fixture pair when neither is passed, so every
+existing caller is unchanged and nothing reaches the internet by omission. A
+live transport with **no** provider is refused outright: the fixture provider
+names addresses that do not exist, and a live transport would go and ask for
+them.
+
+### Consequences
+
+* The production transport returns the same `FetchResult` the fixture returns,
+  so `acquisition.record_fetch` remains the only way a retrieval becomes a row.
+  There is no second acquisition model and no path around `ResearchFetchEvent`.
+* Adding a third provider later means writing a class and passing it. If BoRo
+  ever has a second customer, that is when a registry earns its keep.
+* **Generalisable:** an abstraction with one implementation is a guess. Two
+  implementations is the smallest number that proves the seam is in the right
+  place.
+
+---
+
+## M3-ADR-072 — The crawl policy is a versioned judgement, and a budget is recorded
+
+**Status:** accepted (BoRo-first live research)
+
+### Context
+
+A contractor's website has a few pages describing how the company operates and a
+great many that do not: blog archives, tag pages, privacy policies, paginated
+news. Fetching all of them is impolite, slow, and yields nothing.
+
+But any rule for telling them apart is a judgement about one market at one time,
+not a fact. Written as a constant with no version, it becomes invisible: a run
+from six months ago cannot be read, because the policy it ran under is gone.
+
+### Decision
+
+`FIRST_PARTY_POLICY_VERSION`, recorded in every discovery context and in the
+attempt's seed inputs. The relevance rule is a deterministic substring policy
+over the path — exclusions checked *first*, so `/blog/commercial-hvac-tips`
+matches three relevant terms and is still a blog post.
+
+`CrawlBudget` is conservative by default: 25 pages, depth 2, 5 MB per document,
+40 retrievals, one second between requests to a host, 15-second timeout, 5
+redirects. Chosen after fetching real contractor sites, and asserted in a test so
+that loosening them is a visible decision rather than a drifting constant.
+
+When a budget stops exploration, the run records **where**:
+`PipelineResult.budget_stopped_at` and the sources discovered but not retrieved.
+
+### Consequences
+
+* "We stopped looking" and "there was nothing there" are different states, and
+  an operator can tell them apart. Without this they both render as an empty
+  attribute, and the second is a lie.
+* The relevance rule is allowed to be wrong in both directions. A missed page is
+  a truthful gap; an irrelevant page that gets fetched simply yields no
+  observations. Neither failure mode invents evidence.
+* **Generalisable:** a heuristic that decides what gets *looked at* must be
+  versioned and recorded, because its output is indistinguishable from the world
+  being empty.
+
+---
+
+## M3-ADR-073 — Safety is enforced at the resolved address, on every hop
+
+**Status:** accepted (BoRo-first live research; release blocker)
+
+### Context
+
+A research worker takes addresses from third parties — sitemaps, page links, an
+operator's paste buffer — and issues requests from inside our network. That is
+the shape of a server-side request forgery, and the usual defences do not hold:
+
+* A URL allowlist cannot see where a hostname points. Whoever controls the DNS
+  for `bigmechanical.com` decides whether it resolves to `93.184.216.34` or
+  `10.0.0.5`.
+* `follow_redirects=True` makes the request *before* this process sees the
+  `Location` header, so a public page redirecting to `169.254.169.254` has
+  already succeeded by the time anything could refuse it.
+
+### Decision
+
+Every hop is resolved and checked before it is requested. Redirects are followed
+manually, and each target goes through the same check as the original.
+
+An address is allowed only when it is globally routable. The specific reasons —
+loopback, link-local, private, reserved, multicast, unspecified, cloud metadata —
+are checked first because they make better error messages, and `is_global` is
+the backstop. That backstop is not redundant: carrier-grade NAT space
+(`100.64.0.0/10`) is flagged by *no* Python property — `is_private` is False and
+`is_loopback` is False — yet it reaches other customers of the same carrier. It
+was found by a test written before the code was trusted.
+
+IPv4-mapped and 6to4 addresses are unwrapped before checking, so `::ffff:10.0.0.5`
+cannot smuggle a private address through a v6 literal. Non-HTTP schemes and URLs
+carrying credentials are refused. A host that resolves to several addresses is
+refused if *any* of them is not routable — picking the good one would be racing
+the resolver.
+
+### Consequences
+
+* A refusal is recorded as `DENIED` with `error_class = "UnsafeTarget"`, so it is
+  visible in the fetch ledger rather than silently dropped.
+* `allow_private` exists for a local test server and is a parameter rather than
+  an environment variable, so enabling it is visible at the call site. The
+  pipeline and the CLI never pass it.
+* **Generalisable:** validate the thing you are about to act on, not the string
+  that produced it. Between the check and the request, a name can change meaning.
+
+---
+
+## M3-ADR-074 — Research scope comes from M2, never from the company's name
+
+**Status:** accepted (BoRo-first live research)
+
+### Context
+
+Live research needs to know which website *is* this company. The tempting answer
+is to search for the name — and it is the one answer that must never be used.
+Two contractors called "Allied Mechanical" are two companies, and a name lookup
+researches whichever one ranks better. The resulting evidence is attached to the
+wrong account with a complete, internally consistent provenance chain, and there
+is no repair for that: the claim looks exactly like a correct one.
+
+### Decision
+
+Scope is resolved from `company_domains`, using M2's own rules, before anything
+is fetched. `IDENTITY`, `ALTERNATE`, `REDIRECT` and `COUNTRY_TLD` are in scope —
+M2 has already decided those are the same organisation. `GROUP` is never in
+scope: M2 records that role precisely because the host does *not* identify a
+company, and crawling a franchise portal's root as one of its franchisees is the
+error the role exists to prevent. `DEFUNCT` is out of scope, because whatever is
+served there now belongs to someone else.
+
+M2's shared-host blocklist is re-applied here rather than trusting the role
+alone, so a row claiming `IDENTITY` for `wixsite.com` is still refused.
+
+Membership is by registrable domain, so `www.` and a `service.` subdomain are in
+scope and `notthem.com` is not. Every candidate — including a URL an operator
+typed by hand — is checked against the scope.
+
+A company with no researchable domain produces a report saying so. It does not
+produce a guess.
+
+### Consequences
+
+* Out-of-scope addresses are counted and reported, so an operator asking "why did
+  this find nothing?" is not left guessing whether a domain was missing or
+  refused.
+* v1 implements only `HUMAN_SEED`, `SITEMAP` and `CRAWL_LINK`. `SEARCH`,
+  `JOB_BOARD`, `REGISTRY` and `API` return nothing — a decision recorded in the
+  methods themselves, not an unimplemented stub. Third-party search is where
+  wrong-company evidence comes from, and first-party research has not yet proven
+  insufficient.
+* **Generalisable:** when an identity decision has already been made by a system
+  that owns it, re-deriving it downstream is not redundancy. It is a second,
+  worse answer that will eventually disagree.

@@ -1337,6 +1337,58 @@ All responses use the existing error envelope. `404` for an unknown company,
 run, attempt or signal; `409` for an attempt that has not reached a stage
 permitting assertion, and for a second live attempt on one run.
 
+## 25a. Live first-party research
+
+M3 ships two transport/provider pairs, selected explicitly at the call site. There
+is no registry and no plugin system: BoRo is the only customer, and BoRo needs one
+production adapter (M3-ADR-071).
+
+| | Transport | Discovery provider | Network |
+| --- | --- | --- | --- |
+| QA and tests | `FixtureTransport` | `FixtureDiscoveryProvider` | none |
+| Real accounts | `ProductionWebTransport` | `BoRoFirstPartyDiscoveryProvider` | yes |
+
+`run_pipeline` assembles the fixture pair when neither is passed, so nothing
+reaches the internet by omission; a live transport with no provider is refused,
+because the fixture provider names addresses that do not exist.
+
+**Scope before anything is fetched.** Which site *is* this company is answered by
+M2, from `company_domains`: `IDENTITY`, `ALTERNATE`, `REDIRECT` and `COUNTRY_TLD`
+are in scope, `GROUP` and `DEFUNCT` never are, and M2's shared-host blocklist is
+re-applied. A company's **name** is never turned into a website — two contractors
+called "Allied Mechanical" are two companies (M3-ADR-074).
+
+**First-party only in v1.** `HUMAN_SEED` (the M2 identity address, plus operator
+seeds), `SITEMAP` (declared in `robots.txt`, one index level followed) and
+`CRAWL_LINK` (bounded, in-scope). `SEARCH`, `JOB_BOARD`, `REGISTRY` and `API`
+return nothing, which is a decision rather than a stub: third-party search is
+where wrong-company evidence comes from.
+
+**Politeness and safety.** An honest, attributable `User-Agent`; `robots.txt`
+obeyed, including on redirect targets, and `Crawl-delay` honoured when it exceeds
+ours; one request per host per second; bounded redirects, bytes, pages, depth and
+total retrievals. Every hop is resolved and checked at the **address** before the
+request is made, and redirects are followed manually so no request is issued to a
+`Location` this process has not inspected (M3-ADR-073). A `403`, a `Disallow` or a
+login wall is recorded and becomes a gap; nothing is retried under a different
+identity.
+
+**Budgets are honest.** When a limit ends exploration the run records which one,
+and how many discovered sources went unretrieved, so "we stopped looking" never
+renders as "there was nothing there" (M3-ADR-072).
+
+The transport returns the same `FetchResult` the fixture returns, so
+`acquisition.record_fetch` remains the only way a retrieval becomes a row: one
+acquisition model, and no path around `ResearchFetchEvent`.
+
+```
+gtm research run --company <uuid> --live
+gtm research run --run <uuid> --fixture-corpus
+```
+
+Exactly one of the two flags is required and neither is a default, so no output
+can be mistaken for the other.
+
 ## 26. Retention
 
 Raw HTML and PDF bodies dominate storage and are the least reusable part.
@@ -1584,8 +1636,8 @@ The brief's seven conditions, each checked mechanically rather than asserted:
 **M3 DESIGN REVISION 4 — IMPLEMENTATION READY.** Revision 5 added no freeze
 criterion: it changed meaning, not structure.
 
-Counts, recomputed from the documents at revision 5.4: **25 tables · 42 registry
-attributes · 158 acceptance scenarios (+1 withdrawn) · 70 ADRs.** Three M2 objects are touched, all additively:
+Counts, recomputed from the documents at revision 5.5: **25 tables · 42 registry
+attributes · 165 acceptance scenarios (+1 withdrawn) · 74 ADRs.** Three M2 objects are touched, all additively:
 `attribute_definitions.owner_milestone`,
 `company_claims.assertion_fingerprint` with a partial unique index, and a
 deferred constraint trigger on `company_claims`.

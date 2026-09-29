@@ -23,12 +23,15 @@ dependencies = [
     "jsonschema>=4.23",
     "typer>=0.15",
     "python-json-logger>=2.0.7",
+    # Production research fetching. Was dev-only when the only HTTP client in
+    # the tree was the API test client; the live first-party transport makes it
+    # a runtime dependency.
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
-    "httpx>=0.28",
     "ruff>=0.8",
 ]
 

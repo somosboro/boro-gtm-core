@@ -18,6 +18,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any, Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -71,6 +72,33 @@ from boro_gtm.research.services.staleness import stale_required_attributes
 
 #: Queries the fixture plan issues. Two of them share a result, on purpose.
 PLAN_SEARCH_QUERIES: tuple[str, ...] = tuple(corpus.SEARCH_RESULTS)
+
+
+class Transport(Protocol):
+    """What the pipeline needs from the outside world, and nothing more."""
+
+    def fetch(
+        self, url: str, *, if_none_match: str | None = None,
+        robots_disallowed: frozenset[str] | None = None,
+    ) -> Any: ...
+
+
+class DiscoveryProvider(Protocol):
+    """Where to look, and what to record about having looked there.
+
+    Two implementations: `FixtureDiscoveryProvider` for deterministic tests and
+    QA, and `BoRoFirstPartyDiscoveryProvider` for real account research. The
+    pipeline holds one or the other and cannot tell which — which is the point,
+    because the alternative was the fixture corpus being named inside the
+    pipeline itself (M3-ADR-071).
+
+    Not a registry, not a plugin system, not configurable by a third party.
+    Selection is explicit at the call site.
+    """
+
+    def plan(self) -> list[tuple[DiscoveredLocator, str | None]]: ...
+
+    def seed_inputs(self) -> dict[str, object]: ...
 
 #: Below this extractor confidence an observation becomes a review candidate
 #: rather than a claim. A policy number nobody has calibrated, named as such —
@@ -237,6 +265,13 @@ class PipelineResult:
     edges_created: int = 0
     failed_sources: list[str] = field(default_factory=list)
     sampled_pending_review: list[uuid.UUID] = field(default_factory=list)
+    #: Set when a crawl budget, rather than the website, ended exploration. The
+    #: difference matters: "we stopped looking" is not "there was nothing there"
+    #: (M3-ADR-072).
+    budget_stopped_at: str | None = None
+    #: Sources discovered and deliberately not retrieved, because the budget ran
+    #: out. They stay in the discovery record, so a later attempt can take them.
+    unretrieved_sources: list[str] = field(default_factory=list)
 
     @property
     def status(self) -> str:
@@ -252,27 +287,50 @@ def run_pipeline(
     session: Session,
     *,
     company_id: uuid.UUID,
-    transport: FixtureTransport | None = None,
+    transport: Transport | None = None,
+    provider: DiscoveryProvider | None = None,
     now: datetime | None = None,
     vertical_id: uuid.UUID | None = None,
     conditional: bool = True,
+    max_retrievals: int | None = None,
 ) -> PipelineResult:
     """Discover, retrieve, read, evidence and assert — once.
+
+    ``transport`` and ``provider`` default to the fixture pair, so every
+    existing test and the QA path are unchanged and no caller can reach the
+    internet by forgetting an argument. Live research passes both explicitly;
+    see `boro_gtm.research.live`.
 
     ``conditional`` sends ``If-None-Match`` from the last successful retrieval,
     which is what a polite crawler does and what makes a re-run cheap. Setting
     it to ``False`` forces a full re-read — the operational case where a
     validator is not trusted, and the only way to observe what happens when the
     same bytes genuinely arrive again.
+
+    ``max_retrievals`` stops the fetch stage after that many attempts and
+    records that a budget, rather than the site, ended exploration.
     """
     now = now or _now()
-    transport = transport or FixtureTransport()
-    provider = FixtureDiscoveryProvider(transport)
+    transport = transport if transport is not None else FixtureTransport()
+    if provider is None:
+        # The fixture pair is the only one that may be assembled implicitly.
+        # A live transport with a fixture provider would fetch the corpus's
+        # invented addresses from the real internet, so it must be spelled out.
+        if not isinstance(transport, FixtureTransport):
+            raise ValueError(
+                f"{type(transport).__name__} needs an explicit provider: only "
+                "the fixture pair may be assembled by default, because a "
+                "fixture provider names addresses that do not exist and a live "
+                "transport would go and ask for them"
+            )
+        provider = FixtureDiscoveryProvider(transport)
 
     run, _ = get_or_create_run(
         session, company_id=company_id, now=now, vertical_id=vertical_id
     )
-    attempt = start_attempt(session, run=run, now=now)
+    attempt = start_attempt(
+        session, run=run, now=now, seed_inputs=provider.seed_inputs()
+    )
     result = PipelineResult(attempt=attempt)
 
     # -- DISCOVERING -------------------------------------------------------
@@ -282,7 +340,8 @@ def run_pipeline(
 
     # -- FETCHING ----------------------------------------------------------
     fetched = _retrieve(
-        session, transport, attempt, candidates, now, result, conditional=conditional
+        session, transport, attempt, candidates, now, result,
+        conditional=conditional, max_retrievals=max_retrievals,
     )
     _advance(session, attempt, "EXTRACTING", "fetch_completed_at", now)
 
@@ -323,7 +382,7 @@ def run_pipeline(
 
 
 def _discover(
-    session: Session, provider: FixtureDiscoveryProvider,
+    session: Session, provider: DiscoveryProvider,
     attempt: OperationalResearchAttempt, now: datetime, result: PipelineResult,
 ) -> dict[str, tuple[ResearchSource, list[DiscoveredLocator]]]:
     """Every method, and every observation each one makes.
@@ -331,31 +390,13 @@ def _discover(
     One address found by a sitemap, a crawl link and two search queries is one
     source and four discovery rows. Collapsing them would lose the only record
     of *how* the system found what it found.
+
+    The provider decides *what* to look for and this decides *how it is
+    recorded*. The two were tangled: the fixture corpus's home page and query
+    list were written into this function, so there was no way to run the
+    pipeline against a real website without editing it (M3-ADR-071).
     """
-    batches: list[tuple[DiscoveredLocator, str | None]] = []
-    for candidate in provider.human_seeds():
-        batches.append((candidate, None))
-    for candidate in provider.sitemap(corpus.HOME):
-        batches.append((candidate, corpus.HOME))
-    for candidate in provider.crawl_links(corpus.HOME):
-        batches.append((candidate, corpus.HOME))
-    for query in PLAN_SEARCH_QUERIES:
-        for candidate in provider.search(query):
-            batches.append((candidate, None))
-    for candidate in provider.job_board():
-        batches.append((candidate, None))
-    for candidate in provider.registry():
-        batches.append((candidate, None))
-    for candidate in provider.api():
-        batches.append((candidate, None))
-    # The mirror and the third-party directory are seeded directly, standing in
-    # for a link the fixture crawler has no page to find them on.
-    for url in (corpus.ABOUT_MIRROR_URL, corpus.DIRECTORY_URL):
-        batches.append((
-            DiscoveredLocator(url, "HUMAN_SEED", {"operator": "fixture-analyst"},
-                              relevance_hint=0.7),
-            None,
-        ))
+    batches = provider.plan()
 
     found: dict[str, tuple[ResearchSource, list[DiscoveredLocator]]] = {}
     for candidate, parent_url in batches:
@@ -387,13 +428,25 @@ class _Retrieved:
 
 
 def _retrieve(
-    session: Session, transport: FixtureTransport,
+    session: Session, transport: Transport,
     attempt: OperationalResearchAttempt,
     candidates: dict[str, tuple[ResearchSource, list[DiscoveredLocator]]],
     now: datetime, result: PipelineResult, conditional: bool = True,
+    max_retrievals: int | None = None,
 ) -> list[_Retrieved]:
     retrieved: list[_Retrieved] = []
-    for locator, (source, _) in sorted(candidates.items()):
+    #: Best candidates first, so a budget that runs out spends what it had on
+    #: the pages most likely to describe the operation. Ties fall back to the
+    #: locator, so the order is deterministic.
+    ordered = sorted(
+        candidates.items(),
+        key=lambda kv: (-max((c.relevance_hint or 0.0) for c in kv[1][1]), kv[0]),
+    )
+    for locator, (source, _) in ordered:
+        if max_retrievals is not None and len(transport_requests(transport)) >= max_retrievals:
+            result.budget_stopped_at = "MAX_RETRIEVALS"
+            result.unretrieved_sources.append(locator)
+            continue
         previous = acquisition.last_successful_fetch(session, source.id)
         fetch = transport.fetch(
             locator,
@@ -432,6 +485,18 @@ def _retrieve(
         else:
             result.failed_sources.append(locator)
     return retrieved
+
+
+def transport_requests(transport: Transport) -> list[str]:
+    """How many retrievals this transport has already made.
+
+    Both transports keep the list; the live one keeps it on `stats` because it
+    also counts bytes and refusals.
+    """
+    stats = getattr(transport, "stats", None)
+    if stats is not None:
+        return stats.requests
+    return getattr(transport, "requests", [])
 
 
 _CANONICAL_LINK = re.compile(

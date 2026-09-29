@@ -444,6 +444,66 @@ document are one publisher.
 *Protects:* the fix for the collapse would otherwise have bought a worse problem
 than the one it solved: fabricated agreement.
 
+### P1 [MUST] — Research scope comes from M2, never from the company name
+**Given** a canonical company whose domains M2 recorded
+**When** live research resolves what it may fetch
+**Then** only `IDENTITY`, `ALTERNATE`, `REDIRECT` and `COUNTRY_TLD` domains are in
+scope; a `GROUP` or `DEFUNCT` domain never is; a blocklisted shared host is
+refused even if a row claims `IDENTITY` for it; and a company with no
+researchable domain produces a report saying so rather than a guess.
+*Protects:* two contractors called "Allied Mechanical" are two companies, and a
+name lookup researches whichever ranks better — producing wrong-account evidence
+with a complete, internally consistent provenance chain.
+
+### P2 [MUST] — Discovery never leaves the company's own domains
+**Given** a company website that links to, and whose sitemap lists, another
+company's site
+**When** discovery plans what to fetch
+**Then** every candidate is inside the company's registrable domains, the
+out-of-scope addresses are counted and reported, and an operator's hand-typed
+seed URL is checked against the same scope.
+
+### P3 [MUST] — Every hop is checked at the address it resolves to
+**Given** a URL, or a redirect target, naming a public hostname
+**When** it resolves to loopback, private, link-local, reserved, multicast,
+carrier-grade NAT, or a cloud metadata address — including through an
+IPv4-mapped IPv6 literal, or when only one of several answers is unroutable
+**Then** the fetch is refused, recorded as `DENIED` with `UnsafeTarget`, and no
+request is made. Non-HTTP schemes and URLs carrying credentials are refused too.
+*Protects:* a URL allowlist cannot see where a name points, and
+`follow_redirects=True` makes the request before anything can refuse it.
+
+### P4 [MUST] — A denied source is recorded, not evaded
+**Given** a site that answers `403`, states a `Disallow` in `robots.txt`, or
+redirects into a disallowed path
+**When** research meets it
+**Then** the outcome is recorded (`DENIED` / `ROBOTS_DENIED`), the attribute
+becomes a gap, and nothing is retried under a different identity. The
+`User-Agent` is honest, attributable and constant.
+
+### P5 [MUST] — A crawl budget is bounded and says when it stopped
+**Given** limits on pages, depth, bytes, retrievals and redirects
+**When** one of them ends exploration
+**Then** the run records **which** limit stopped it and how many discovered
+sources went unretrieved.
+*Protects:* "we stopped looking" and "there was nothing there" render identically
+as an empty attribute, and the second is a lie.
+
+### P6 [MUST] — Live retrieval produces ordinary M3 provenance
+**Given** a real first-party website
+**When** one live attempt runs
+**Then** sources, fetch events, bodies, derivations, extractions, evidence,
+claims, gaps and both projections are written exactly as the fixture path writes
+them; conditional re-runs send `If-None-Match` and can answer `304`; the attempt
+records the scope and budget it ran under; and no fixture corpus is involved.
+
+### P7 [MUST] — A live claim's provenance walks back to a page on that company's site
+**Given** any claim produced by live research
+**When** its evidence is followed
+**Then** every evidence item resolves through fetch event → attempt → run to the
+same company, its source host is one of that company's own domains, it carries a
+quote, and it reaches a stored body hash.
+
 ### D3 [MUST] — A low-confidence extraction yields a gap, not a claim
 **Given** an extraction below the review threshold
 **When** assertion runs
@@ -1279,12 +1339,15 @@ any mismatch fails rather than warns.
 * A terminal-state test: no attempt may transition out of `COMPLETED`,
   `PARTIAL` or `FAILED`.
 
-**Scenario count: 158 MUST + 1 withdrawn = 159** — A:14, B:5, C:14, D:25, E:6,
-F:8, G:16 (+G8 withdrawn), H:7, I:4, J:4, L:19, M:16, N:2, O:18.
+**Scenario count: 165 MUST + 1 withdrawn = 166** — A:14, B:5, C:14, D:25, E:6,
+F:8, G:16 (+G8 withdrawn), H:7, I:4, J:4, L:19, M:16, N:2, O:18, P:7.
 
 Revision 5.1 added D7, F7, F8, G16 and I4, and split D6. Revision 5.2 added
 D8–D12 and G17, and corrected C10. Revision 5.3 added D13–D17. Revision 5.4
-added D18–D25, all of them behaviours a GTM operator depends on. Every one records
+added D18–D25, all of them behaviours a GTM operator depends on. Revision 5.5
+added **P1–P7** for the live first-party research path: scope, containment,
+address safety, politeness, budget honesty, ordinary provenance, and a claim that
+walks back to a page. Every one records
 a behaviour an audit proved the branch did not have, or a sentence that could
 not be satisfied without breaking a governing rule. The count rises because the
 contract gets more truthful, which is the only reason it should ever move — and

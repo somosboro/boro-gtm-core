@@ -189,6 +189,13 @@ adjacent to it.
 | D23 | A queued row cannot name another account | `test_a_candidate_cannot_claim_another_companys_provenance`, `test_a_candidates_company_cannot_disagree_with_its_provenance`, `test_the_pending_queue_never_leaks_another_companys_candidates` |
 | D24 | Every gap event names exactly one actor | `test_a_gap_event_must_name_exactly_one_actor` |
 | D25 | Splitting a reading into occurrences does not inflate confidence | `test_confirming_every_mirror_of_one_reading_does_not_inflate_confidence` |
+| P1 | Scope comes from M2, never from the company name | `test_scope_is_the_identity_domain_and_the_alternates_m2_accepted`, `test_a_group_domain_is_never_researched_as_the_company`, `test_a_blocklisted_platform_host_cannot_be_crawled_even_as_identity`, `test_a_defunct_domain_is_out_of_scope`, `test_a_company_with_no_domain_is_reported_not_guessed` |
+| P2 | Discovery never leaves the company's own domains | `test_discovery_stays_on_the_companys_own_domains`, `test_an_operator_seed_outside_scope_is_refused`, `test_two_companies_researched_in_turn_do_not_share_evidence` |
+| P3 | Every hop is checked at the address it resolves to | `test_a_public_name_resolving_to_a_private_address_is_refused`, `test_cloud_metadata_addresses_are_refused`, `test_an_ipv4_mapped_ipv6_address_cannot_smuggle_a_private_address`, `test_one_private_address_among_several_refuses_the_whole_host`, `test_a_globally_routable_address_is_the_only_thing_allowed`, `test_only_http_and_https_are_allowed`, `test_credentials_in_the_url_are_refused`, `test_a_redirect_to_a_private_address_is_refused_at_the_new_hop`, `test_a_redirect_to_a_public_host_that_resolves_privately_is_refused` |
+| P4 | A denied source is recorded, not evaded | `test_a_denied_source_is_recorded_not_worked_around`, `test_a_disallowed_path_is_not_fetched`, `test_a_blanket_disallow_stops_everything`, `test_a_rule_naming_our_agent_specifically_is_obeyed`, `test_a_redirect_into_a_disallowed_path_is_refused`, `test_an_honest_user_agent_identifies_us_and_says_how_to_reach_us`, `test_a_crawl_delay_is_honoured_when_the_site_asks_for_one` |
+| P5 | A crawl budget is bounded and says when it stopped | `test_a_retrieval_budget_stops_the_run_and_says_so`, `test_depth_is_bounded`, `test_a_redirect_chain_is_bounded`, `test_a_document_over_the_byte_limit_reports_too_large_and_keeps_nothing`, `test_the_budget_defaults_are_conservative` |
+| P6 | Live retrieval produces ordinary M3 provenance | `test_a_live_run_produces_evidence_claims_and_a_reviewable_queue`, `test_a_second_live_run_is_conditional_and_cheap`, `test_the_attempt_records_the_scope_it_ran_under`, `test_the_fixture_path_still_works_and_touches_no_network`, `test_a_live_transport_without_a_provider_is_refused` |
+| P7 | A live claim walks back to a page on that company's site | `test_a_live_run_produces_evidence_claims_and_a_reviewable_queue`, `test_a_review_candidate_from_a_live_run_is_answerable`, `test_an_unreachable_site_is_a_failed_retrieval_not_an_empty_success` |
 | D7 | A rejection persists actor, time and rationale, and asserts nothing | `test_a_rejection_is_durable_and_asserts_nothing`, `test_a_rejection_never_asserts_the_negative`, `test_the_database_forbids_a_rejection_that_names_a_claim`, `test_rejecting_an_observation_persists_and_asserts_nothing` |
 | E1 | The retrieval date is never the observation date | `test_a_retrieval_date_is_never_used_as_the_observation_date` |
 | E2 | A stated date keeps its own granularity; none is invented | `test_an_invented_publication_date_is_unrepresentable` |
@@ -298,14 +305,14 @@ same value from two origins staying two lineages; projections rebuilding
 byte-identically from empty; the API's raw-payload, pagination and error
 contracts; the CLI's fixture-only execution gate.
 
-**397 M3 tests in total** across sixteen files.
+**545 M3 tests in total** across twenty files, four of them covering the live first-party research path.
 
 ### Acceptance status, counted mechanically
 
 | | Count |
 | --- | --- |
-| Scenarios in the contract | 158 |
-| Executable, and passing | 158 |
+| Scenarios in the contract | 165 |
+| Executable, and passing | 165 |
 | Failing | 0 |
 | Not yet executable | 0 |
 
@@ -313,11 +320,16 @@ Parsed from the documents by `tests/unit/test_traceability_counts.py`, which
 also refuses a citation to a scenario that does not exist, refuses ranges, and
 refuses to let the withdrawn G8 be claimed.
 
-The count moved 134 → 139 → 145 → 150 → **158**, and upward is the only direction
+The count moved 134 → 139 → 145 → 150 → 158 → **165**, and upward is the only direction
 it should move for this reason: each audit proved behaviours the branch did not
 have, so scenarios were added rather than the implementation being declared
 adequate. The number is recomputed from the acceptance document's headings, not
 typed here and matched — no phase targets a count.
+
+M3 Live added **P1–P7** for the production first-party research path: M2-derived
+scope, domain containment, per-hop address safety, politeness, budget honesty,
+ordinary provenance, and a claim that walks back to a page on the company's own
+site.
 
 Phase 3.4 added **D18–D25**. Where the earlier phases were driven by audits, this
 one was driven by asking what an operator actually needs to be true:

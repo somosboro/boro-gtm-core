@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import typer
@@ -405,41 +406,94 @@ def research_ask(
 
 @research_app.command("run")
 def research_run(
-    run: str = typer.Option(..., help="Research question id to execute."),
+    run: str = typer.Option(
+        None, help="Research question id to execute. Fixture mode only."
+    ),
+    company: str = typer.Option(
+        None, help="Canonical M2 company to research. Live mode only."
+    ),
     fixture_corpus: bool = typer.Option(
         False, "--fixture-corpus",
-        help="Required. M3 ships no production research provider; execution "
-             "reads the deterministic fixture corpus.",
+        help="Read the deterministic fixture corpus. No network.",
     ),
+    live: bool = typer.Option(
+        False, "--live",
+        help="Fetch the company's real public website. Reaches the internet.",
+    ),
+    seed_url: list[str] = typer.Option(
+        None, "--seed-url",
+        help="Extra first-party URL to research. Live mode only; must be inside "
+             "the company's M2 domain scope.",
+    ),
+    max_pages: int = typer.Option(None, help="Live mode: documents to retrieve."),
+    max_retrievals: int = typer.Option(None, help="Live mode: total requests."),
     conditional: bool = typer.Option(
         True, help="Send If-None-Match from the last successful retrieval."
     ),
 ) -> None:
-    """Execute one attempt of a research question against the fixture corpus.
+    """Execute one research attempt: against the fixture corpus, or for real.
 
-    ``--fixture-corpus`` is mandatory and not a default, so nobody can run this
-    believing it crawls the internet. It does not.
+    Exactly one of ``--fixture-corpus`` and ``--live`` is required, and neither
+    is a default. There is no way to run this and be unsure afterwards whether
+    it touched the internet, which was the point of the original mandatory
+    ``--fixture-corpus`` flag and is more important now that live mode exists.
+
+    ``--live`` takes ``--company`` because live research starts from the M2
+    company whose domain scope authorises it. Fixture mode takes ``--run``
+    because the corpus has no company of its own.
     """
     _bootstrap()
     import uuid as _uuid
 
-    if not fixture_corpus:
+    if fixture_corpus == live:
         raise typer.BadParameter(
-            "pass --fixture-corpus. M3 has no production research provider, and "
-            "this command reads local fixtures; the flag exists so the output "
-            "cannot be mistaken for live research."
+            "pass exactly one of --fixture-corpus or --live. --fixture-corpus "
+            "reads local files and touches no network; --live fetches the "
+            "company's real website. Neither is a default, so the output can "
+            "never be mistaken for the other."
         )
-    from boro_gtm.research.services.application import execute_attempt
+
+    if fixture_corpus:
+        if not run or company:
+            raise typer.BadParameter(
+                "--fixture-corpus takes --run (the corpus has no company of "
+                "its own); --company belongs to --live."
+            )
+        from boro_gtm.research.services.application import execute_attempt
+
+        with session_scope() as session:
+            view = execute_attempt(
+                session, run_id=_uuid.UUID(run), conditional=conditional
+            )
+            _echo({
+                "attempt_id": str(view.id), "attempt_number": view.attempt_number,
+                "status": view.status, "error": view.error,
+                "source": "fixture-corpus",
+            })
+        return
+
+    if not company or run:
+        raise typer.BadParameter(
+            "--live takes --company: real research is authorised by the M2 "
+            "company's domain scope, not by a research question id."
+        )
+    from boro_gtm.research.live.policy import CrawlBudget
+    from boro_gtm.research.live.runner import research_company_live
+
+    budget = CrawlBudget()
+    if max_pages is not None:
+        budget = replace(budget, max_pages=max_pages)
+    if max_retrievals is not None:
+        budget = replace(budget, max_retrievals=max_retrievals)
 
     with session_scope() as session:
-        view = execute_attempt(
-            session, run_id=_uuid.UUID(run), conditional=conditional
+        report = research_company_live(
+            session, company_id=_uuid.UUID(company), budget=budget,
+            human_seed_urls=tuple(seed_url or ()), conditional=conditional,
         )
-        _echo({
-            "attempt_id": str(view.id), "attempt_number": view.attempt_number,
-            "status": view.status, "error": view.error,
-            "source": "fixture-corpus",
-        })
+        payload = report.as_dict()
+        payload["source"] = "live-first-party-web"
+        _echo(payload)
 
 
 @research_app.command("retry")

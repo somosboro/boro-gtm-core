@@ -183,6 +183,53 @@ class FixtureDiscoveryProvider:
     def __init__(self, transport: FixtureTransport | None = None) -> None:
         self.transport = transport or FixtureTransport()
 
+    def seed_inputs(self) -> dict[str, object]:
+        """What this attempt was given to start from, for the attempt record.
+
+        Hashed into `attempt_seed_inputs_hash`, so two attempts that started
+        from different inputs are distinguishable afterwards even when they
+        produced the same evidence.
+        """
+        return {
+            "provider": "fixture",
+            "human_seeds": list(corpus.HUMAN_SEEDS),
+            "search_queries": list(corpus.SEARCH_RESULTS),
+        }
+
+    def plan(self) -> list[tuple[DiscoveredLocator, str | None]]:
+        """Every candidate this provider offers, with the page it came from.
+
+        Lives on the provider rather than in the pipeline because *what to look
+        for* is the provider's business: the fixture corpus has a fixed home
+        page, a fixed query list and two addresses no fixture page links to,
+        none of which mean anything to a real website (M3-ADR-071).
+        """
+        batches: list[tuple[DiscoveredLocator, str | None]] = []
+        for candidate in self.human_seeds():
+            batches.append((candidate, None))
+        for candidate in self.sitemap(corpus.HOME):
+            batches.append((candidate, corpus.HOME))
+        for candidate in self.crawl_links(corpus.HOME):
+            batches.append((candidate, corpus.HOME))
+        for query in corpus.SEARCH_RESULTS:
+            for candidate in self.search(query):
+                batches.append((candidate, None))
+        for candidate in self.job_board():
+            batches.append((candidate, None))
+        for candidate in self.registry():
+            batches.append((candidate, None))
+        for candidate in self.api():
+            batches.append((candidate, None))
+        # The mirror and the third-party directory are seeded directly, standing
+        # in for a link the fixture crawler has no page to find them on.
+        for url in (corpus.ABOUT_MIRROR_URL, corpus.DIRECTORY_URL):
+            batches.append((
+                DiscoveredLocator(url, "HUMAN_SEED", {"operator": "fixture-analyst"},
+                                  relevance_hint=0.7),
+                None,
+            ))
+        return batches
+
     def human_seeds(self) -> list[DiscoveredLocator]:
         return [
             DiscoveredLocator(url, "HUMAN_SEED", {"operator": "fixture"}, relevance_hint=1.0)

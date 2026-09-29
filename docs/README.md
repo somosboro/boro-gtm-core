@@ -64,11 +64,15 @@ passes. **M3 is implemented** on `feat/m3-operational-research`: 25 tables,
 migrations `0004_m3` through `0010_m3_review_resolution`, the 42-attribute
 registry, source discovery, retrieval, canonicalization, text derivation,
 extraction, evidence, claims, gaps, the identity-review queue, human evidence
-review, both projections, retention, the API and the CLI. All 158 live MUST
+review, both projections, retention, the API and the CLI, plus a production
+first-party web research path for BoRo's own account cohort. All 165 live MUST
 scenarios are executable and passing.
 
-**Not implemented, by design:** any production research provider. The only
-adapters are deterministic fixtures reading local files, and no test touches
+**Not implemented, by design:** third-party web search, job-board, registry and
+partner-API discovery for live research; those four methods return nothing until
+first-party research proves insufficient. CI touches no network: the live path is
+tested against a mocked HTTP layer, and real-account runs are an explicit
+operator process. The fixture adapters remain the default, and no test touches
 the internet. M4 interpretation, M5 buyer discovery, M6 outreach, M7
 qualification and later commercialization are out of scope.
 
@@ -77,7 +81,7 @@ qualification and later commercialization are out of scope.
 | [M3_OPERATIONAL_RESEARCH_DESIGN.md](M3_OPERATIONAL_RESEARCH_DESIGN.md) | Responsibility and boundaries, source/artifact/version model, the claim-ledger audit, operational attribute taxonomy, extraction and model-assisted evidence, contradictions, temporal semantics, gaps and coverage, fetch policy, firewalls |
 | [M3_SCHEMA_GRAPH.md](M3_SCHEMA_GRAPH.md) | Proposed table graph: ownership, mutability, keys, indexes and what is deliberately *not* created |
 | [M3_ACCEPTANCE_CRITERIA.md](M3_ACCEPTANCE_CRITERIA.md) | 139 Given/When/Then scenarios M3 must satisfy |
-| [M3_ADRS.md](M3_ADRS.md) | 70 decision records, including the one-ledger decision and the M3/M4 boundary |
+| [M3_ADRS.md](M3_ADRS.md) | 74 decision records, including the one-ledger decision and the M3/M4 boundary |
 | [M3_CANONICAL_COMMERCIAL_ALIGNMENT.md](M3_CANONICAL_COMMERCIAL_ALIGNMENT.md) | How M3 maps to the canonical commercial ontology: the 18-signal coverage matrix, the eleven process-observation primitives, and the firewalls |
 | [GTM_MILESTONE_OWNERSHIP.md](GTM_MILESTONE_OWNERSHIP.md) | The revised milestone roadmap and the 14 canonical sales stages mapped to it |
 | [GTM_ACCOUNT_FIELD_OWNERSHIP.md](GTM_ACCOUNT_FIELD_OWNERSHIP.md) | All 25 canonical account fields: owner, earliest legitimate stage, mutability, who may write |
