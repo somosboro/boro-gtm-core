@@ -2916,3 +2916,46 @@ by this table rather than by assumption.
 * **Generalisable:** rules written against a corpus you also wrote are a
   hypothesis about the world. The first contact with real data is a measurement,
   and it is worth taking before building anything on top of it.
+
+---
+
+## M3-ADR-076 — Normalization is identity, not addressing
+
+**Status:** accepted (BoRo-first live pilot; **bug found against real sites**)
+
+### Context
+
+`normalize_locator` collapses the spellings of one address into a single
+identity: case, default ports, tracking parameters, parameter order, a trailing
+slash and the fragment are presentation, and what remains is the document. That
+is correct, and it is what makes two discoveries of one page one source.
+
+The live transport used it for something else. On a redirect it normalized the
+`Location` and requested *that*.
+
+`total-mechanical.com` answers `/hvac` with `301 → /hvac/`. The transport
+normalized the target back to `/hvac`, asked again, was redirected again, and
+spent its entire redirect budget on a site that was politely telling it the
+correct spelling. Measured in the first live cohort run: **32 wasted retrievals**
+with `TooManyRedirects`, and one site of seventeen never researched at all.
+
+### Decision
+
+The raw resolved URL is what the request is made against; the normalized form is
+what the fetch event records and what scope and identity are checked with. They
+are different jobs and they now use different values.
+
+Loop detection tracks **raw** addresses. Keying it on the normalized form would
+reintroduce the same bug in a new shape — `/hvac/` and `/hvac` are one identity
+and two different requests, and the second one is the one the server asked for.
+
+A genuine cycle (`/a → /b → /a`) now ends at the first repeated request with
+`RedirectLoop` rather than consuming the redirect budget.
+
+### Consequences
+
+* The affected site went from zero pages to a 238 KB document in one request.
+* **Generalisable:** a canonicalizing function has a purpose, and using it
+  outside that purpose looks like consistency while being a bug. "Which thing is
+  this" and "what do I send on the wire" are not the same question, and a server
+  that disagrees with your normalizer is not wrong.

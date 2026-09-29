@@ -224,7 +224,17 @@ class ProductionWebTransport:
                 final_url=locator,
             ))
 
-        current = locator
+        # `current` is what we ask the server for; `locator` is how the
+        # document is identified. They are not the same thing, and conflating
+        # them is a redirect loop: a site canonicalizing `/hvac` to `/hvac/`
+        # meets `normalize_locator`, which strips the trailing slash, and the
+        # two disagree forever. Found in the first live pilot — 32 wasted
+        # retrievals and one site never researched (M3-ADR-076).
+        current = url
+        # Tracked by the **raw** address. A site canonicalizing `/hvac` to
+        # `/hvac/` is telling us its preferred spelling and must be followed
+        # once; only a genuine repeat of the same request is a loop.
+        seen_hops: set[str] = {current}
         redirected_from: str | None = None
         for hop in range(self.budget.max_redirects + 1):
             try:
@@ -234,7 +244,7 @@ class ProductionWebTransport:
                 self.stats.refused_unsafe.append((current, exc.reason))
                 return self._record(FetchResult(
                     outcome="DENIED", error_class="UnsafeTarget",
-                    error_detail=exc.reason, final_url=current,
+                    error_detail=exc.reason, final_url=normalize_locator(current),
                     redirected_from=redirected_from,
                 ))
 
@@ -245,7 +255,8 @@ class ProductionWebTransport:
                 return self._record(FetchResult(
                     outcome="ROBOTS_DENIED", error_class="RobotsDisallowed",
                     error_detail="redirect target disallowed by robots.txt",
-                    final_url=current, redirected_from=redirected_from,
+                    final_url=normalize_locator(current),
+                    redirected_from=redirected_from,
                 ))
 
             headers = {}
@@ -258,13 +269,13 @@ class ProductionWebTransport:
             except httpx.TimeoutException as exc:
                 return self._record(FetchResult(
                     outcome="TIMEOUT", error_class=type(exc).__name__,
-                    error_detail=str(exc)[:500], final_url=current,
+                    error_detail=str(exc)[:500], final_url=normalize_locator(current),
                     redirected_from=redirected_from,
                 ))
             except (httpx.HTTPError, OSError) as exc:
                 return self._record(FetchResult(
                     outcome="TRANSPORT_ERROR", error_class=type(exc).__name__,
-                    error_detail=str(exc)[:500], final_url=current,
+                    error_detail=str(exc)[:500], final_url=normalize_locator(current),
                     redirected_from=redirected_from,
                 ))
 
@@ -273,23 +284,33 @@ class ProductionWebTransport:
                 if not location:
                     return self._record(FetchResult(
                         outcome="TRANSPORT_ERROR", http_status=response.status_code,
-                        error_class="RedirectWithoutLocation", final_url=current,
+                        error_class="RedirectWithoutLocation",
+                        final_url=normalize_locator(current),
                         redirected_from=redirected_from,
                     ))
                 if redirected_from is None:
                     redirected_from = locator
-                current = normalize_locator(urljoin(current, location))
+                current = urljoin(current, location)
+                if current in seen_hops:
+                    return self._record(FetchResult(
+                        outcome="TRANSPORT_ERROR", http_status=response.status_code,
+                        error_class="RedirectLoop",
+                        error_detail=f"{current} repeats a request already made",
+                        final_url=normalize_locator(current),
+                        redirected_from=redirected_from,
+                    ))
+                seen_hops.add(current)
                 continue
 
             return self._record(self._interpret(
-                response, requested=current, redirected_from=redirected_from,
-                accepted=accepted,
+                response, requested=normalize_locator(current),
+                redirected_from=redirected_from, accepted=accepted,
             ))
 
         return self._record(FetchResult(
             outcome="TRANSPORT_ERROR", error_class="TooManyRedirects",
             error_detail=f"exceeded {self.budget.max_redirects} redirects",
-            final_url=current, redirected_from=redirected_from,
+            final_url=normalize_locator(current), redirected_from=redirected_from,
         ))
 
     # -- response interpretation -------------------------------------------

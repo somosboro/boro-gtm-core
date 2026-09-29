@@ -171,9 +171,11 @@ def test_a_denied_source_is_recorded_not_worked_around():
 
 def test_redirects_are_followed_and_the_final_url_is_recorded():
     def handler(request):
+        # Raw paths, because the transport now asks for exactly what the server
+        # said rather than a normalized rewrite of it.
         if request.url.path == "/service":
             return httpx.Response(301, headers={"location": "/services/"})
-        if request.url.path == "/services":
+        if request.url.path == "/services/":
             return httpx.Response(302, headers={"location": f"{BASE}/services/commercial"})
         return _html()
 
@@ -482,3 +484,49 @@ def test_a_crawl_delay_is_honoured_when_the_site_asks_for_one():
 
     assert slept, "the second request waited"
     assert max(slept) == pytest.approx(7.0), "the site's delay wins over ours"
+
+
+# --- redirect identity, found in the first live pilot -----------------------
+
+
+def test_a_trailing_slash_canonicalization_is_followed_not_looped():
+    """The bug: normalizing the redirect target undid the server's own fix.
+
+    `total-mechanical.com` answers `/hvac` with `301 → /hvac/`. The transport
+    normalized that target, `normalize_locator` stripped the trailing slash, and
+    the two disagreed forever — five hops burned per page, 32 wasted retrievals
+    across the pilot, and one site never researched at all.
+
+    Normalization decides *which document this is*. It does not decide what to
+    ask the server for.
+    """
+    def handler(request):
+        if request.url.path == "/hvac":
+            return httpx.Response(301, headers={"location": f"{BASE}/hvac/"})
+        if request.url.path == "/hvac/":
+            return _html("<p>Commercial HVAC</p>")
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    with _transport(handler) as transport:
+        result = transport.fetch(f"{BASE}/hvac")
+
+    assert result.outcome == "OK"
+    assert b"Commercial HVAC" in result.body
+    # Recorded under one identity, whichever spelling the server prefers.
+    assert result.final_url == f"{BASE}/hvac"
+    assert result.redirected_from == f"{BASE}/hvac"
+
+
+def test_a_genuine_redirect_loop_ends_at_the_first_repeat():
+    """And a real cycle stops immediately rather than spending the budget."""
+    def handler(request):
+        target = "/b" if request.url.path == "/a" else "/a"
+        return httpx.Response(302, headers={"location": f"{BASE}{target}"})
+
+    budget = CrawlBudget(delay_seconds=0.0, max_redirects=10)
+    with _transport(handler, budget=budget) as transport:
+        result = transport.fetch(f"{BASE}/a")
+
+    assert result.outcome == "TRANSPORT_ERROR"
+    assert result.error_class == "RedirectLoop"
+    assert "repeats a request already made" in result.error_detail
