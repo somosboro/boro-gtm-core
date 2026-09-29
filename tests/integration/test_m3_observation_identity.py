@@ -101,15 +101,25 @@ def test_two_observations_of_one_span_are_two_candidates(weak_prose, session):
     assert pair[0].evidence_item_id == pair[1].evidence_item_id
     assert pair[0].attribute_key != pair[1].attribute_key
     assert pair[0].observation_fingerprint != pair[1].observation_fingerprint
-    # The old key was (evidence_item_id, run_id). These two rows agree on both,
-    # so they provably collided under it and the second was discarded.
-    assert pair[0].run_id == pair[1].run_id
+    # The original key was (evidence_item_id, run_id). These two rows agree on
+    # the evidence item and on the run behind it, so they provably collided
+    # under it and the second was discarded.
+    left = review.provenance_of_evidence(session, pair[0].evidence_item_id)
+    right = review.provenance_of_evidence(session, pair[1].evidence_item_id)
+    assert left.run_id == right.run_id
 
-    # Every candidate in the queue is a distinct observation, and the
-    # fingerprint it names is the identity of a reading actually on disk.
+    # Every candidate in the queue is a distinct **occurrence**, and the
+    # fingerprint it names is the identity of a reading actually on disk. The
+    # fingerprint alone repeats, on purpose: the same sentence published on two
+    # sources is two readings a reviewer may judge separately.
     everything = review.pending_candidates(session, limit=500)
-    fingerprints = [c.observation_fingerprint for c in everything]
-    assert len(set(fingerprints)) == len(fingerprints)
+    occurrences = [
+        (c.evidence_item_id, c.observation_fingerprint) for c in everything
+    ]
+    assert len(set(occurrences)) == len(occurrences)
+    assert len({fp for _, fp in occurrences}) < len(occurrences), (
+        "the corpus mirrors documents, so a fingerprint must recur across origins"
+    )
     for candidate in everything:
         stored = review.stored_observation(session, candidate)
         assert fingerprint_of_stored(stored) == candidate.observation_fingerprint
@@ -121,23 +131,31 @@ def test_the_database_keys_a_candidate_on_the_observation(weak_prose, session):
         "SELECT conname FROM pg_constraint WHERE conrelid = "
         "'research_review_candidates'::regclass AND contype = 'u'"
     )).all())
-    assert "uq_candidate_observation" in constraints
+    assert "uq_candidate_occurrence" in constraints
     assert "uq_candidate_identity" not in constraints
+    assert "uq_candidate_observation" not in constraints
 
     columns = set(session.scalars(text(
         "SELECT a.attname FROM pg_constraint c "
         "JOIN pg_attribute a ON a.attrelid = c.conrelid "
         "AND a.attnum = ANY(c.conkey) "
-        "WHERE c.conname = 'uq_candidate_observation'"
+        "WHERE c.conname = 'uq_candidate_occurrence'"
     )).all())
-    assert columns == {"run_id", "observation_fingerprint"}
+    assert columns == {"evidence_item_id", "observation_fingerprint"}
+
+    # And the redundant provenance columns are gone, not merely unused: a row
+    # cannot name a company its evidence was not captured for.
+    stored = set(session.scalars(text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'research_review_candidates'"
+    )).all())
+    assert stored & {"company_id", "run_id", "attempt_id"} == set()
 
     # And re-raising the same observation is still idempotent.
     candidate = _shared_pair(session)[0]
     again = review.raise_candidate(
         session, evidence_item_id=candidate.evidence_item_id,
-        run_id=candidate.run_id, attempt_id=candidate.attempt_id,
-        company_id=candidate.company_id, attribute_key=candidate.attribute_key,
+        attribute_key=candidate.attribute_key,
         observation_fingerprint=candidate.observation_fingerprint,
         reason=candidate.reason, now=NOW,
     )
@@ -149,8 +167,6 @@ def test_the_database_keys_a_candidate_on_the_observation(weak_prose, session):
         with session.begin_nested():
             session.add(m.ResearchReviewCandidate(
                 id=uuid.uuid4(), evidence_item_id=candidate.evidence_item_id,
-                run_id=candidate.run_id, attempt_id=candidate.attempt_id,
-                company_id=candidate.company_id,
                 attribute_key=candidate.attribute_key,
                 observation_fingerprint=candidate.observation_fingerprint,
                 reason=candidate.reason, raised_at=NOW,
@@ -310,8 +326,7 @@ def test_a_candidate_naming_an_absent_observation_is_not_reviewable(
     candidate = _shared_pair(session)[0]
     forged = m.ResearchReviewCandidate(
         id=uuid.uuid4(), evidence_item_id=candidate.evidence_item_id,
-        run_id=candidate.run_id, attempt_id=candidate.attempt_id,
-        company_id=candidate.company_id, attribute_key=candidate.attribute_key,
+        attribute_key=candidate.attribute_key,
         observation_fingerprint="0" * 64, reason=candidate.reason,
         raised_at=NOW,
     )
@@ -336,7 +351,8 @@ def test_a_review_does_not_append_usage_to_the_terminal_attempt(
     nothing ran — so it is not usage of it (M3-ADR-065).
     """
     candidate = _shared_pair(session)[0]
-    attempt = session.get(m.OperationalResearchAttempt, candidate.attempt_id)
+    provenance = review.provenance_of_evidence(session, candidate.evidence_item_id)
+    attempt = session.get(m.OperationalResearchAttempt, provenance.attempt_id)
     assert attempt.status in TERMINAL_ATTEMPT_STATUSES, (
         "the attempt under test must already have terminated"
     )
@@ -377,12 +393,13 @@ def test_a_review_does_not_append_usage_to_the_terminal_attempt(
 def test_the_terminal_attempt_row_cannot_be_rewritten_at_all(weak_prose, session):
     """Belt and braces: the table itself refuses."""
     candidate = _shared_pair(session)[0]
+    provenance = review.provenance_of_evidence(session, candidate.evidence_item_id)
     with pytest.raises(DBAPIError):
         with session.begin_nested():
             session.execute(text(
                 "UPDATE operational_research_attempts SET status = 'OK' "
                 "WHERE id = :i"
-            ), {"i": candidate.attempt_id})
+            ), {"i": provenance.attempt_id})
 
 
 # --- §13: history is reconstructed from the relationship --------------------
@@ -462,11 +479,17 @@ def test_the_database_refuses_a_review_of_no_candidate(weak_prose, session):
     )) == 0, "the ambiguous key is gone from the table, not merely unused"
 
 
-def test_a_candidates_company_always_matches_its_provenance(weak_prose, session):
-    """Every queued row agrees with the walk that derives its subject."""
+def test_a_candidates_company_cannot_disagree_with_its_provenance(
+    weak_prose, session
+):
+    """There is nothing to disagree with: the subject is only ever derived."""
+    company, _ = weak_prose
     for candidate in review.pending_candidates(session, limit=500):
         derived = review.company_of_evidence(session, candidate.evidence_item_id)
-        assert derived == candidate.company_id
+        assert derived == company.id
+        walked = review.provenance_of_evidence(session, candidate.evidence_item_id)
+        assert walked.company_id == derived
+        assert not hasattr(candidate, "company_id")
 
 
 def test_the_fingerprint_is_a_function_of_the_reading_alone(weak_prose, session):

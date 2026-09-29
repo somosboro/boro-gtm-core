@@ -289,9 +289,10 @@ def test_a_low_confidence_observation_is_discoverable_after_the_process_ends(
     assert waiting, "the low-confidence candidates outlived the process"
 
     candidate = waiting[0]
-    assert candidate.company_id == company.id
+    provenance = review.provenance_of_evidence(reader, candidate.evidence_item_id)
+    assert provenance.company_id == company.id
     assert candidate.attribute_key
-    assert candidate.run_id == result.attempt.run_id
+    assert provenance.run_id == result.attempt.run_id
     assert float(candidate.extractor_confidence) == pytest.approx(0.10)
     assert reader.get(m.ResearchEvidenceItem, candidate.evidence_item_id) is not None
 
@@ -369,13 +370,19 @@ def test_the_pending_queue_never_leaks_another_companys_candidates(m3):
                  now=NOW, conditional=False)
     m3.flush()
 
+    def owners(candidates) -> set:
+        return {
+            review.provenance_of_evidence(m3, c.evidence_item_id).company_id
+            for c in candidates
+        }
+
     for owner in (first, second):
         mine = review.pending_candidates(m3, company_id=owner.id, limit=500)
         assert mine
-        assert {c.company_id for c in mine} == {owner.id}
+        assert owners(mine) == {owner.id}
 
     everything = review.pending_candidates(m3, limit=500)
-    assert {c.company_id for c in everything} == {first.id, second.id}
+    assert owners(everything) == {first.id, second.id}
 
 
 # --- §11: a CONFIRM must carry provenance ----------------------------------

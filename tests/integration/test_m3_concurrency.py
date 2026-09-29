@@ -726,3 +726,77 @@ def test_two_reviewers_on_sibling_observations_do_not_collide(two_sessions):
     keyed = {r.review_candidate_id: r.decision for r in rows}
     assert keyed[first.id] == "CONFIRM"
     assert keyed[second.id] == "REJECT"
+
+
+def test_two_operators_deciding_first_produce_exactly_one_operative(
+    two_sessions, migrated_engine
+):
+    """Two people open the same queue item and decide at the same moment.
+
+    Only one can be the decision that acted. Genuinely interleaved: the first
+    review is inserted and uncommitted while the second attempts, so both would
+    have read "nobody has decided" without the row lock the service takes
+    (M3-ADR-068).
+
+    One confirms and one rejects, which is the worst case: if both acted, the
+    account would carry a claim *and* a rejection of the same reading.
+    """
+    import dataclasses
+
+    import boro_gtm.research.services.extraction as extraction_module
+    from boro_gtm.research.services.extraction import PROSE_EXTRACTOR
+    from boro_gtm.research.services.review import pending_candidates, review_candidate
+
+    left, _ = two_sessions
+    company = _company(left)
+    weak = dataclasses.replace(PROSE_EXTRACTOR, extractor_confidence=0.10)
+    original = extraction_module.DEFAULT_EXTRACTORS
+    extraction_module.DEFAULT_EXTRACTORS = tuple(
+        weak if x.extractor_id == PROSE_EXTRACTOR.extractor_id else x
+        for x in original
+    )
+    try:
+        _researched(left, company.id)
+    finally:
+        extraction_module.DEFAULT_EXTRACTORS = original
+    left.commit()
+
+    candidate_id = pending_candidates(left, limit=1)[0].id
+    left.commit()
+
+    def confirm(session):
+        review_candidate(session, candidate_id=candidate_id, decision="CONFIRM",
+                         actor="one", now=NOW + timedelta(minutes=1))
+
+    def reject(session):
+        review_candidate(session, candidate_id=candidate_id, decision="REJECT",
+                         actor="two", now=NOW + timedelta(minutes=2))
+
+    results = _interleaved(str(migrated_engine.url), confirm, reject)
+    assert results["first"] is None, results["first"]
+    assert results["second"] is None, (
+        f"a dissenting review must still persist, got {results['second']!r}"
+    )
+
+    check = two_sessions[1]
+    check.rollback()
+    rows = check.scalars(select(m.ResearchEvidenceReview).where(
+        m.ResearchEvidenceReview.review_candidate_id == candidate_id)).all()
+    assert len(rows) == 2, "both opinions are recorded"
+    operative = [r for r in rows if r.is_operative]
+    assert len(operative) == 1, f"exactly one decision acted: {rows}"
+
+    # Only that one has side effects, and they are its own.
+    dissent = [r for r in rows if not r.is_operative][0]
+    assert dissent.human_extraction_id is None
+    assert dissent.resulting_claim_id is None
+    if operative[0].decision == "CONFIRM":
+        assert operative[0].human_extraction_id is not None
+        assert operative[0].resulting_claim_id is not None
+    else:
+        assert operative[0].human_extraction_id is None
+
+    # And exactly one HUMAN extraction exists at most — never two.
+    human = check.scalar(select(func.count()).select_from(m.ResearchExtraction)
+                         .where(m.ResearchExtraction.extractor_kind == "HUMAN"))
+    assert human <= 1, f"{human} HUMAN extractions for one observation"

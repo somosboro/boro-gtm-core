@@ -366,6 +366,84 @@ review record.
 *Protects:* a review appended a HUMAN reading to the usage set of a finished
 attempt, rewriting the record of an execution that had already ended.
 
+### D18 [MUST] — The same reading on two sources is two review questions
+**Given** one sentence published on three locators, one of them on a different
+domain, each producing its own evidence item in one run
+**When** the readings are deferred for review
+**Then** each occurrence is its own candidate, and deciding one leaves the others
+pending and individually answerable.
+*Protects:* `UNIQUE (run_id, observation_fingerprint)` merged independent
+publishers — the pipeline made 30 raise attempts and landed 14, so sixteen
+questions never reached a reviewer, and one rejection silently spoke for three
+sources.
+
+### D19 [MUST] — Only the first decision acts
+**Given** a candidate a reviewer has already rejected
+**When** a second reviewer confirms it
+**Then** the second review is durable, is marked non-operative, and creates no
+HUMAN extraction, no evidence, no claim and no gap resolution; the operative
+decision is unchanged, and the reverse order behaves the same way — a later
+rejection does not withdraw a confirmed claim.
+*Protects:* every decision ran the full confirmation, so a second reviewer
+silently reversed a colleague and the ledger recorded two contradicting actions.
+
+### D20 [MUST] — Two simultaneous first reviewers produce one operative decision
+**Given** one undecided candidate and two operators deciding in overlapping
+transactions, one confirming and one rejecting
+**When** both commit
+**Then** both reviews persist, exactly one is operative, only that one has side
+effects, at most one HUMAN extraction exists, and neither operator meets a raw
+database error.
+
+### D21 [MUST] — An operative confirmation reconciles the account
+**Given** a low-confidence observation with an open `INSUFFICIENT_EVIDENCE` gap
+**When** an operator confirms it
+**Then** the claim is asserted, that gap reaches `RESOLVED` through an event
+naming the **review** and the claim rather than a research attempt, the company
+profile carries the attribute, and the plan profile's open-gap and covered counts
+move — all synchronously, and all still reproducible by rebuilding from the
+ledger.
+*Protects:* the claim existed while the gap, the profile and the coverage all
+still said the attribute was unknown. An operator acts on what the account view
+says.
+
+### D22 [MUST] — A rejection leaves the question open
+**Given** a low-confidence observation with an open `INSUFFICIENT_EVIDENCE` gap
+**When** an operator rejects it
+**Then** the decision is durable with its actor, time and rationale; no claim of
+either polarity is asserted; the gap stays open; the company profile still does
+not carry the attribute; and plan coverage is unchanged.
+*Protects:* "I do not accept this evidence" is not "the company does not have
+this characteristic", and the account view must not conflate them.
+
+### D23 [MUST] — A queued row cannot name another account
+**Given** a review candidate whose evidence was captured for company A
+**When** a raw write tries to attribute it to company B, or to a foreign run or
+attempt
+**Then** it fails: company, run and attempt are not columns on the candidate at
+all, and the operator's company filter walks the evidence's own provenance.
+*Protects:* three stored copies of a derivable fact were three ways for a
+malformed row to put another account's evidence in an operator's queue.
+
+### D24 [MUST] — Every gap event names exactly one actor
+**Given** the gap ledger
+**When** an event is written with no actor, with both an attempt and a review, or
+with a review on an event that is not a resolution
+**Then** the database rejects it.
+*Protects:* `attempt_id` was NOT NULL, so a gap closed by a person had to borrow
+the attempt that raised it — recording a machine run doing something a human did
+days later.
+
+### D25 [MUST] — Splitting a reading into occurrences does not inflate confidence
+**Given** one reading published on three mirrored locators, now three reviewable
+occurrences
+**When** an operator confirms all three
+**Then** three claims exist, one per lineage, and the company profile's
+corroborating publisher count for that attribute is **1** — three copies of one
+document are one publisher.
+*Protects:* the fix for the collapse would otherwise have bought a worse problem
+than the one it solved: fabricated agreement.
+
 ### D3 [MUST] — A low-confidence extraction yields a gap, not a claim
 **Given** an extraction below the review threshold
 **When** assertion runs
@@ -1201,11 +1279,12 @@ any mismatch fails rather than warns.
 * A terminal-state test: no attempt may transition out of `COMPLETED`,
   `PARTIAL` or `FAILED`.
 
-**Scenario count: 150 MUST + 1 withdrawn = 151** — A:14, B:5, C:14, D:17, E:6,
+**Scenario count: 158 MUST + 1 withdrawn = 159** — A:14, B:5, C:14, D:25, E:6,
 F:8, G:16 (+G8 withdrawn), H:7, I:4, J:4, L:19, M:16, N:2, O:18.
 
 Revision 5.1 added D7, F7, F8, G16 and I4, and split D6. Revision 5.2 added
-D8–D12 and G17, and corrected C10. Revision 5.3 added D13–D17. Every one records
+D8–D12 and G17, and corrected C10. Revision 5.3 added D13–D17. Revision 5.4
+added D18–D25, all of them behaviours a GTM operator depends on. Every one records
 a behaviour an audit proved the branch did not have, or a sentence that could
 not be satisfied without breaking a governing rule. The count rises because the
 contract gets more truthful, which is the only reason it should ever move — and

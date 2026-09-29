@@ -844,6 +844,24 @@ rather than a JSON array on the signal: a mutable list on an identity row is
 revision 1's gap-counter defect in a new hat, and a real FK means evidence
 cannot be deleted out from under a review.
 
+### 3.15c Gap events name exactly one actor
+
+`operational_research_gap_events.attempt_id` was NOT NULL, which held while every
+event was something an execution did. Once a human review can close an
+`INSUFFICIENT_EVIDENCE` gap that became a lie: the decision happened days later
+and nothing ran, so the event had to borrow the attempt that *raised* the gap.
+
+`attempt_id` is nullable, `resolved_by_review_id → research_evidence_reviews` is
+added, and a CHECK requires exactly one of the two — not "at least one", because
+two would be two stories about who closed the gap. A second CHECK confines the
+human actor to `RESOLVED`; nothing else in the lifecycle is something a reviewer
+does (M3-ADR-069).
+
+An operative confirmation writes that event, and rebuilds both projections, in the
+same transaction as the review: the claim existed while the gap, the company
+profile and plan coverage all still said the attribute was unknown, and the
+account view is what an operator acts on (M3-ADR-070).
+
 ### 3.16 `identity_review_signal_events`
 
 | Property | Value |
@@ -940,8 +958,8 @@ like a score gets used as one — which is M4's job, not M3's.
 | Owner | M3 |
 | Mutability | **append-only** |
 | PK | `id` (uuid) |
-| Natural uniqueness | `UNIQUE (run_id, observation_fingerprint)` |
-| Key FKs | `evidence_item_id → research_evidence_items` (RESTRICT), `run_id → operational_research_runs` (RESTRICT), `attempt_id → operational_research_attempts` (RESTRICT), `company_id → companies` (RESTRICT) |
+| Natural uniqueness | `UNIQUE (evidence_item_id, observation_fingerprint)` |
+| Key FKs | `evidence_item_id → research_evidence_items` (RESTRICT) — the only one |
 | Truncatable | No |
 | Temporal | `raised_at` |
 
@@ -960,13 +978,29 @@ the deferral lived in the pipeline's return value, so once the process ended
 nothing connected an `INSUFFICIENT_EVIDENCE` gap to the evidence behind it
 (M3-ADR-061).
 
-**Identity is the observation, not the evidence item.** Revision 5.2 keyed this
-`UNIQUE (evidence_item_id, run_id)`. An evidence item is keyed on its locator, so
-two extraction rules matching one span — `technician_count` and
-`field_workforce_present` from "58 field technicians" — share one, and
-`ON CONFLICT DO NOTHING` discarded the second question without an error
-(M3-ADR-064). The quote is excluded from the fingerprint: it is a function of the
-span, so it would add nothing and make identity fragile to whitespace.
+**Identity is one observation *occurrence*.** Revision 5.2 keyed this
+`UNIQUE (evidence_item_id, run_id)`: an evidence item is keyed on its locator, so
+two rules matching one span — `technician_count` and `field_workforce_present`
+from "58 field technicians" — shared one, and `ON CONFLICT DO NOTHING` discarded
+the second question (M3-ADR-064). Revision 5.3's
+`UNIQUE (run_id, observation_fingerprint)` fixed that and merged the opposite
+case: the same reading found on *different* sources. The pipeline made 30
+`raise_candidate` calls and landed 14. Those are different publishers, and
+rejecting one's copy says nothing about another's, so the key is the pair
+`(evidence_item_id, observation_fingerprint)` (M3-ADR-066).
+
+The run is deliberately absent from the key: a reviewer's answer about a source
+does not expire because a later run saw it again. The quote is excluded from the
+fingerprint — it is a function of the span, so it would add nothing and make
+identity fragile to whitespace — while `lineage_tag` is included, because it
+decides how the observation groups into a claim.
+
+**Provenance is derived, not stored.** `company_id`, `run_id` and `attempt_id`
+were columns here. All three follow from `evidence_item_id` through single-valued
+foreign keys, so keeping them was three ways for a queued row to name the wrong
+account — and the failure mode is an operator filtering by their own company and
+being shown someone else's evidence. They are dropped; `provenance_of_evidence()`
+walks the chain (M3-ADR-067).
 
 `ix_review_candidates_company` and `ix_review_candidates_evidence` are named for
 this table rather than `ix_candidates_*`: index names are **schema-global** in
@@ -980,12 +1014,12 @@ PostgreSQL, and M2's `entity_resolution_candidates` already owns
 | Owner | M3 |
 | Mutability | **append-only** |
 | PK | `id` (uuid) |
-| Natural uniqueness | `UNIQUE (review_candidate_id, actor, reviewed_at)` |
+| Natural uniqueness | `UNIQUE (review_candidate_id, actor, reviewed_at)`, plus `UNIQUE (review_candidate_id) WHERE is_operative` |
 | Key FKs | `review_candidate_id → research_review_candidates` (RESTRICT), `human_extraction_id → research_extractions` (RESTRICT, nullable), `resulting_claim_id → company_claims` (RESTRICT, nullable) |
 | Truncatable | No |
 | Temporal | `reviewed_at` |
 
-Columns: `decision` (`CONFIRM` | `REJECT`), `actor`, `note`.
+Columns: `decision` (`CONFIRM` | `REJECT`), `is_operative`, `actor`, `note`.
 
 A `CHECK` forbids a `REJECT` from naming an extraction or a claim, and forbids a
 `CONFIRM` from naming no extraction: a confirmation that produced no HUMAN
@@ -1000,6 +1034,15 @@ Several rows per candidate are permitted and expected: the queue closes on the
 first decision, and a later reviewer's disagreement is recorded dissent rather
 than a re-opened question. Nothing adjudicates — M3 has no consensus mechanism,
 by decision (M3-ADR-064).
+
+**`is_operative` is which decision acted.** The rule was documented and not
+implemented: every decision ran the full confirmation, so a second reviewer
+confirming what a first had rejected appended another HUMAN extraction, another
+evidence item and another claim, silently reversing a colleague. The partial
+unique index makes one operative decision per candidate a schema rule, the service
+takes the candidate row `FOR UPDATE` so two simultaneous first reviewers cannot
+both win, and a CHECK forbids a non-operative row from carrying a HUMAN extraction
+or a claim (M3-ADR-068).
 
 `human_extraction_id` is how a HUMAN reading is reachable at all. It is
 deliberately **not** recorded in `research_attempt_extractions`: the attempt that

@@ -181,6 +181,14 @@ adjacent to it.
 | D15 | A rejection names the observation it disbelieves | `test_a_rejection_is_specific_to_one_observation`, `test_the_database_refuses_a_review_of_no_candidate` |
 | D16 | A confirmation reviews the historical reading, not a re-run | `test_a_confirmation_survives_the_extractor_being_replaced`, `test_a_confirmation_survives_a_pruned_body_and_text`, `test_a_candidate_naming_an_absent_observation_is_not_reviewable` |
 | D17 | A human review does not mutate the attempt it reviews | `test_a_review_does_not_append_usage_to_the_terminal_attempt`, `test_the_terminal_attempt_row_cannot_be_rewritten_at_all` |
+| D18 | The same reading on two sources is two review questions | `test_one_reading_on_two_sources_is_two_review_questions`, `test_the_database_keys_a_candidate_on_the_occurrence`, `test_the_lineage_tag_is_part_of_observation_identity` |
+| D19 | Only the first decision acts | `test_a_later_confirmation_after_a_rejection_is_dissent_only`, `test_a_later_rejection_does_not_withdraw_a_confirmed_claim`, `test_the_database_permits_only_one_operative_review`, `test_the_database_forbids_a_dissent_that_asserts` |
+| D20 | Two simultaneous first reviewers produce one operative decision | `test_two_operators_deciding_first_produce_exactly_one_operative` |
+| D21 | An operative confirmation reconciles the account | `test_an_operative_confirmation_reconciles_the_whole_account`, `test_the_operator_round_trip` |
+| D22 | A rejection leaves the question open | `test_a_rejection_leaves_the_gap_open_and_claims_nothing` |
+| D23 | A queued row cannot name another account | `test_a_candidate_cannot_claim_another_companys_provenance`, `test_a_candidates_company_cannot_disagree_with_its_provenance`, `test_the_pending_queue_never_leaks_another_companys_candidates` |
+| D24 | Every gap event names exactly one actor | `test_a_gap_event_must_name_exactly_one_actor` |
+| D25 | Splitting a reading into occurrences does not inflate confidence | `test_confirming_every_mirror_of_one_reading_does_not_inflate_confidence` |
 | D7 | A rejection persists actor, time and rationale, and asserts nothing | `test_a_rejection_is_durable_and_asserts_nothing`, `test_a_rejection_never_asserts_the_negative`, `test_the_database_forbids_a_rejection_that_names_a_claim`, `test_rejecting_an_observation_persists_and_asserts_nothing` |
 | E1 | The retrieval date is never the observation date | `test_a_retrieval_date_is_never_used_as_the_observation_date` |
 | E2 | A stated date keeps its own granularity; none is invented | `test_an_invented_publication_date_is_unrepresentable` |
@@ -290,14 +298,14 @@ same value from two origins staying two lineages; projections rebuilding
 byte-identically from empty; the API's raw-payload, pagination and error
 contracts; the CLI's fixture-only execution gate.
 
-**383 M3 tests in total** across fifteen files.
+**397 M3 tests in total** across sixteen files.
 
 ### Acceptance status, counted mechanically
 
 | | Count |
 | --- | --- |
-| Scenarios in the contract | 150 |
-| Executable, and passing | 150 |
+| Scenarios in the contract | 158 |
+| Executable, and passing | 158 |
 | Failing | 0 |
 | Not yet executable | 0 |
 
@@ -305,11 +313,34 @@ Parsed from the documents by `tests/unit/test_traceability_counts.py`, which
 also refuses a citation to a scenario that does not exist, refuses ranges, and
 refuses to let the withdrawn G8 be claimed.
 
-The count moved 134 → 139 → 145 → **150**, and upward is the only direction it
-should move for this reason: each audit proved behaviours the branch did not
+The count moved 134 → 139 → 145 → 150 → **158**, and upward is the only direction
+it should move for this reason: each audit proved behaviours the branch did not
 have, so scenarios were added rather than the implementation being declared
 adequate. The number is recomputed from the acceptance document's headings, not
 typed here and matched — no phase targets a count.
+
+Phase 3.4 added **D18–D25**. Where the earlier phases were driven by audits, this
+one was driven by asking what an operator actually needs to be true:
+
+* **D18** — a candidate keyed `(run, fingerprint)` merged independent publishers.
+  Reproduced by instrumenting `raise_candidate`: 30 attempts, 14 landed. Sixteen
+  review questions never reached anyone.
+* **D19** — every decision ran the full confirmation, so a second reviewer
+  silently reversed a colleague.
+* **D20** — "the first decision wins" was a claim about luck until a row lock and
+  a partial unique index made it a claim about serialization.
+* **D21** — a confirmation created the claim and left the gap open, the profile
+  empty and coverage stale. The operator's own screen contradicted itself.
+* **D22** — the other half: a rejection must *not* close the gap.
+* **D23** — `company_id`, `run_id` and `attempt_id` were stored on the candidate
+  although all three are derivable, which is three ways to show an operator
+  another account's evidence.
+* **D24** — a gap closed by a person was recorded as the work of a machine
+  attempt, because `attempt_id` was NOT NULL.
+* **D25** — the counterweight to D18, added after checking rather than assuming:
+  splitting one reading into three reviewable occurrences must not let three
+  confirmations look like three independent witnesses. It does not — the
+  corroborating publisher count stays 1.
 
 Phase 3.3 added **D13–D17**, all on one root cause:
 

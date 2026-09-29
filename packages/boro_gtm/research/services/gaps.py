@@ -116,13 +116,22 @@ def resolve_gap(
     session: Session,
     *,
     gap_id: uuid.UUID,
-    attempt_id: uuid.UUID,
     claim_id: uuid.UUID,
     now: datetime,
+    attempt_id: uuid.UUID | None = None,
+    review_id: uuid.UUID | None = None,
 ) -> bool:
+    """Close a gap, naming who closed it: an execution or a human review.
+
+    Exactly one of the two. A gap closed by a reviewer used to have to borrow
+    the attempt that raised it, which recorded a machine run doing something a
+    person did days later (M3-ADR-069).
+    """
+    if (attempt_id is None) == (review_id is None):
+        raise ValueError("a resolution names exactly one actor: attempt or review")
     return _append_event(
         session, gap_id=gap_id, kind="RESOLVED", attempt_id=attempt_id, now=now,
-        resolved_by_claim_id=claim_id,
+        resolved_by_claim_id=claim_id, resolved_by_review_id=review_id,
     )
 
 
@@ -144,11 +153,12 @@ def _append_event(
     *,
     gap_id: uuid.UUID,
     kind: str,
-    attempt_id: uuid.UUID,
+    attempt_id: uuid.UUID | None,
     now: datetime,
     source_id: uuid.UUID | None = None,
     fetch_event_id: uuid.UUID | None = None,
     resolved_by_claim_id: uuid.UUID | None = None,
+    resolved_by_review_id: uuid.UUID | None = None,
     note: str | None = None,
 ) -> bool:
     if kind in TERMINAL_GAP_KINDS:
@@ -176,7 +186,8 @@ def _append_event(
         "id": uuid.uuid4(), "gap_id": gap_id, "event_kind": kind,
         "attempt_id": attempt_id, "source_id": source_id,
         "fetch_event_id": fetch_event_id,
-        "resolved_by_claim_id": resolved_by_claim_id, "note": note,
+        "resolved_by_claim_id": resolved_by_claim_id,
+        "resolved_by_review_id": resolved_by_review_id, "note": note,
         "occurred_at": now,
     }
     try:

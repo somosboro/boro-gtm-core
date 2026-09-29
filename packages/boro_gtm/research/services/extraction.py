@@ -661,10 +661,17 @@ def observation_fingerprint(observation: Observation) -> str:
       observation rather than colliding;
     * `locator_hash` — the span;
     * `support_kind` — a direct statement and a derivation from the same span
-      are different readings.
+      are different readings;
+    * `lineage_tag` — it decides how the observation *groups* when a claim is
+      asserted. A tagged observation joins one lineage with everything sharing
+      its tag; an untagged one groups by evidence origin. Two readings differing
+      only in the tag therefore produce different claims, which makes them
+      different review questions, so the tag is part of identity (M3-ADR-066).
 
     The quote is excluded: it is a function of the span, so including it would
-    add nothing and make the identity fragile to whitespace.
+    add nothing and make the identity fragile to whitespace. `evidence_class`
+    needs no entry of its own — `__post_init__` folds it into `value`, which is
+    where the registry reads it and where the claim carries it.
     """
     return sha256_json({
         "attribute_key": observation.attribute_key,
@@ -673,6 +680,7 @@ def observation_fingerprint(observation: Observation) -> str:
         "fact_type": observation.fact_type,
         "locator_hash": locator_hash_of(observation),
         "support_kind": observation.support_kind,
+        "lineage_tag": observation.lineage_tag,
     })
 
 
@@ -690,6 +698,7 @@ def fingerprint_of_stored(stored: dict[str, Any]) -> str:
         "fact_type": stored["fact_type"],
         "locator_hash": locator_hash(stored["locator"]),
         "support_kind": stored.get("support_kind", "DIRECT_STATEMENT"),
+        "lineage_tag": stored.get("lineage_tag"),
     })
 
 
@@ -710,6 +719,7 @@ def record_human_extraction(
     *,
     text_derivation_id: uuid.UUID,
     body_id: uuid.UUID,
+    fetch_event_id: uuid.UUID,
     observation: Observation,
     fingerprint: str,
     now: datetime,
@@ -721,6 +731,9 @@ def record_human_extraction(
     * nothing is executed — the observation is the one already on disk, so a
       confirmation does not depend on today's extractor still existing, still
       behaving the same way, or on the raw body still being retained;
+    * the reading is scoped to one occurrence — this observation, on this
+      retrieval — so confirming the same sentence on a second source is its own
+      HUMAN extraction rather than silently joining the first one;
     * no `research_attempt_extractions` row is written. A human reviewing three
       days later is not something the original execution "created or reused",
       and appending usage to a terminal attempt made
@@ -734,7 +747,14 @@ def record_human_extraction(
         "extractor_kind": "HUMAN",
         "output_schema_version": "1",
         "determinism": "DETERMINISTIC",
+        # The scope is one observation **occurrence**: this reading, on this
+        # retrieval. The fingerprint alone was not enough — two sources can
+        # mirror one document, so they share a text derivation, and one HUMAN
+        # extraction would then have carried the evidence of two separate
+        # confirmations. A review's history would have grown when somebody else
+        # confirmed the other source (M3-ADR-066).
         "scope": fingerprint,
+        "occurrence": str(fetch_event_id),
     })
     existing = session.scalars(
         select(ResearchExtraction).where(

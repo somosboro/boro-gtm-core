@@ -689,10 +689,14 @@ def list_review_candidates(
         db, company_id=company, reason=reason, limit=limit
     ):
         item = db.get(ResearchEvidenceItem, candidate.evidence_item_id)
+        # Company and run come from the evidence's own chain. They were columns
+        # on the candidate; deriving them is why a malformed row cannot put
+        # another account's evidence in this operator's queue (M3-ADR-067).
+        provenance = review.provenance_of_evidence(db, item.id)
         out.append(s.PendingReviewOut(
             candidate_id=candidate.id, evidence_item_id=item.id,
-            extraction_id=item.extraction_id, company_id=candidate.company_id,
-            run_id=candidate.run_id, attribute_key=candidate.attribute_key,
+            extraction_id=item.extraction_id, company_id=provenance.company_id,
+            run_id=provenance.run_id, attribute_key=candidate.attribute_key,
             reason=candidate.reason,
             extractor_confidence=(
                 float(candidate.extractor_confidence)
@@ -733,10 +737,15 @@ def decide_review_candidate(
 def list_candidate_reviews(
     candidate_id: uuid.UUID, db: Session = Depends(get_db)
 ) -> list[s.EvidenceReviewOut]:
-    """Every decision recorded about this one observation, oldest first."""
+    """Every decision recorded about this one observation, oldest first.
+
+    The first is operative — it is the one that acted. Later rows are dissent:
+    durable, because a disagreement is information, and inert.
+    """
     candidate = _get_or_404(
         db, ResearchReviewCandidate, candidate_id, "research review candidate"
     )
+    provenance = review.provenance_of_evidence(db, candidate.evidence_item_id)
     # `created_evidence_item_ids` is reconstructed from the persisted human
     # extraction, not invented. The previous version emitted an empty list for
     # every historical row, which is false for every confirmation.
@@ -745,12 +754,14 @@ def list_candidate_reviews(
             review_id=row.id, review_candidate_id=candidate.id,
             evidence_item_id=candidate.evidence_item_id,
             attribute_key=candidate.attribute_key,
-            company_id=review.company_of_evidence(db, candidate.evidence_item_id),
-            decision=row.decision, actor=row.actor, note=row.note,
-            reviewed_at=row.reviewed_at,
+            company_id=provenance.company_id, run_id=provenance.run_id,
+            decision=row.decision, is_operative=row.is_operative,
+            actor=row.actor, note=row.note, reviewed_at=row.reviewed_at,
             human_extraction_id=row.human_extraction_id,
             resulting_claim_id=row.resulting_claim_id,
             created_evidence_item_ids=review.evidence_created_by(db, row),
+            resolved_gap_id=review.gap_resolved_by(db, row),
+            profiles_rebuilt=row.is_operative and row.resulting_claim_id is not None,
             model_extraction_unchanged=True,
         )
         for row in review.reviews_for(db, candidate.id)

@@ -30,6 +30,7 @@ from boro_gtm.research.domain.models import (
     IdentityReviewSignalEvent,
     IdentityReviewSignalOccurrence,
     OperationalResearchAttempt,
+    OperationalResearchGap,
     OperationalResearchRun,
     ResearchEvidenceItem,
     ResearchEvidenceReview,
@@ -91,15 +92,23 @@ class ReviewOutcome:
     review_candidate_id: uuid.UUID
     evidence_item_id: uuid.UUID
     attribute_key: str
-    #: Derived from provenance, never supplied.
+    #: Both derived from provenance, never supplied.
     company_id: uuid.UUID
+    run_id: uuid.UUID
     decision: str
+    #: True when this was the first decision — the one that acted. A later
+    #: review is durable dissent and changes nothing.
+    is_operative: bool
     actor: str
     note: str | None
     reviewed_at: datetime
     human_extraction_id: uuid.UUID | None = None
     resulting_claim_id: uuid.UUID | None = None
     created_evidence_item_ids: list[uuid.UUID] = field(default_factory=list)
+    #: The `INSUFFICIENT_EVIDENCE` gap this confirmation closed, if one was open.
+    resolved_gap_id: uuid.UUID | None = None
+    #: Whether the company and plan projections were refreshed synchronously.
+    profiles_rebuilt: bool = False
     model_extraction_unchanged: bool = True
 
     def as_dict(self) -> dict:
@@ -109,13 +118,17 @@ class ReviewOutcome:
             "evidence_item_id": self.evidence_item_id,
             "attribute_key": self.attribute_key,
             "company_id": self.company_id,
+            "run_id": self.run_id,
             "decision": self.decision,
+            "is_operative": self.is_operative,
             "actor": self.actor,
             "note": self.note,
             "reviewed_at": self.reviewed_at,
             "human_extraction_id": self.human_extraction_id,
             "resulting_claim_id": self.resulting_claim_id,
             "created_evidence_item_ids": self.created_evidence_item_ids,
+            "resolved_gap_id": self.resolved_gap_id,
+            "profiles_rebuilt": self.profiles_rebuilt,
             "model_extraction_unchanged": self.model_extraction_unchanged,
         }
 
@@ -123,6 +136,52 @@ class ReviewOutcome:
 # ---------------------------------------------------------------------------
 # Provenance: who the evidence is *about*
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceProvenance:
+    """The research chain behind one evidence item, derived not stored.
+
+    Every hop is a single-valued FK — evidence → fetch event → attempt → run →
+    company — so this is a fact about the evidence, not a choice. The review
+    candidate used to keep `company_id`, `run_id` and `attempt_id` as columns,
+    which was three chances for a queued row to name the wrong account
+    (M3-ADR-067).
+    """
+
+    evidence_item_id: uuid.UUID
+    fetch_event_id: uuid.UUID
+    attempt_id: uuid.UUID
+    run_id: uuid.UUID
+    company_id: uuid.UUID
+
+
+def provenance_of_evidence(
+    session: Session, evidence_item_id: uuid.UUID
+) -> EvidenceProvenance:
+    """Walk the chain once. Refuses rather than guessing if it is not unique."""
+    rows = session.execute(
+        select(
+            ResearchEvidenceItem.id, ResearchFetchEvent.id,
+            OperationalResearchAttempt.id, OperationalResearchRun.id,
+            OperationalResearchRun.company_id,
+        )
+        .join(ResearchFetchEvent,
+              ResearchFetchEvent.id == ResearchEvidenceItem.fetch_event_id)
+        .join(OperationalResearchAttempt,
+              OperationalResearchAttempt.id == ResearchFetchEvent.attempt_id)
+        .join(OperationalResearchRun,
+              OperationalResearchRun.id == OperationalResearchAttempt.run_id)
+        .where(ResearchEvidenceItem.id == evidence_item_id)
+    ).all()
+    if len(rows) != 1:
+        raise UnresolvableProvenanceError(
+            f"evidence {evidence_item_id} resolves to {len(rows)} research "
+            "chains; a review may only assert about the company its evidence "
+            "was captured for",
+            {"evidence_item_id": str(evidence_item_id), "chains": len(rows)},
+        )
+    return EvidenceProvenance(*rows[0])
 
 
 def company_of_evidence(session: Session, evidence_item_id: uuid.UUID) -> uuid.UUID:
@@ -165,30 +224,32 @@ def raise_candidate(
     session: Session,
     *,
     evidence_item_id: uuid.UUID,
-    run_id: uuid.UUID,
-    attempt_id: uuid.UUID,
-    company_id: uuid.UUID,
     attribute_key: str,
     observation_fingerprint: str,
     reason: str,
     now: datetime,
     extractor_confidence: float | None = None,
 ) -> bool:
-    """Put **one observation** in the queue. Idempotent per question.
+    """Put **one observation occurrence** in the queue. Idempotent per occurrence.
 
-    Keyed on the observation, not the evidence item: two rules matching one span
-    share one evidence item, and keying on it dropped the second observation.
+    The unit is this reading *on this evidence item*. Two rules matching one span
+    share an evidence item, so the fingerprint is needed; and the same reading
+    found on a second source is a second thing a reviewer may trust or reject,
+    so the evidence item is needed too. Keyed on `(run, fingerprint)` the
+    pipeline made 30 raise attempts and landed 14 — sixteen questions vanished
+    (M3-ADR-066).
+
+    Company, run and attempt are not arguments: they follow from the evidence.
     """
     result = session.execute(
         pg_insert(ResearchReviewCandidate)
         .values(
-            id=uuid.uuid4(), evidence_item_id=evidence_item_id, run_id=run_id,
-            attempt_id=attempt_id, company_id=company_id,
+            id=uuid.uuid4(), evidence_item_id=evidence_item_id,
             attribute_key=attribute_key,
             observation_fingerprint=observation_fingerprint, reason=reason,
             extractor_confidence=extractor_confidence, raised_at=now,
         )
-        .on_conflict_do_nothing(constraint="uq_candidate_observation")
+        .on_conflict_do_nothing(constraint="uq_candidate_occurrence")
         .returning(ResearchReviewCandidate.id)
     )
     return result.first() is not None
@@ -215,6 +276,10 @@ def pending_candidates(
     is append-only and a disagreement is information — but the queue does not
     reopen, and M3 has no consensus mechanism and needs none. The first
     decision is the operative one; the rest are recorded dissent.
+
+    The company filter walks provenance rather than reading a stored column. It
+    is four joins on indexed keys over a reviewer's queue, and it cannot show an
+    operator another account's evidence because a row was written wrong.
     """
     decided = select(ResearchEvidenceReview.review_candidate_id)
     statement = (
@@ -224,7 +289,18 @@ def pending_candidates(
         .limit(limit)
     )
     if company_id is not None:
-        statement = statement.where(ResearchReviewCandidate.company_id == company_id)
+        statement = statement.where(
+            ResearchReviewCandidate.evidence_item_id.in_(
+                select(ResearchEvidenceItem.id)
+                .join(ResearchFetchEvent,
+                      ResearchFetchEvent.id == ResearchEvidenceItem.fetch_event_id)
+                .join(OperationalResearchAttempt,
+                      OperationalResearchAttempt.id == ResearchFetchEvent.attempt_id)
+                .join(OperationalResearchRun,
+                      OperationalResearchRun.id == OperationalResearchAttempt.run_id)
+                .where(OperationalResearchRun.company_id == company_id)
+            )
+        )
     if reason is not None:
         statement = statement.where(ResearchReviewCandidate.reason == reason)
     return list(session.scalars(statement).all())
@@ -255,11 +331,17 @@ def review_candidate(
     note: str | None = None,
     now: datetime | None = None,
 ) -> ReviewOutcome:
-    """Record a human decision about **one observation**. Always durable.
+    """Record a human decision about **one observation occurrence**.
 
     The target is the candidate, so a rejection says which observation the
-    reviewer disbelieved. Keyed on the evidence item it could not: two
-    observations can share one.
+    reviewer disbelieved, and a decision about a reading on one source leaves
+    the same reading on another source untouched.
+
+    The **first** decision is operative: it may append a HUMAN lineage, assert a
+    claim, close the gap that was waiting on it, and refresh the account's
+    projections. Every later decision is durable dissent — recorded, because a
+    disagreement is information, and inert, because nothing re-runs and nothing
+    reverses (M3-ADR-068).
 
     Nothing is executed. The observation being confirmed is the one already
     persisted on the extraction, so a confirmation does not depend on today's
@@ -271,17 +353,29 @@ def review_candidate(
         raise ValidationError(
             f"decision must be {CONFIRM} or {REJECT}", {"decision": decision}
         )
-    candidate = session.get(ResearchReviewCandidate, candidate_id)
-    if candidate is None:
+    if session.get(ResearchReviewCandidate, candidate_id) is None:
         raise NotFoundError(f"no review candidate {candidate_id}")
 
-    item = session.get(ResearchEvidenceItem, candidate.evidence_item_id)
-    company_id = company_of_evidence(session, item.id)
-    if company_id != candidate.company_id:      # pragma: no cover - defensive
-        raise UnresolvableProvenanceError(
-            "the candidate and the evidence provenance disagree on the company"
-        )
+    # Serialize on the candidate before deciding whether this decision is the
+    # operative one. Two operators arriving together would both read "nobody
+    # has decided" and both act; the lock makes the loser wait and then see the
+    # decision that already happened (M3-ADR-068).
+    candidate = session.scalars(
+        select(ResearchReviewCandidate)
+        .where(ResearchReviewCandidate.id == candidate_id)
+        .with_for_update()
+    ).one()
 
+    operative_exists = session.scalar(
+        select(ResearchEvidenceReview.id).where(
+            ResearchEvidenceReview.review_candidate_id == candidate.id,
+            ResearchEvidenceReview.is_operative.is_(True),
+        ).limit(1)
+    ) is not None
+    is_operative = not operative_exists
+
+    item = session.get(ResearchEvidenceItem, candidate.evidence_item_id)
+    provenance = provenance_of_evidence(session, item.id)
     extraction = session.get(ResearchExtraction, item.extraction_id)
     before = (extraction.raw_output_sha256, extraction.extraction_contract_hash,
               str(extraction.observations))
@@ -290,9 +384,10 @@ def review_candidate(
     resulting_claim_id: uuid.UUID | None = None
     created_ids: list[uuid.UUID] = []
 
-    if decision == CONFIRM:
+    if decision == CONFIRM and is_operative:
         human_extraction_id, resulting_claim_id, created_ids = _confirm(
-            session, candidate=candidate, item=item, company_id=company_id, now=now
+            session, candidate=candidate, item=item,
+            company_id=provenance.company_id, now=now,
         )
 
     review_id = uuid.uuid4()
@@ -300,7 +395,8 @@ def review_candidate(
         pg_insert(ResearchEvidenceReview)
         .values(
             id=review_id, review_candidate_id=candidate.id, decision=decision,
-            actor=actor, note=note, human_extraction_id=human_extraction_id,
+            is_operative=is_operative, actor=actor, note=note,
+            human_extraction_id=human_extraction_id,
             resulting_claim_id=resulting_claim_id, reviewed_at=now,
         )
         .on_conflict_do_nothing(constraint="uq_review_identity")
@@ -314,6 +410,13 @@ def review_candidate(
         )
     session.flush()
 
+    resolved_gap_id: uuid.UUID | None = None
+    if is_operative and resulting_claim_id is not None:
+        resolved_gap_id = _reconcile(
+            session, candidate=candidate, provenance=provenance,
+            review_id=review_id, claim_id=resulting_claim_id, now=now,
+        )
+
     session.refresh(extraction)
     unchanged = (extraction.raw_output_sha256, extraction.extraction_contract_hash,
                  str(extraction.observations)) == before
@@ -321,12 +424,57 @@ def review_candidate(
     return ReviewOutcome(
         review_id=review_id, review_candidate_id=candidate.id,
         evidence_item_id=item.id, attribute_key=candidate.attribute_key,
-        company_id=company_id, decision=decision, actor=actor, note=note,
+        company_id=provenance.company_id, run_id=provenance.run_id,
+        decision=decision, is_operative=is_operative, actor=actor, note=note,
         reviewed_at=now, human_extraction_id=human_extraction_id,
         resulting_claim_id=resulting_claim_id,
         created_evidence_item_ids=created_ids,
+        resolved_gap_id=resolved_gap_id,
+        profiles_rebuilt=resolved_gap_id is not None or resulting_claim_id is not None,
         model_extraction_unchanged=unchanged,
     )
+
+
+def _reconcile(
+    session: Session, *, candidate: ResearchReviewCandidate,
+    provenance: EvidenceProvenance, review_id: uuid.UUID,
+    claim_id: uuid.UUID, now: datetime,
+) -> uuid.UUID | None:
+    """Make the account state true immediately after an operative confirmation.
+
+    Without this the operator saw a contradiction: the claim existed, and the
+    attribute was still listed as an open `INSUFFICIENT_EVIDENCE` gap, the
+    company profile still said nothing was known, and plan coverage still
+    counted it as uncovered. All three were correct *at the time of the research
+    attempt* and wrong the moment a human confirmed — and a GTM operator acts on
+    what the account view says (M3-ADR-070).
+
+    Synchronous on purpose. This is one attribute on one company; making it a
+    queued job would mean the operator's screen is briefly lying, and there is
+    nothing to gain by that.
+    """
+    from boro_gtm.research.services import gaps, profiles
+
+    gap = session.scalars(
+        select(OperationalResearchGap).where(
+            OperationalResearchGap.run_id == provenance.run_id,
+            OperationalResearchGap.attribute_key == candidate.attribute_key,
+            OperationalResearchGap.gap_kind == "INSUFFICIENT_EVIDENCE",
+        )
+    ).first()
+    resolved: uuid.UUID | None = None
+    if gap is not None and gaps.current_status(session, gap.id) not in gaps.TERMINAL_GAP_KINDS:
+        gaps.resolve_gap(
+            session, gap_id=gap.id, claim_id=claim_id, review_id=review_id, now=now
+        )
+        resolved = gap.id
+
+    # Rebuilt from the ledger, not patched: the projection is a function of the
+    # claims, and the claim now exists.
+    profiles.rebuild_all(
+        session, company_id=provenance.company_id, run_id=provenance.run_id
+    )
+    return resolved
 
 
 def stored_observation(
@@ -383,7 +531,8 @@ def _confirm(
 
     human = record_human_extraction(
         session, text_derivation_id=sampled.text_derivation_id,
-        body_id=sampled.body_id, observation=observation,
+        body_id=sampled.body_id, fetch_event_id=item.fetch_event_id,
+        observation=observation,
         fingerprint=candidate.observation_fingerprint, now=now,
     )
     context = EvidenceContext(
@@ -442,6 +591,19 @@ def evidence_created_by(
             ResearchEvidenceItem.extraction_id == review_row.human_extraction_id
         ).order_by(ResearchEvidenceItem.id)
     ).all(), key=str)
+
+
+def gap_resolved_by(
+    session: Session, review_row: ResearchEvidenceReview
+) -> uuid.UUID | None:
+    """The gap this review closed, from the gap ledger rather than memory."""
+    from boro_gtm.research.domain.models import OperationalResearchGapEvent
+
+    return session.scalar(
+        select(OperationalResearchGapEvent.gap_id).where(
+            OperationalResearchGapEvent.resolved_by_review_id == review_row.id
+        ).limit(1)
+    )
 
 
 # ---------------------------------------------------------------------------

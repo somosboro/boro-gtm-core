@@ -2438,3 +2438,227 @@ actually describes how it came to exist.
   said, not asking the current system what it would say now. When the two differ
   the second answers a different question — and an append-only record of a
   finished process is not a place to put something that happened afterwards.
+
+---
+
+## M3-ADR-066 — A review candidate is one observation *occurrence*
+
+**Status:** accepted (Boro-first readiness; **new migration** `0010_m3_review_resolution`)
+
+### Context
+
+`0009` keyed a candidate `UNIQUE (run_id, observation_fingerprint)`. That
+separated two readings of one span, which was the defect it was written for. It
+also merged the *same* reading found on different sources, which nobody checked.
+
+Reproduced on this branch by instrumenting `raise_candidate`: the pipeline made
+**30** calls and landed **14**. Eight observations were each attempted from three
+distinct evidence origins — `meridianmechanical.com/company`,
+`www.meridianmechanical.com/`, and the unrelated domain
+`meridian-mechanical.net/about` — and collapsed to one candidate apiece. Sixteen
+questions never reached a reviewer, and no gap explained their absence.
+
+Those are three publishers. For a GTM operator that distinction is the whole
+point of the review queue: "the company's own site says 58 technicians" and "a
+third-party directory says 58 technicians" are different things to believe, and
+a reviewer who rejects the directory has said nothing about the company's site.
+The corroboration machinery already treats them as independent origins; the
+review queue did not.
+
+### Decision
+
+Identity is `UNIQUE (evidence_item_id, observation_fingerprint)` — one
+observation **occurrence**.
+
+The run is deliberately *not* in the key. A reviewer answers "is this reading,
+from this source, trustworthy?", and that answer does not expire because a later
+run surfaced the same occurrence again. Keying on the run would re-ask a question
+already answered and duplicate the reviewer's work; the run stays reachable
+through provenance, where it is a fact rather than a copy.
+
+`lineage_tag` joins the fingerprint. It decides how an observation *groups* when
+a claim is asserted — a tagged observation forms one lineage with everything
+sharing its tag, an untagged one groups by evidence origin — so two readings
+differing only in the tag assert different claims, which makes them different
+review questions. `evidence_class` needs no entry: `__post_init__` folds it into
+`value`.
+
+The HUMAN extraction a confirmation writes is scoped by the fetch event as well
+as the fingerprint. Two sources can mirror one document and therefore share a
+text derivation; without the occurrence in the contract hash, one HUMAN
+extraction would have carried the evidence of two separate confirmations, and the
+first review's history would have grown when somebody else confirmed the second
+source.
+
+### Consequences
+
+* The queue got larger, from 14 candidates to 30 on the same corpus. That is the
+  fix, not a regression: the missing sixteen were real questions.
+* A fingerprint now legitimately repeats across rows, so tests assert
+  distinctness of the *pair*, not of the hash.
+* `0010` recomputes every non-legacy fingerprint by matching each row against the
+  observations persisted on its own extraction under the old hash, then writing
+  the new one. Rows it cannot match are marked `unmatched:` rather than given an
+  invented hash — the queue and the ledger already disagreed, and the service
+  refuses to review such a row instead of guessing.
+* **Generalisable:** "the same thing" is a question about the observer as much as
+  the observation. Two witnesses saying the same sentence are two witnesses, and
+  a uniqueness key that cannot tell them apart will quietly discard one.
+
+---
+
+## M3-ADR-067 — Candidate provenance is derived, not stored
+
+**Status:** accepted (Boro-first readiness)
+
+### Context
+
+`research_review_candidates` stored `company_id`, `run_id` and `attempt_id`
+alongside `evidence_item_id`. All three follow from the evidence item through
+single-valued foreign keys: evidence → fetch event → attempt → run → company.
+
+Three stored copies of a derivable fact are three ways for a row to disagree with
+reality, and the failure mode is the one that matters most: an operator filtering
+the queue by their account, and being shown another company's evidence because
+one row was written wrong. The service already had a defensive check comparing
+the derived company to the stored one — a guard that existed only because the
+data model made the mismatch possible.
+
+### Decision
+
+Drop all three columns. `provenance_of_evidence()` walks the chain once and
+returns the whole tuple; the pending queue's company filter uses a subquery over
+the same walk; the API derives `company_id` and `run_id` for its response.
+
+Preferred over a composite constraint or a constraint trigger because it makes
+the inconsistent state **unrepresentable** rather than **rejectable**, and it
+removes code instead of adding it. The same reasoning retired the caller-supplied
+`company_id` on the review request in M3-ADR-061: the fix was that there was no
+longer a field to supply.
+
+### Consequences
+
+* The company filter is four joins on indexed keys over a reviewer's queue. That
+  is not a hot path, and correctness is now structural.
+* `raise_candidate` takes the evidence item and nothing else about the chain, so
+  a caller cannot get it wrong.
+* **Generalisable:** denormalising for a filter buys a join and sells an
+  invariant. Only worth it when the join is actually the problem.
+
+---
+
+## M3-ADR-068 — The first decision is operative; the rest are recorded dissent
+
+**Status:** accepted (Boro-first readiness)
+
+### Context
+
+The documented rule since M3-ADR-064 was that a candidate leaves the queue on its
+first decision and later reviewers record an opinion. The implementation did not
+follow it: `review_candidate` ran the full confirmation every time. A second
+reviewer confirming an observation a first had *rejected* appended another HUMAN
+extraction, another evidence item and another claim — silently reversing a
+colleague, with nothing in the record saying which decision was in force.
+
+Reading before writing would not have fixed it either. Two operators arriving
+together both read "nobody has decided" and both act.
+
+### Decision
+
+`research_evidence_reviews.is_operative`, with
+`UNIQUE (review_candidate_id) WHERE is_operative`. The service takes the
+candidate row `FOR UPDATE` before deciding which kind of review this is, so the
+loser waits and then sees the decision that already happened.
+
+Two CHECKs make the semantics the schema's rather than the service's intention: a
+non-operative row may carry no HUMAN extraction and no claim, and the
+"a confirmation has provenance" rule applies only to the operative one.
+
+M3 has **no consensus mechanism**, and this ADR is where that is a decision
+rather than an omission. A disagreement is information and is kept; adjudicating
+it is a human's job, not a scoring function's.
+
+### Consequences
+
+* Dissent is durable and inert. An operator can see that a colleague disagreed
+  without the account state having changed underneath them.
+* Migration `0010` backfills `is_operative` as the earliest decision per
+  candidate — the only defensible reading of rows written when every decision
+  acted.
+* **Generalisable:** "the first one wins" is a claim about serialization. Without
+  a lock and a partial unique index it is a claim about luck.
+
+---
+
+## M3-ADR-069 — A gap event names exactly one actor
+
+**Status:** accepted (Boro-first readiness)
+
+### Context
+
+`operational_research_gap_events.attempt_id` was NOT NULL, because every event
+used to be something an execution did. Once a human review can close a gap, that
+no longer holds: the reviewer's decision happened days later, nothing ran, and
+borrowing the attempt that raised the gap would record a machine run performing
+work a person performed.
+
+### Decision
+
+`attempt_id` becomes nullable, `resolved_by_review_id` is added, and a CHECK
+requires exactly one of the two on every event — not "at least one", because two
+would be two stories about who closed the gap. A second CHECK confines the human
+actor to `RESOLVED`: nothing else in the gap lifecycle is something a reviewer
+does.
+
+### Consequences
+
+* `resolve_gap` takes `attempt_id` **or** `review_id` and refuses both or
+  neither, so the caller cannot leave the question open.
+* An operator reading a closed gap can see *why* it closed, and by whom.
+* **Generalisable:** when a second kind of actor appears, a NOT NULL column
+  naming the first kind becomes a lie rather than a constraint.
+
+---
+
+## M3-ADR-070 — A confirmation reconciles the account synchronously
+
+**Status:** accepted (Boro-first readiness)
+
+### Context
+
+An operative confirmation created the claim and stopped. The
+`INSUFFICIENT_EVIDENCE` gap stayed open, the company profile still had nothing
+for the attribute, and plan coverage still counted it as uncovered. Every one of
+those was correct at the time of the research attempt and wrong the moment a
+human confirmed.
+
+For the system's first and primary user that is not a cosmetic issue. The account
+view is what a person looks at before deciding whether they know enough to sell
+to this company, and it was contradicting itself.
+
+### Decision
+
+After an operative confirmation that produced a claim, the service resolves the
+matching open `INSUFFICIENT_EVIDENCE` gap for that attribute and run, and rebuilds
+the company profile and that run's plan profile — in the same transaction as the
+review.
+
+Synchronous on purpose. This is one attribute on one company; making it a queued
+job would mean the operator's screen is briefly lying, and there is nothing to
+gain by that. `REBUILD_RESEARCH_PROFILE` remains a direct call rather than a job,
+as it already was.
+
+The projections are **rebuilt from the ledger**, not patched. They are functions
+of the claims, and the claim now exists; recomputing is how they stay
+reproducible.
+
+### Consequences
+
+* A rejection reconciles nothing, deliberately: the gap is still open, because
+  disbelieving evidence is not knowing the answer.
+* Dissent reconciles nothing either, because it asserts nothing.
+* `ReviewOutcome` reports `resolved_gap_id` and `profiles_rebuilt`, so the caller
+  can see what the decision actually changed rather than inferring it.
+* **Generalisable:** a write that leaves a derived view contradicting the ledger
+  has not finished. If the view is what a person acts on, "eventually" is a
+  decision to mislead them for a while.

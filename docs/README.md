@@ -61,10 +61,10 @@ one rule:
 
 Thirty-six structural contradictions were found and resolved across the design
 passes. **M3 is implemented** on `feat/m3-operational-research`: 25 tables,
-migrations `0004_m3` through `0009_m3_observation_identity`, the 42-attribute
+migrations `0004_m3` through `0010_m3_review_resolution`, the 42-attribute
 registry, source discovery, retrieval, canonicalization, text derivation,
 extraction, evidence, claims, gaps, the identity-review queue, human evidence
-review, both projections, retention, the API and the CLI. All 150 live MUST
+review, both projections, retention, the API and the CLI. All 158 live MUST
 scenarios are executable and passing.
 
 **Not implemented, by design:** any production research provider. The only
@@ -77,7 +77,7 @@ qualification and later commercialization are out of scope.
 | [M3_OPERATIONAL_RESEARCH_DESIGN.md](M3_OPERATIONAL_RESEARCH_DESIGN.md) | Responsibility and boundaries, source/artifact/version model, the claim-ledger audit, operational attribute taxonomy, extraction and model-assisted evidence, contradictions, temporal semantics, gaps and coverage, fetch policy, firewalls |
 | [M3_SCHEMA_GRAPH.md](M3_SCHEMA_GRAPH.md) | Proposed table graph: ownership, mutability, keys, indexes and what is deliberately *not* created |
 | [M3_ACCEPTANCE_CRITERIA.md](M3_ACCEPTANCE_CRITERIA.md) | 139 Given/When/Then scenarios M3 must satisfy |
-| [M3_ADRS.md](M3_ADRS.md) | 65 decision records, including the one-ledger decision and the M3/M4 boundary |
+| [M3_ADRS.md](M3_ADRS.md) | 70 decision records, including the one-ledger decision and the M3/M4 boundary |
 | [M3_CANONICAL_COMMERCIAL_ALIGNMENT.md](M3_CANONICAL_COMMERCIAL_ALIGNMENT.md) | How M3 maps to the canonical commercial ontology: the 18-signal coverage matrix, the eleven process-observation primitives, and the firewalls |
 | [GTM_MILESTONE_OWNERSHIP.md](GTM_MILESTONE_OWNERSHIP.md) | The revised milestone roadmap and the 14 canonical sales stages mapped to it |
 | [GTM_ACCOUNT_FIELD_OWNERSHIP.md](GTM_ACCOUNT_FIELD_OWNERSHIP.md) | All 25 canonical account fields: owner, earliest legitimate stage, mutability, who may write |

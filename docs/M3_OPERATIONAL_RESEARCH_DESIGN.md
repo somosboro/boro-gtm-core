@@ -1295,11 +1295,27 @@ GET  /research-review-candidates/{id}/reviews    every decision recorded
 > **review candidate** — one observation. The item-keyed routes are removed, not
 > aliased.
 
-The queue is per candidate and closes on the **first** decision. Later reviewers
-may still record an opinion — the log is append-only and a disagreement is
-information — but the queue does not reopen and nothing adjudicates. The first
-decision is operative; the rest are recorded dissent. M3 has no consensus
-mechanism, by decision rather than by omission (M3-ADR-064).
+A candidate is one observation **occurrence**: this reading, on this evidence
+item. Two rules matching one span share an evidence item, and the same reading
+published on two sources is two things a reviewer may judge separately — so
+identity is `(evidence_item_id, observation_fingerprint)`, and the run is not part
+of it (M3-ADR-066). Company, run and attempt are derived from the evidence rather
+than stored on the candidate, so a queued row cannot name another account
+(M3-ADR-067).
+
+The queue closes on the **first** decision, and that decision is the one that
+acts — `is_operative`, enforced by a partial unique index and a row lock, so two
+operators cannot both be first. Later reviewers may still record an opinion: the
+log is append-only and a disagreement is information, but a dissenting row carries
+no HUMAN extraction and no claim, and nothing adjudicates. M3 has no consensus
+mechanism, by decision rather than by omission (M3-ADR-068).
+
+An operative confirmation **reconciles the account** in the same transaction:
+the claim is asserted, the matching open `INSUFFICIENT_EVIDENCE` gap reaches
+`RESOLVED` through an event naming the review rather than a research attempt
+(M3-ADR-069), and both projections are rebuilt from the ledger. A rejection
+reconciles nothing — the gap stays open, because disbelieving evidence is not
+knowing the answer (M3-ADR-070).
 
 A confirmation copies the observation already persisted on the machine
 extraction, located by fingerprint. Nothing is re-executed, so a confirmation
@@ -1568,8 +1584,8 @@ The brief's seven conditions, each checked mechanically rather than asserted:
 **M3 DESIGN REVISION 4 — IMPLEMENTATION READY.** Revision 5 added no freeze
 criterion: it changed meaning, not structure.
 
-Counts, recomputed from the documents at revision 5.3: **25 tables · 42 registry
-attributes · 150 acceptance scenarios (+1 withdrawn) · 65 ADRs.** Three M2 objects are touched, all additively:
+Counts, recomputed from the documents at revision 5.4: **25 tables · 42 registry
+attributes · 158 acceptance scenarios (+1 withdrawn) · 70 ADRs.** Three M2 objects are touched, all additively:
 `attribute_definitions.owner_milestone`,
 `company_claims.assertion_fingerprint` with a partial unique index, and a
 deferred constraint trigger on `company_claims`.

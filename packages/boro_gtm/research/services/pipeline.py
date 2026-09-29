@@ -584,8 +584,7 @@ def _extract(
                     # it (D3, M3-ADR-061).
                     result.low_confidence_deferred.append(observation.attribute_key)
                     review.raise_candidate(
-                        session, evidence_item_id=evidence.id, run_id=run.id,
-                        attempt_id=attempt.id, company_id=company_id,
+                        session, evidence_item_id=evidence.id,
                         attribute_key=observation.attribute_key,
                         observation_fingerprint=observation_fingerprint(observation),
                         reason=review.LOW_CONFIDENCE_REASON, now=now,
@@ -597,8 +596,7 @@ def _extract(
                     # It waits for a human, and the wait is durable.
                     result.sampled_pending_review.append(evidence.id)
                     review.raise_candidate(
-                        session, evidence_item_id=evidence.id, run_id=run.id,
-                        attempt_id=attempt.id, company_id=company_id,
+                        session, evidence_item_id=evidence.id,
                         attribute_key=observation.attribute_key,
                         observation_fingerprint=observation_fingerprint(observation),
                         reason=review.SAMPLED_REASON, now=now,

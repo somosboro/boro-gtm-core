@@ -369,15 +369,23 @@ class EvidenceReviewOut(BaseModel):
     #: one item can back several observations.
     evidence_item_id: uuid.UUID
     attribute_key: str
-    #: Derived from provenance, never supplied.
+    #: Both derived from the evidence's own provenance, never supplied.
     company_id: uuid.UUID
+    run_id: uuid.UUID
     decision: str
+    #: True for the decision that acted. A later review of the same observation
+    #: is recorded dissent and has no domain side effects.
+    is_operative: bool
     actor: str
     note: str | None = None
     reviewed_at: datetime
     human_extraction_id: uuid.UUID | None = None
     resulting_claim_id: uuid.UUID | None = None
     created_evidence_item_ids: list[uuid.UUID] = Field(default_factory=list)
+    #: The INSUFFICIENT_EVIDENCE gap this confirmation closed, if one was open.
+    resolved_gap_id: uuid.UUID | None = None
+    #: Whether the company and plan projections were refreshed for this review.
+    profiles_rebuilt: bool = False
     model_extraction_unchanged: bool
 
 

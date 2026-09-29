@@ -621,12 +621,18 @@ class ResearchReviewCandidate(Base):
 
     __tablename__ = "research_review_candidates"
     __table_args__ = (
-        # One candidate per **observation**, not per evidence item. Evidence
-        # identity is keyed on the locator, so two rules matching one span share
-        # one evidence item — and keying candidates on it silently dropped the
-        # second observation (M3-ADR-064).
-        UniqueConstraint("run_id", "observation_fingerprint",
-                         name="uq_candidate_observation"),
+        # One candidate per **observation occurrence**: this reading, on this
+        # evidence item. Two rules matching one span share an evidence item, so
+        # the fingerprint is needed (M3-ADR-064); and the same reading found on
+        # two different sources is two things a reviewer may trust or reject
+        # separately, so the evidence item is needed too (M3-ADR-066).
+        #
+        # The run is deliberately **not** in the key. A reviewer answers "is
+        # this reading, from this source, trustworthy?" — an answer that does
+        # not change because a later run surfaced the same occurrence again.
+        # Including the run would re-ask a question already answered.
+        UniqueConstraint("evidence_item_id", "observation_fingerprint",
+                         name="uq_candidate_occurrence"),
         CheckConstraint(
             "reason IN ('SAMPLED_REQUIRES_CONFIRMATION',"
             "'LOW_CONFIDENCE_REQUIRES_REVIEW')",
@@ -636,27 +642,20 @@ class ResearchReviewCandidate(Base):
         # PostgreSQL, and M2's `entity_resolution_candidates` already owns
         # `ix_candidates_company`. "candidates" is not a unique enough noun in
         # a system that also resolves entity candidates.
-        Index("ix_review_candidates_company", "company_id"),
         Index("ix_review_candidates_reason", "reason"),
-        Index("ix_review_candidates_attribute", "run_id", "attribute_key"),
+        Index("ix_review_candidates_attribute", "attribute_key"),
         Index("ix_review_candidates_evidence", "evidence_item_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    #: The **only** stored link to the research chain. Company, run and attempt
+    #: were columns here; all three are reachable from this one — evidence →
+    #: fetch event → attempt → run → company, every hop a single-valued FK — so
+    #: storing them was three chances for a queued row to name the wrong
+    #: account. They are derived now, and a mismatch is unrepresentable rather
+    #: than merely rejected (M3-ADR-067).
     evidence_item_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("research_evidence_items.id", ondelete="RESTRICT"), nullable=False
-    )
-    #: The question that raised it, and through it the company. Stored rather
-    #: than walked so the queue can be filtered without four joins.
-    run_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("operational_research_runs.id", ondelete="RESTRICT"), nullable=False
-    )
-    attempt_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("operational_research_attempts.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    company_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("companies.id", ondelete="RESTRICT"), nullable=False
     )
     attribute_key: Mapped[str] = mapped_column(String(128), nullable=False)
     #: Identity of the exact machine observation this candidate is about, so
@@ -689,8 +688,23 @@ class ResearchEvidenceReview(Base):
     __table_args__ = (
         UniqueConstraint("review_candidate_id", "actor", "reviewed_at",
                          name="uq_review_identity"),
+        # At most one **operative** decision per candidate. The first reviewer
+        # decides; later reviewers record an opinion. Enforced structurally
+        # rather than by reading before writing, because two operators deciding
+        # at once would both have read "undecided" (M3-ADR-068).
+        Index(
+            "uq_review_operative", "review_candidate_id", unique=True,
+            postgresql_where="is_operative",
+        ),
         CheckConstraint("decision IN ('CONFIRM','REJECT')",
                         name="decision_vocabulary"),
+        # A dissenting opinion may not carry domain side effects. Only the
+        # operative decision creates a HUMAN lineage or a claim.
+        CheckConstraint(
+            "is_operative OR "
+            "(human_extraction_id IS NULL AND resulting_claim_id IS NULL)",
+            name="dissent_asserts_nothing",
+        ),
         CheckConstraint(
             "decision = 'CONFIRM' OR "
             "(human_extraction_id IS NULL AND resulting_claim_id IS NULL)",
@@ -698,8 +712,11 @@ class ResearchEvidenceReview(Base):
         ),
         # And the other half: a confirmation with no human extraction behind it
         # is a confirmation nobody made.
+        # ...but only when it is the operative one: a later CONFIRM is an
+        # opinion, and an opinion appends no lineage.
         CheckConstraint(
-            "decision <> 'CONFIRM' OR human_extraction_id IS NOT NULL",
+            "decision <> 'CONFIRM' OR NOT is_operative "
+            "OR human_extraction_id IS NOT NULL",
             name="confirmation_has_provenance",
         ),
         Index("ix_reviews_candidate", "review_candidate_id"),
@@ -716,6 +733,11 @@ class ResearchEvidenceReview(Base):
         nullable=False,
     )
     decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: True for the first decision recorded about this candidate — the one that
+    #: acted. Later rows are durable dissent: the record keeps them because a
+    #: disagreement is information, but nothing re-runs and nothing reverses.
+    #: M3 has no consensus mechanism, by decision (M3-ADR-068).
+    is_operative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: What a confirmation produced. NULL on every rejection, by constraint.
@@ -786,7 +808,13 @@ class OperationalResearchGap(Base):
 
 
 class OperationalResearchGapEvent(Base):
-    """ATTEMPTED names the retrieval that performed it (M3-ADR-024)."""
+    """ATTEMPTED names the retrieval that performed it (M3-ADR-024).
+
+    Every event names **one** actor: the attempt that executed it, or the human
+    review that decided it. `attempt_id` was NOT NULL, so a gap closed by a
+    reviewer had to borrow the attempt that raised it — recording that a machine
+    run resolved something a person did, days later (M3-ADR-069).
+    """
 
     __tablename__ = "operational_research_gap_events"
     __table_args__ = (
@@ -796,6 +824,18 @@ class OperationalResearchGapEvent(Base):
             unique=True, postgresql_nulls_not_distinct=True,
         ),
         _vocab("event_kind", e._v(e.GapEventKind), "ck_gap_event_vocabulary"),
+        # Exactly one actor. Not "at least one": two would be two stories about
+        # who closed the gap.
+        CheckConstraint(
+            "(attempt_id IS NOT NULL) <> (resolved_by_review_id IS NOT NULL)",
+            name="gap_event_has_one_actor",
+        ),
+        # Only a resolution can have a human actor. Nothing else in the gap
+        # lifecycle is something a reviewer does.
+        CheckConstraint(
+            "resolved_by_review_id IS NULL OR event_kind = 'RESOLVED'",
+            name="only_a_resolution_is_human",
+        ),
         # RESOLVED and ABANDONED are alternatives, not a progression, so the
         # transition trigger let two concurrent writers insert one each. At most
         # one terminal event per gap, structurally (M3-ADR-057).
@@ -811,8 +851,9 @@ class OperationalResearchGapEvent(Base):
         ForeignKey("operational_research_gaps.id", ondelete="RESTRICT"), nullable=False
     )
     event_kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    attempt_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("operational_research_attempts.id", ondelete="RESTRICT"), nullable=False
+    #: The execution that performed it. NULL exactly when a human review did.
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("operational_research_attempts.id", ondelete="RESTRICT"), nullable=True
     )
     source_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("research_sources.id", ondelete="RESTRICT"), nullable=True
@@ -822,6 +863,11 @@ class OperationalResearchGapEvent(Base):
     )
     resolved_by_claim_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("company_claims.id", ondelete="RESTRICT"), nullable=True
+    )
+    #: The operative human decision that closed it, when a person did. This is
+    #: how an operator sees *why* a gap is closed without guessing.
+    resolved_by_review_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("research_evidence_reviews.id", ondelete="RESTRICT"), nullable=True
     )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
