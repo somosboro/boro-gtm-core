@@ -2851,3 +2851,68 @@ produce a guess.
 * **Generalisable:** when an identity decision has already been made by a system
   that owns it, re-deriving it downstream is not redundancy. It is a second,
   worse answer that will eventually disagree.
+
+---
+
+## M3-ADR-075 — What a contractor's public website actually says
+
+**Status:** accepted (BoRo-first live pilot; **finding, not a code change**)
+
+### Context
+
+M3's extraction rules were written against a fixture corpus whose prose was
+authored alongside them. The first live pilot is the first time they met real
+commercial HVAC and mechanical contractor websites.
+
+### What the pilot found
+
+Across 29 pages with extracted text, from the reachable sites in the first
+five-account run:
+
+| Signal | Pages |
+| --- | --- |
+| Markets / industries served | **29** |
+| Maintenance agreements | 3 |
+| 24/7 or emergency service | 2 |
+| Years in business | 2 |
+| Named certification (LEED, NATE, …) | 1 |
+| Technician count | **0** |
+| Employee count | **0** |
+| Fleet or vehicle count | **0** |
+| Branch or location count | **0** |
+| Named FSM / ERP / dispatch system | **0** |
+
+The extractors fired for **2 of the 42 registry attributes**:
+`preventive_maintenance` and `emergency_service`.
+
+### What follows from it
+
+**The gap is mostly the world, not the code.** A contractor's marketing site does
+not publish headcount, fleet size, branch counts or the name of its dispatch
+software. Those attributes are not "missed" — they are absent from this source
+class, and the pipeline reports them as `NO_EVIDENCE`, which is correct. The
+registry's 42 attributes were never a ceiling that first-party web research could
+reach.
+
+**But the most universally present signal has no rule.** "Industries served" and
+"service categories" appear on effectively every page and are extracted from
+none. That, not headcount, is where extraction work pays.
+
+**The numeric operational attributes need another source.** `technician_count`,
+`fleet_size` and `branch_count` appeared zero times in 29 pages. They will come
+from job postings, registry filings or a third-party provider, or they will not
+come at all — and deciding which is a question for the next milestone, informed
+by this table rather than by assumption.
+
+### Consequences
+
+* This is recorded as a finding with its numbers, not acted on, because
+  redesigning extraction around one 5-account sample would be the same mistake in
+  the other direction.
+* It is the reason the release recommendation is **not ready**: the acquisition,
+  safety and provenance layers are production-quality and the evidence-integrity
+  gate is clean, but two attributes per account is not an evidence base M4 can
+  interpret.
+* **Generalisable:** rules written against a corpus you also wrote are a
+  hypothesis about the world. The first contact with real data is a measurement,
+  and it is worth taking before building anything on top of it.
