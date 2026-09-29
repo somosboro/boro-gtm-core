@@ -2854,68 +2854,79 @@ produce a guess.
 
 ---
 
-## M3-ADR-075 — What a contractor's public website actually says
+## M3-ADR-075 — The first-party web evidence surface, measured
 
-**Status:** accepted (BoRo-first live pilot; **finding, not a code change**)
+**Status:** accepted (live transport validation pilot; **finding, not a code change**)
 
 ### Context
 
 M3's extraction rules were written against a fixture corpus whose prose was
-authored alongside them. The first live pilot is the first time they met real
-commercial HVAC and mechanical contractor websites.
+authored alongside them. This is the first measurement of what real commercial
+HVAC and mechanical contractor websites actually publish.
 
-### What the pilot found
+Measured over **146 pages** with extracted text, from the reachable sites in the
+**live transport validation cohort** — seventeen real contractor domains selected
+to exercise production research. They are **not** BoRo's sales cohort and no
+conclusion here is about BoRo's outbound population.
 
-Across 29 pages with extracted text, from the reachable sites in the first
-five-account run:
+### Present, and useful
 
-| Signal | Pages |
-| --- | --- |
-| Markets / industries served | **29** |
-| Maintenance agreements | 3 |
-| 24/7 or emergency service | 2 |
-| Years in business | 2 |
-| Named certification (LEED, NATE, …) | 1 |
-| Technician count | **0** |
-| Employee count | **0** |
-| Fleet or vehicle count | **0** |
-| Branch or location count | **0** |
-| Named FSM / ERP / dispatch system | **0** |
+| Signal | Pages | Share |
+| --- | ---: | ---: |
+| Careers / hiring language | 146 | 100% |
+| Locations named | 143 | 98% |
+| Service categories (chiller, boiler, RTU, controls, …) | 142 | 97% |
+| Markets / industries served | 120 | 82% |
+| Commercial orientation | 114 | 78% |
+| Industrial orientation | 90 | 62% |
+| Retrofit / replacement | 74 | 51% |
+| Energy / efficiency | 71 | 49% |
+| Preventive maintenance | 65 | 45% |
+| Design-build | 50 | 34% |
+| Service agreements | 47 | 32% |
+| Emergency / 24-7 | 46 | 32% |
+| Years in business | 24 | 16% |
 
-The extractors fired for **2 of the 42 registry attributes**:
-`preventive_maintenance` and `emergency_service`.
+### Expected, and effectively not public
 
-### What follows from it
+| Signal | Pages | Share |
+| --- | ---: | ---: |
+| Branch count | 7 | 5% |
+| Named FSM / ERP / dispatch system | 5 | 3% |
+| Certifications | 5 | 3% |
+| Technician count | 3 | 2% |
+| Employee count | 2 | 1% |
+| Fleet size | 0 | 0% |
+| Internal approval / handoff process | 0 | 0% |
+| Billing readiness | 0 | 0% |
 
-**The gap is mostly the world, not the code.** A contractor's marketing site does
-not publish headcount, fleet size, branch counts or the name of its dispatch
-software. Those attributes are not "missed" — they are absent from this source
-class, and the pipeline reports them as `NO_EVIDENCE`, which is correct. The
-registry's 42 attributes were never a ceiling that first-party web research could
-reach.
+*(Corrects an earlier note in this project that read "zero" for technician and
+branch counts. They are rare, not absent: 2% and 5% of pages. At roughly half the
+cohort reachable, that is about one account in a hundred — which is the number
+that matters when deciding whether an extractor is worth writing.)*
 
-**But the most universally present signal has no rule.** "Industries served" and
-"service categories" appear on effectively every page and are extracted from
-none. That, not headcount, is where extraction work pays.
+### The finding
 
-**The numeric operational attributes need another source.** `technician_count`,
-`fleet_size` and `branch_count` appeared zero times in 29 pages. They will come
-from job postings, registry filings or a third-party provider, or they will not
-come at all — and deciding which is a question for the next milestone, informed
-by this table rather than by assumption.
+**A contractor's website exposes a narrower and differently-shaped evidence
+surface than the fixture corpus predicted.** It describes *what the company
+does and for whom* — services, markets, orientation, agreements, hiring. It does
+not describe *how the company runs* — headcount, fleet, systems, internal
+process. That second set is what the registry was largely built around.
+
+`NO_EVIDENCE` for those attributes is the correct and truthful answer, and it
+must stay that way. Inferring a technician count from "our large team of
+experienced professionals" would convert marketing language into an operational
+fact, which is the one thing this milestone exists to prevent.
 
 ### Consequences
 
-* This is recorded as a finding with its numbers, not acted on, because
-  redesigning extraction around one 5-account sample would be the same mistake in
-  the other direction.
-* It is the reason the release recommendation is **not ready**: the acquisition,
-  safety and provenance layers are production-quality and the evidence-integrity
-  gate is clean, but two attributes per account is not an evidence base M4 can
-  interpret.
+* The useful work is on what is actually there, not on what is missing.
+* The operational attributes will come from another source class — job postings,
+  registry filings, a licensed provider — or they will not come at all. That is a
+  commercial decision, and it should be made against this table.
 * **Generalisable:** rules written against a corpus you also wrote are a
-  hypothesis about the world. The first contact with real data is a measurement,
-  and it is worth taking before building anything on top of it.
+  hypothesis. First contact with real data is a measurement, and it is cheaper to
+  take it than to build on the hypothesis.
 
 ---
 
@@ -2968,10 +2979,12 @@ A genuine cycle (`/a → /b → /a`) now ends at the first repeated request with
 
 ### Context
 
-The first live cohort run met a wall that no amount of implementation quality
-gets past. Of seventeen real U.S. commercial HVAC and mechanical contractor
-sites, a majority answered an honest, identified, robots-respecting fetcher with
-`403`.
+The first live run met a wall that no amount of implementation quality gets
+past. Of the seventeen real U.S. commercial HVAC and mechanical contractor sites
+in the **live transport validation cohort** — selected to exercise production
+research, and **not** BoRo's sales cohort — a majority answered an honest,
+identified, robots-respecting fetcher with `403`. Nine of seventeen were
+reachable.
 
 Diagnosed at the response, without attempting a bypass:
 
@@ -2997,8 +3010,8 @@ obtained by pretending to be a browser is not.
 
 ### Consequences
 
-* **First-party-only research cannot cover this cohort.** Roughly a third of the
-  sample was reachable. That is a property of the market, not a defect, and no
+* **First-party-only research cannot cover a cohort like this one.** Nine of
+  seventeen sites were reachable. That is a property of the market, not a defect, and no
   change to the transport improves it.
 * The decision this forces belongs to BoRo, not to this milestone: accept
   partial coverage, or add a lawful second source — a licensed data provider,
@@ -3010,3 +3023,65 @@ obtained by pretending to be a browser is not.
 * **Generalisable:** when the constraint is someone else's stated preference, the
   engineering question is closed. What remains is a commercial question, and
   pretending otherwise just moves the cost somewhere less visible.
+
+---
+
+## M3-ADR-078 — The extraction rules are fixture-shaped sentence templates
+
+**Status:** accepted (live transport validation pilot; **diagnosis, not a code change**)
+
+### Context
+
+Across the validation cohort the extractors produced three attributes:
+`preventive_maintenance`, `emergency_service` and `installation`. The obvious
+reading — "the rules only cover three of forty-two attributes" — is wrong.
+Twenty-seven attributes *have* rules. They simply did not fire.
+
+Reading the patterns explains why:
+
+| Attribute | Pattern | Signal present on |
+| --- | --- | ---: |
+| `service_area` | `We serve (...), Ohio\.` | 98% of pages |
+| `service_categories` | `Categories: (...)\.` | 97% of pages |
+| `recurring_service_contracts` | `maintenance agreements with [^.]+\.` | 32% of pages |
+| `preventive_maintenance` | `preventive maintenance` | 45% — **fires** |
+| `emergency_service` | `24/7 emergency\|24 hours a day, 7 days a week emergency` | 32% — **fires** |
+
+`service_area` is hardcoded to Ohio. `service_categories` expects the fixture's
+literal `Categories: X, Y.` sentence, which no real site writes. The two rules
+that work are the two whose patterns happen to be ordinary English phrases rather
+than transcriptions of a fixture sentence.
+
+### The finding
+
+The registry primitives are largely sound; the **rules** encode the corpus they
+were written against. A rule that matches a whole sentence template fires only
+when a real page coincidentally uses that sentence.
+
+This is a different and much more tractable problem than "M3 cannot read the
+web". The signals are present at 82–98% frequency, a primitive exists for most of
+them, and what is missing is phrasing breadth.
+
+### Decision
+
+Nothing yet, deliberately. Rewriting rules against one seventeen-site sample
+would repeat the original mistake with a different corpus. The next change should
+be small, aimed at the signals measured in M3-ADR-075, and validated against
+pages the rules were not written from.
+
+Where it lands, per signal:
+
+* **Primitive and rule exist, rule too narrow** — `service_categories`,
+  `service_area`, `recurring_service_contracts`, `certification`-adjacent text.
+  This is most of the value.
+* **Primitive exists, no rule** — `operating_markets` (82% of pages),
+  `hiring_signal`, `hiring_field_roles`.
+* **No primitive** — commercial-vs-residential orientation, design-build
+  capability, retrofit/replacement, energy/efficiency positioning. These are
+  genuinely new, and each needs a registry decision before an extractor.
+
+### Consequences
+
+* **Generalisable:** an extractor tested only against text written for it is
+  untested. The pattern that survives contact with real prose is the one that
+  matches how people write, not how the fixture author wrote.

@@ -305,7 +305,7 @@ same value from two origins staying two lineages; projections rebuilding
 byte-identically from empty; the API's raw-payload, pagination and error
 contracts; the CLI's fixture-only execution gate.
 
-**545 M3 tests in total** across twenty files, four of them covering the live first-party research path.
+**558 M3 tests in total** across twenty-one files, five of them covering the live first-party research path and cohort ingest.
 
 ### Acceptance status, counted mechanically
 

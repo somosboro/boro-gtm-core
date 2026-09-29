@@ -1389,6 +1389,36 @@ gtm research run --run <uuid> --fixture-corpus
 Exactly one of the two flags is required and neither is a default, so no output
 can be mistaken for the other.
 
+## 25b. Loading an operator's target cohort
+
+A cohort is a commercial asset — the accounts BoRo has decided to pursue — so M3
+does not invent one. `research load-cohort` reads a CSV and creates canonical M2
+companies under M2's own identity rules. It researches nothing: loading and
+researching are separate operator actions, so a bad list is found before anything
+reaches the internet.
+
+```
+company_name,canonical_domain,website_url,source_id
+```
+
+`company_name` is required. One of `canonical_domain` or `website_url` makes the
+row **researchable**; `website_url`'s host counts, because an operator supplying
+a URL has asserted an address. `source_id` is optional provenance (a CRM id).
+
+| Row | Outcome |
+| --- | --- |
+| name + verified domain | Company created with an `IDENTITY` domain, ready for live research |
+| domain already held by a company | Reported as already present; no duplicate |
+| `www.` / casing / scheme variants | Resolve to one registrable domain, one company |
+| name only, no domain | **Flagged for identity review. Not researched.** |
+| shared platform host (`*.wixsite.com`) | Flagged: M2 records these as `GROUP` because they identify no company |
+
+The fourth row is the one that matters. A company name is not an address: two
+contractors called "Allied Mechanical" are two companies, and choosing whichever
+ranks better attaches one's evidence to the other's account — with a complete,
+internally consistent provenance chain, and no way to tell afterwards
+(M3-ADR-074).
+
 ## 26. Retention
 
 Raw HTML and PDF bodies dominate storage and are the least reusable part.
@@ -1637,7 +1667,7 @@ The brief's seven conditions, each checked mechanically rather than asserted:
 criterion: it changed meaning, not structure.
 
 Counts, recomputed from the documents at revision 5.5: **25 tables · 42 registry
-attributes · 165 acceptance scenarios (+1 withdrawn) · 77 ADRs.** Three M2 objects are touched, all additively:
+attributes · 165 acceptance scenarios (+1 withdrawn) · 78 ADRs.** Three M2 objects are touched, all additively:
 `attribute_definitions.owner_milestone`,
 `company_claims.assertion_fingerprint` with a partial unique index, and a
 deferred constraint trigger on `company_claims`.

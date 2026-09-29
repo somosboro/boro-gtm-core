@@ -404,6 +404,41 @@ def research_ask(
         })
 
 
+@research_app.command("load-cohort")
+def research_load_cohort(
+    path: Path = typer.Argument(..., exists=True, readable=True,
+                                help="CSV: company_name,canonical_domain,website_url,source_id"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                 help="Report what would be loaded, write nothing."),
+) -> None:
+    """Load an operator's target list as canonical M2 companies. No research.
+
+    Loading and researching are separate actions on purpose, so a bad list is
+    discovered before anything reaches the internet.
+
+    A row with no `canonical_domain` and no `website_url` is **flagged for
+    identity review, not researched**. A company name is not an address: two
+    contractors called "Allied Mechanical" are two companies, and guessing which
+    site belongs to which produces wrong-account evidence that looks exactly like
+    correct evidence.
+    """
+    _bootstrap()
+    from datetime import UTC, datetime
+
+    from boro_gtm.research.live.cohort import load_cohort, read_cohort_csv
+
+    rows, problems = read_cohort_csv(path)
+    with session_scope() as session:
+        report = load_cohort(session, rows, now=datetime.now(UTC))
+        payload = report.as_dict()
+        payload["parse_problems"] = [{"row": r, "reason": why} for r, why in problems]
+        payload["rows_read"] = len(rows)
+        if dry_run:
+            session.rollback()
+            payload["dry_run"] = True
+        _echo(payload)
+
+
 @research_app.command("run")
 def research_run(
     run: str = typer.Option(
