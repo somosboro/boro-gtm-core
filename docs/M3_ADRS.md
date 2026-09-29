@@ -3069,16 +3069,41 @@ would repeat the original mistake with a different corpus. The next change shoul
 be small, aimed at the signals measured in M3-ADR-075, and validated against
 pages the rules were not written from.
 
-Where it lands, per signal:
+### The frozen classification
 
-* **Primitive and rule exist, rule too narrow** — `service_categories`,
-  `service_area`, `recurring_service_contracts`, `certification`-adjacent text.
-  This is most of the value.
-* **Primitive exists, no rule** — `operating_markets` (82% of pages),
-  `hiring_signal`, `hiring_field_roles`.
-* **No primitive** — commercial-vs-residential orientation, design-build
-  capability, retrofit/replacement, energy/efficiency positioning. These are
-  genuinely new, and each needs a registry decision before an extractor.
+Design input for the next small change. Frozen here so the calibration target is
+fixed before any rule is touched.
+
+**Working now** — the two rules written as ordinary English phrases.
+
+| Attribute | Pages |
+| --- | ---: |
+| `preventive_maintenance` | 45% |
+| `emergency_service` | 32% |
+
+**Existing primitive, extractor needs work** — where most of the value is.
+
+| Attribute | Pages | Why it does not fire |
+| --- | ---: | --- |
+| `service_area` | 98% | rule hardcoded to `We serve (...), Ohio\.` |
+| `service_categories` | 97% | rule expects the fixture's `Categories: X, Y.` |
+| `operating_markets` | 82% | primitive exists, **no rule at all** |
+| `hiring_signal`, `hiring_field_roles` | 100% | primitive exists, **no rule at all** |
+| `recurring_service_contracts` | 32% | rule needs `maintenance agreements with …` |
+
+**Possible new primitive — not added.** Each needs a registry decision first:
+commercial orientation (78%), industrial orientation (62%),
+retrofit/replacement (51%), energy/efficiency (49%), design-build (34%),
+years in business (16%).
+
+**Rare, and not a first-party web target.** Truthful `NO_EVIDENCE` is and stays
+the correct answer: branch count (5%), FSM/ERP/dispatch (3%), certifications
+(3%), technician count (2%), employee count (1%), fleet size (0%), internal
+approvals and handoffs (0%), billing readiness (0%).
+
+`certification` belongs in that last group, not among the fixable rules: it has
+**no** rule, and at 3% of pages it does not earn one. An earlier draft of this
+ADR listed it as a too-narrow rule, which was wrong on both counts.
 
 ### Consequences
 
