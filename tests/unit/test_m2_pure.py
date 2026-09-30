@@ -183,34 +183,119 @@ def test_a_closed_interval_must_not_end_before_it_starts():
 # --- purity and scope ------------------------------------------------------
 
 
-NETWORK_MODULES = {"requests", "httpx", "urllib", "urllib3", "http", "socket",
+NETWORK_MODULES = {"requests", "httpx", "urllib3", "http", "socket",
                    "aiohttp", "ftplib", "smtplib", "telnetlib"}
 
+#: `urllib` is only a network client through these submodules. `urllib.parse` is
+#: string manipulation and nothing else, so importing it is not reaching the
+#: network — an earlier version of this test counted it as an offence and
+#: flagged a URL parser.
+NETWORK_URLLIB_SUBMODULES = {"request", "error"}
 
-def test_no_discovery_module_imports_a_network_client():
-    """Only a real provider adapter may ever reach the network — and none of
-    the adapters shipped here is real."""
-    offenders = []
-    for path in PACKAGE.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names = [a.name.split(".")[0] for a in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                names = [(node.module or "").split(".")[0]]
-            else:
-                continue
-            for name in names:
-                if name in NETWORK_MODULES:
-                    offenders.append(f"{path.name}: {name}")
+#: The one module permitted a network client: the production provider whose
+#: `search` is defined by the adapter contract as the only method that may do
+#: I/O. Named explicitly, so adding a second one is a visible decision in this
+#: file rather than a silent import somewhere else (M2-ADR-040).
+NETWORK_PERMITTED = {"google_places.py"}
+
+
+def _network_imports(path: Path) -> list[str]:
+    found: list[str] = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""]
+        else:
+            continue
+        for module in modules:
+            parts = module.split(".")
+            root = parts[0]
+            if root in NETWORK_MODULES:
+                found.append(root)
+            elif root == "urllib" and (
+                len(parts) > 1 and parts[1] in NETWORK_URLLIB_SUBMODULES
+            ):
+                found.append(module)
+    return found
+
+
+def test_only_the_named_production_provider_imports_a_network_client():
+    """Everything else in M2 stays unable to reach the network.
+
+    The guarantee this protects is not "M2 has no provider" — it now has one —
+    but that network access lives in exactly one file, so `parse`, `normalize`,
+    `canonicalize`, `derive_key` and every service cannot quietly acquire it.
+    """
+    offenders = [
+        f"{path.name}: {name}"
+        for path in PACKAGE.rglob("*.py")
+        if path.name not in NETWORK_PERMITTED
+        for name in _network_imports(path)
+    ]
     assert offenders == []
 
 
-def test_every_shipped_adapter_declares_itself_a_fixture():
+def test_url_parsing_is_not_counted_as_network_access():
+    """Guards the detector itself, which used to flag `urllib.parse`."""
+    assert _network_imports.__doc__ is None       # a helper, not a contract
+    for path in PACKAGE.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        if "from urllib.parse import" in source:
+            assert "urllib.parse" not in _network_imports(path)
+            break
+    else:                                          # pragma: no cover
+        pytest.fail("no module imports urllib.parse; the guard tests nothing")
+
+
+def test_the_production_provider_confines_its_io_to_search():
+    """`search`/`search_page` may use the client. The pure stages may not.
+
+    This is the part of the adapter contract that matters once a real provider
+    exists: a `normalize` that fetched something would make normalization
+    unrepeatable and canonical identity depend on the network.
+    """
+    path = PACKAGE / "providers" / "google_places.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    classes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
+    adapter = next(c for c in classes if c.name == "GooglePlacesAdapter")
+
+    for method in (n for n in adapter.body if isinstance(n, ast.FunctionDef)):
+        if method.name in ("search", "search_page", "__init__"):
+            continue
+        used = {
+            ast.unparse(node) for node in ast.walk(method)
+            if isinstance(node, ast.Attribute)
+        }
+        assert not any("_client" in expr for expr in used), (
+            f"{method.name} touches the HTTP client; only search may"
+        )
+
+
+def test_every_fixture_adapter_declares_itself_a_fixture():
     for adapter_cls in FIXTURE_ADAPTERS.values():
         caps = adapter_cls().capabilities()
         assert caps.is_fixture is True
         assert "TEST" in caps.name.upper()
+
+
+def test_the_production_provider_is_not_registered_as_a_fixture():
+    """`is_fixture` has to stay a real distinction once a real provider exists.
+
+    A reader of `discovery_providers` should be able to tell which providers
+    spend money from the flag, not by recognising a name.
+    """
+    from boro_gtm.discovery.providers.google_places import (
+        PROVIDER_KEY,
+        GooglePlacesAdapter,
+    )
+
+    caps = GooglePlacesAdapter().capabilities()
+    assert caps.is_fixture is False
+    assert PROVIDER_KEY not in FIXTURE_ADAPTERS
+    assert "TEST" not in caps.name.upper()
+    assert all(a().capabilities().is_fixture for a in FIXTURE_ADAPTERS.values())
 
 
 def test_the_three_identity_capabilities_are_all_exercised():

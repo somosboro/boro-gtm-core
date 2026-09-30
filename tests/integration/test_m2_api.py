@@ -73,13 +73,34 @@ def seeded_api(api_client, committed_sessions) -> Iterator[tuple]:
     yield api_client, run_id
 
 
-def test_provider_listing_marks_fixtures_as_fixtures(seeded_api):
+def test_provider_listing_distinguishes_fixtures_from_production(seeded_api):
+    """`is_fixture` must stay readable over the API now that both kinds exist.
+
+    This test used to assert that *every* provider was a fixture, which was true
+    while M2 shipped no production one. A production provider has since been
+    selected, so the guarantee worth keeping is the distinction itself: a fixture
+    can never claim to be production, and a consumer can tell which providers
+    spend money without recognising a name (M2-ADR-040).
+    """
+    from boro_gtm.discovery.providers.fixtures import FIXTURE_ADAPTERS
+    from boro_gtm.discovery.providers.google_places import PROVIDER_KEY
+
     client, _ = seeded_api
     body = client.get("/api/v1/discovery-providers").json()
     assert body
-    assert all(p["is_fixture"] for p in body), (
-        "no production provider has been selected; nothing may claim to be one"
-    )
+
+    by_key = {p["provider_key"]: p for p in body}
+    for key in FIXTURE_ADAPTERS:
+        assert by_key[key]["is_fixture"] is True, f"{key} is a fixture"
+
+    production = by_key.get(PROVIDER_KEY)
+    assert production is not None, "the production provider is served too"
+    assert production["is_fixture"] is False
+    assert "TEST" not in production["name"].upper()
+
+    # Exactly one production provider. A second would be a decision, not a
+    # side effect of seeding.
+    assert [p["provider_key"] for p in body if not p["is_fixture"]] == [PROVIDER_KEY]
 
 
 def test_attribute_registry_is_served_with_its_version(seeded_api):

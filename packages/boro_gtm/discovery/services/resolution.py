@@ -51,9 +51,30 @@ AMBIGUOUS_THRESHOLD = 0.45
 
 #: Domains that never carry identity: thousands of unrelated firms share them.
 DOMAIN_BLOCKLIST = frozenset({
+    # Shared site builders and hosts: where a company lives, not who it is.
     "wixsite.com", "business.site", "weebly.com", "squarespace.com",
-    "wordpress.com", "blogspot.com", "google.com", "facebook.com",
-    "linkedin.com", "godaddysites.com", "myshopify.com", "sites.google.com",
+    "wordpress.com", "blogspot.com", "godaddysites.com", "godaddy.com",
+    "myshopify.com", "sites.google.com", "square.site", "webnode.com",
+    "jimdosite.com", "netlify.app", "vercel.app", "github.io",
+    # Social and video. A listing whose "website" is a Facebook page tells us
+    # the company has a Facebook page.
+    "google.com", "facebook.com", "linkedin.com", "instagram.com",
+    "twitter.com", "x.com", "youtube.com", "tiktok.com", "pinterest.com",
+    "nextdoor.com",
+    # Directories, review sites and lead brokers. A contractor's Places listing
+    # often points at one of these instead of a first-party site, and treating
+    # it as identity would merge every contractor on that directory into one
+    # company (M2-ADR-046).
+    "yelp.com", "yellowpages.com", "bbb.org", "angi.com", "angieslist.com",
+    "homeadvisor.com", "thumbtack.com", "houzz.com", "porch.com",
+    "buildzoom.com", "manta.com", "bizapedia.com", "mapquest.com",
+    "chamberofcommerce.com", "dandb.com", "opencorporates.com",
+    "thebluebook.com", "procore.com", "networx.com", "hometownlocal.com",
+    # Job boards. A careers URL is not a company's identity domain.
+    "indeed.com", "glassdoor.com", "ziprecruiter.com", "linkedin.cn",
+    # Booking and scheduling platforms operated for the contractor.
+    "housecallpro.com", "servicetitan.com", "calendly.com", "acuityscheduling.com",
+    "setmore.com", "schedulicity.com",
 })
 
 #: Signal weights for candidate scoring (design §6.5).

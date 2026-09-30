@@ -1226,6 +1226,74 @@ New error codes: `PROVIDER_UNAVAILABLE`, `RESOLUTION_AMBIGUOUS`,
     table. Whether per-company digests are needed to localise drift, and what
     that costs on a full rebuild, is undesigned.
 
+## 14a. Live company discovery (Google Places)
+
+M2's architecture shipped without a production provider. This fills that one gap
+and changes nothing else: providers still never write canonical companies,
+`search` is still the only method permitted I/O, and `parse` / `normalize` /
+`canonicalize` / `derive_key` stay pure (M2-ADR-040).
+
+| | Provider |
+| --- | --- |
+| Key | `google_places` |
+| API | Places API (New), `places:searchText` — not Maps HTML, not a browser |
+| Identity | `NATIVE_EXTERNAL_ID` on the place id |
+| Canonicalization | `JSON_CANONICAL_V1`, `application/json` |
+| `is_fixture` | `False`, seeded separately from the fixture providers |
+| Credential | `GTM_GOOGLE_PLACES_API_KEY`, environment only, never persisted |
+
+**Fields requested.** Exactly what M2 consumes: place id, display name, website
+URI, formatted address, address components, national phone, types, primary type,
+business status, location. The field mask is the bill, so a field nothing reads is
+spend for nothing.
+
+**Names.** The display name becomes a **trading name**. `legal_name` carries a
+`FACT` about legal registration, and a Places display name is not one
+(M2-ADR-042).
+
+**Domains.** The listed website becomes the identity domain through the existing
+policy. The blocklist grew from 12 to 56 hosts, because a contractor's listed
+website is very often a Yelp, Angi, Facebook or booking-platform page — and
+treating any of those as identity would deterministically merge every contractor
+on that directory into one company (M2-ADR-046).
+
+**Categories.** Provider taxonomy travels as `vertical_hints` and is written as
+`PROXY`. A Places category is what Google filed the business under, not a fact
+that the company satisfies anyone's ICP.
+
+**Query plan.** Versioned (`QUERY_PLAN_VERSION`), deterministic, product-specific:
+five intents over 25 U.S. metros, where phases A (2 metros), B (10) and C (all)
+are prefixes of one ordered list. Every record is attributable to a plan version,
+an intent, a metro, a provider page and a page token, because a record is one
+place and one `DiscoveryQuery` is one provider page (M2-ADR-041).
+
+**Budget.** `max_queries` and `max_results` are checked before each request, so a
+cap is never exceeded rather than noticed afterwards. `discovery plan-live` costs
+the plan and touches no network; `discovery run-live` requires `--yes` and checks
+the credential before anything is spent.
+
+**Partial runs.** A provider or network failure leaves the run `PARTIAL_FETCH`
+with `fetch_completed_at` unset, so canonical writes stay blocked and the evidence
+already paid for is kept. A `429` or `403` is recorded truthfully; there is no
+scraping fallback and no working around a provider's limit.
+
+**Duplicates.** Within one run, two listings sharing a domain create two
+companies, because the deterministic match reads a projection that is rebuilt
+after resolution. The database still guarantees one identity holder per domain, so
+the second company's domain is demoted to `GROUP` and it is not researchable.
+M2 under-merges rather than merging two organisations that might not be one, and
+the run reports the duplicate (M2-ADR-047).
+
+**Evaluation.** The known-accounts holdout is never a provider and never ingested.
+Recovery is an exact normalized domain match; name similarity is a reported
+diagnostic and never a hit (M2-ADR-048).
+
+```
+gtm discovery plan-live --metros smoke          # costs the plan, no network
+gtm discovery run-live  --metros smoke --yes    # real, billed requests
+gtm discovery evaluate-holdout known.csv        # offline scoring
+```
+
 ## 15. How M3 consumes M2
 
 M3 (Operational Research) takes a canonical company and gathers operational

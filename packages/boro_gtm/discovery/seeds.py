@@ -82,8 +82,52 @@ def seed_fixture_providers(session: Session) -> int:
     return created
 
 
+def seed_production_providers(session: Session) -> int:
+    """Register the production discovery providers.
+
+    Separate from the fixture seeder so `is_fixture` stays a real distinction:
+    these providers spend money and reach the network, and a reader of
+    `discovery_providers` can tell which is which by the flag rather than by
+    recognising a name (M2-ADR-040).
+
+    Registering a provider grants nothing. It has no credential here — the key is
+    read from the environment at request time and never persisted (M2-ADR-043).
+    """
+    from boro_gtm.discovery.providers.google_places import GooglePlacesAdapter
+
+    created = 0
+    for adapter in (GooglePlacesAdapter(),):
+        caps = adapter.capabilities()
+        exists = session.scalar(
+            select(DiscoveryProvider).where(
+                DiscoveryProvider.provider_key == caps.provider_key
+            )
+        )
+        if exists is not None:
+            continue
+        session.add(DiscoveryProvider(
+            provider_key=caps.provider_key,
+            name=caps.name,
+            identity_capability=caps.identity_capability,
+            key_fields=list(caps.key_fields) or None,
+            key_algorithm_version=caps.key_algorithm_version,
+            canonicalization_strategy=caps.canonicalization_strategy,
+            canonicalization_version=caps.canonicalization_version,
+            media_type=caps.media_type,
+            trust_tier=caps.trust_tier,
+            capabilities={"supported_filters": list(caps.supported_filters),
+                          "normalizer_version": caps.normalizer_version},
+            is_active=True,
+            is_fixture=caps.is_fixture,
+        ))
+        created += 1
+    session.flush()
+    return created
+
+
 def seed_all(session: Session) -> dict[str, int]:
     return {
         "attribute_definitions": seed_attribute_registry(session),
         "discovery_providers": seed_fixture_providers(session),
+        "production_providers": seed_production_providers(session),
     }

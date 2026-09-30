@@ -17,7 +17,7 @@ These describe the system **as built**.
 | [M2_COMPANY_DISCOVERY_DESIGN.md](M2_COMPANY_DISCOVERY_DESIGN.md) | Identity anchors vs projections, provider versioning and capability, the attribute registry, entity resolution, run lifecycle, domain policy, temporal relationships |
 | [M2_SCHEMA_GRAPH.md](M2_SCHEMA_GRAPH.md) | The table graph as built: ownership, cardinality and indexes |
 | [M2_ACCEPTANCE_CRITERIA.md](M2_ACCEPTANCE_CRITERIA.md) | The scenarios M2 satisfies, each naming the test that executes it |
-| [M2_ADRS.md](M2_ADRS.md) | 63 decision records, including every correction found while implementing |
+| [M2_ADRS.md](M2_ADRS.md) | 40 decision records, including every correction found while implementing and the live-discovery provider |
 
 The design is at **revision 6**, and the code implements it.
 

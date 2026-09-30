@@ -1103,3 +1103,277 @@ prevent.
   the predicate without a migration.
 * The predicate is monotone in evidence: it can only become true as versions
   accumulate, and it is re-evaluated on every resolution rather than frozen.
+
+---
+
+## M2-ADR-040 — One production provider, chosen explicitly, and no marketplace
+
+**Status:** accepted (BoRo-first live discovery)
+
+### Context
+
+M2 shipped the whole discovery architecture and no production provider: every
+adapter declared `is_fixture = True`, and a purity test asserted that nothing in
+the package could reach the network. BoRo cannot supply its own account list
+forever, so the engine has to find companies itself.
+
+The tempting response is a provider marketplace — a registry, a plugin protocol,
+a credential store, a capability negotiation layer. That is a platform for users
+who do not exist. BoRo needs one provider that works.
+
+### Decision
+
+One adapter: `GooglePlacesAdapter`, on the official Places API (New)
+`places:searchText` endpoint. Not Google Maps HTML, not a browser, not a generic
+crawler.
+
+* `provider_key = "google_places"`, `NATIVE_EXTERNAL_ID` on the place id,
+  `JSON_CANONICAL_V1`, `application/json`, `is_fixture = False`.
+* Seeded by `seed_production_providers`, separate from the fixture seeder, so
+  `is_fixture` stays a real distinction a reader can trust rather than a name
+  they have to recognise.
+* Selection is explicit at the call site and in the CLI. No registry lookup by
+  string, no entry points, no configuration naming a class.
+
+The network firewall test changes shape rather than being deleted. It used to
+assert that *no* discovery module imports a network client; it now asserts that
+only the one named module does, and separately that the adapter's pure stages —
+`parse`, `normalize`, `canonicalize`, `derive_key` — never touch the client. The
+guarantee worth having was never "M2 has no provider"; it was "network access
+lives in one place and the pure stages cannot acquire it".
+
+The old test also counted `urllib.parse` as a network client, which flagged a URL
+parser. `urllib` is a network client through `request` and `error`, and the
+detector now says so.
+
+### Consequences
+
+* Adding a second provider means writing a class and naming it in one allowlist.
+  A registry earns its keep when there is a second customer, not a second file.
+* **Generalisable:** a firewall that forbids the thing you have now decided to
+  build has to be rewritten to forbid what you still want forbidden. Deleting it
+  loses the guarantee; leaving it fails honestly and makes you choose.
+
+---
+
+## M2-ADR-041 — A stored record is one place, not one page
+
+**Status:** accepted (BoRo-first live discovery)
+
+### Context
+
+Places returns pages: `{"places": [...], "nextPageToken": "..."}`. The obvious
+thing is to store the page as the record body. It is also wrong twice over.
+
+Semantic identity in M2 is the canonical hash of the stored payload. A page
+containing one place found by two different query intents would hash differently
+each time — so the same business would become two versions, and the convergence
+M2 exists to provide would not happen. And a page body cannot be attributed to a
+place, so nothing downstream could say which business the bytes described.
+
+### Decision
+
+One `RawRecord` per place, whose body is the place object alone, canonicalized.
+Two queries finding one listing converge on one provider entity and one version,
+and both sightings survive — because a sighting links a version to a
+`DiscoveryQuery`, which is exactly the "which query saw this" relation.
+
+Page-level provenance therefore lives on the query row, not in the body: one
+`DiscoveryQuery` per provider page, carrying the plan version, the intent, the
+metro, the page index and the page token.
+
+That required a small orchestrator rather than `runs.fetch`, whose page loop
+assumes a run is one query chunked by storage size and which sets
+`fetch_completed_at` when it returns. Calling it once per provider page would
+have marked an unfinished plan complete — laundering a partial fetch, which is
+the one thing M2's fetch gate exists to prevent. The orchestrator reuses
+`ingest_record`, `normalize_run` and `resolve_run` unchanged; there is no second
+dedupe path and no canonical write outside M2.
+
+`discovery_queries` is append-only, so the query row is written *after* its page
+returns, with `result_count` already set. A row that records what the query
+returned is the more honest one anyway.
+
+### Consequences
+
+* A record is attributable to a business, a query, a metro and a page.
+* **Generalisable:** the unit of storage should be the unit of identity. When
+  they differ, deduplication silently stops working and nothing reports it.
+
+---
+
+## M2-ADR-042 — A provider display name is a trading name, not a legal name
+
+**Status:** accepted (BoRo-first live discovery)
+
+### Context
+
+`CandidateCompany.legal_name` flows into a `legal_name` claim written with
+`FactType.FACT`. In M2's semantics that is an assertion about legal
+registration.
+
+A Google Places `displayName` is the name a business trades under, set by
+whoever manages its Business Profile. "Big Mechanical" is very often not
+"Big Mechanical Holdings, LLC", and nothing in a Places response establishes a
+registered entity.
+
+### Decision
+
+The display name maps to `trading_names`, and `legal_name` is left unset. The
+claim writer already records trading names as `trading_name`, which is what this
+is.
+
+No new naming subsystem, no change to `CandidateCompany`, no new fact type. The
+smallest correct mapping was to use the field that already meant this.
+
+Two consequences follow from leaving `legal_name` empty, and both are correct:
+
+* `CompanyProfile.canonical_name` derives from `legal_name` claims, so a
+  Places-only company has no canonical name until a provider supplies a legal
+  one. The company is still identified by its domain and named by its trading
+  name, which is what Places actually knows.
+* `resolution._score_candidates` keys name signals on `legal_name`, so a
+  Places-only candidate contributes no name signal — it matches on domain or it
+  does not match. Given that name signals can never reach the auto-match
+  threshold alone, this loses nothing and removes a way to be wrong.
+
+### Consequences
+
+* **Generalisable:** when a provider's field is nearly the one you have, the
+  cost of the mismatch is a false fact that looks exactly like a true one.
+  Mapping to the weaker, accurate field is almost always right.
+
+---
+
+## M2-ADR-046 — A contractor's listed website is often a directory
+
+**Status:** accepted (BoRo-first live discovery)
+
+### Context
+
+`websiteUri` is the bridge from a listing to a canonical identity and then to M3
+first-party research. For small and mid-market contractors it very often points
+somewhere that is not the company: a Facebook page, a Yelp profile, an Angi or
+HomeAdvisor listing, a HousecallPro booking page, a Wix subdomain.
+
+M2's `DOMAIN_BLOCKLIST` held twelve hosts, aimed at site builders and social
+networks. It did not cover review sites, lead brokers, job boards or booking
+platforms.
+
+If any of those became an identity domain, every contractor listed on that
+directory would deterministically match the same company — the exact
+wrong-company merge this milestone treats as P0, arrived at through the strongest
+signal M2 has.
+
+### Decision
+
+Extend the blocklist to 56 hosts across four groups: site builders and hosts,
+social and video, directories and lead brokers, job boards, and booking
+platforms. The policy itself is unchanged — a blocklisted domain is recorded as
+`GROUP` and can never carry identity — this is data, not mechanism.
+
+### Consequences
+
+* A contractor whose only listed website is a Yelp profile produces no identity
+  domain, so it is parked as `AMBIGUOUS` and researched by nobody. That is
+  correct: M2 does not know who it is, and guessing is how accounts get crossed.
+* The list will need adding to. It is a list, and that is the cheapest kind of
+  thing to be wrong about.
+* **Generalisable:** the strongest deterministic signal is also the most
+  dangerous one to feed bad data into. Blocklists guarding an identity rule are
+  worth more attention than the rule.
+
+---
+
+## M2-ADR-047 — Intra-run domain duplicates, and why they are the safe direction
+
+**Status:** accepted (BoRo-first live discovery; **measured limitation**)
+
+### Context
+
+Google Places returns one listing per physical location, so a contractor with
+three branches is three places. All three usually carry the same
+`websiteUri`, and the intended outcome is one canonical company.
+
+`_deterministic_match` finds an existing company by reading `CompanyDomain` —
+which is a **projection**, rebuilt from the claim ledger after resolution. So
+within a single run the second listing cannot see the first listing's company
+yet, and two companies are created.
+
+Measured: two branch listings in one run produce two companies. The projection's
+partial unique index `uq_identity_domain` then grants the domain `IDENTITY` on
+one and demotes it to `GROUP` on the other. Across runs the match works
+correctly — the limitation is intra-run ordering, not the matching rule.
+
+### Decision
+
+Record it. Do not force convergence.
+
+The alternatives were worse. Rebuilding projections between individual
+resolutions would truncate and rebuild every derived table per record.
+Re-running `resolve_run` does not help: both entities already have heads, and
+merging two existing companies is a `MERGED` decision M2 deliberately does not
+automate. Adding franchise or branch-merging logic is precisely what this phase
+was told not to invent without a demonstrated defect.
+
+What matters is the direction of the error. M2 **under-merges**: it produces a
+duplicate rather than joining two organisations that might not be one. The
+wrong-company merge count stays zero, and the database still guarantees one
+identity holder per domain.
+
+### Consequences
+
+* The duplicate is visible, not silent: the run reports
+  `canonical_companies`, `companies_with_identity_domain` and
+  `companies_without_domain`, and a duplicated contractor shows up as a company
+  with no identity domain.
+* The demoted duplicate is **not researchable** by M3, which only accepts
+  `IDENTITY`, `ALTERNATE`, `REDIRECT` and `COUNTRY_TLD`. One real company
+  appears twice and is researched once. That is the honest outcome of not
+  knowing.
+* A second run over the same metro converges them, because by then the
+  projection exists.
+* **Generalisable:** when a deterministic match reads a derived view, it is only
+  as current as the last rebuild. Either the match reads the ledger or the
+  staleness is a documented property — pretending it is neither is how duplicates
+  become merges.
+
+---
+
+## M2-ADR-048 — The holdout is evaluation data, and discovery runs blind
+
+**Status:** accepted (BoRo-first live discovery)
+
+### Context
+
+BoRo has an existing outbound cohort. Using it to build queries, pick metros or
+seed domains would make any recall number meaningless: the engine would be
+scored on finding what it was told.
+
+### Decision
+
+The query plan is built from the market definition and a fixed metro
+configuration, and from nothing else. A test reads the plan module's source and
+fails if it references a company table, a cohort file, CSV parsing or a database
+session — so the isolation is structural rather than a convention someone
+remembers.
+
+The holdout is read by a separate offline evaluator, after a run, and is never
+ingested into M2. Recovery is an exact normalized **domain** match and nothing
+else. Name similarity is computed and reported as a diagnostic, and never counted:
+counting it would turn M2's one firm refusal — that a shared name is not identity
+— into a success metric.
+
+A holdout row with no domain is reported as unscored rather than as a miss.
+Blaming discovery for a gap in the evaluation data would flatter the
+alternative.
+
+### Consequences
+
+* Recall is over the whole holdout, with the unscored rows stated separately.
+* Companies discovered outside the holdout are counted, because finding accounts
+  BoRo does not already know is the point of the exercise and a recall-only
+  metric would treat them as noise.
+* **Generalisable:** an evaluation set that touches the system it evaluates
+  stops being an evaluation set, and nothing about the resulting number warns
+  you.

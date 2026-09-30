@@ -199,8 +199,9 @@ def discovery_run(
 ) -> None:
     """Fetch, normalize and resolve one run against a fixture provider.
 
-    No production provider exists, so this only ever reads a local file. The
-    network is never touched.
+    Reads a local file and never touches the network. Live discovery is a
+    separate command — `discovery plan-live` and `discovery run-live` — so no
+    invocation of this one can reach the internet by accident.
     """
     _bootstrap()
     from sqlalchemy import select
@@ -269,6 +270,200 @@ def discovery_run(
     except GtmError as exc:
         typer.echo(f"{exc.code}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+
+
+@discovery_app.command("plan-live")
+def discovery_plan_live(
+    metros: str = typer.Option(
+        "smoke", help="`smoke` (2), `phase-b` (10), `all` (25), or a comma-separated "
+                      "list of metro keys.",
+    ),
+    intents: str = typer.Option(None, help="Comma-separated subset of the query intents."),
+    max_queries: int = typer.Option(50, help="Hard cap on provider requests."),
+    max_results: int = typer.Option(1000, help="Hard cap on records stored."),
+) -> None:
+    """Cost a live discovery plan. Touches no network and writes nothing.
+
+    Run this before `run-live`: it prints the provider, the context, the metros,
+    the intents and the planned request count, so nobody starts paid API spend
+    without seeing the bill first (§8).
+    """
+    from boro_gtm.discovery.live.plan import (
+        METROS,
+        PHASE_B_METROS,
+        QUERY_INTENTS,
+        SMOKE_METROS,
+        QueryBudget,
+        plan_run,
+    )
+
+    keys = _metro_keys(metros, SMOKE_METROS, PHASE_B_METROS, METROS)
+    chosen = tuple(i.strip() for i in intents.split(",")) if intents else QUERY_INTENTS
+    unknown = [i for i in chosen if i not in QUERY_INTENTS]
+    if unknown:
+        raise typer.BadParameter(
+            f"unknown intents {unknown}; known: {list(QUERY_INTENTS)}"
+        )
+    planned = plan_run(
+        metros=keys, intents=chosen,
+        budget=QueryBudget(max_queries=max_queries, max_results=max_results),
+    )
+    payload = planned.as_dict()
+    payload["credential_present"] = _places_credential_present()
+    payload["network"] = "none — planning only"
+    _echo(payload)
+
+
+@discovery_app.command("run-live")
+def discovery_run_live(
+    metros: str = typer.Option("smoke", help="`smoke`, `phase-b`, `all`, or metro keys."),
+    intents: str = typer.Option(None, help="Comma-separated subset of the query intents."),
+    max_queries: int = typer.Option(50, help="Hard cap on provider requests."),
+    max_results: int = typer.Option(1000, help="Hard cap on records stored."),
+    market: str | None = typer.Option(None, help="M1 market ISO2 code for context."),
+    vertical: str | None = typer.Option(None, help="M1 vertical key for context."),
+    allow_partial: bool = typer.Option(
+        False, help="Permit canonical writes from a run that never completed its fetch."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", help="Required. Confirms real, billed provider requests.",
+    ),
+) -> None:
+    """Discover real companies through the Google Places API. Spends money.
+
+    `--yes` is mandatory and not a default, and the credential is checked before
+    any request is made, so a missing key fails clearly rather than half-way
+    through a plan (§23).
+    """
+    _bootstrap()
+    from sqlalchemy import select
+
+    from boro_gtm.discovery.domain.models import DiscoveryProvider
+    from boro_gtm.discovery.live.plan import (
+        METROS,
+        PHASE_B_METROS,
+        QUERY_INTENTS,
+        SMOKE_METROS,
+        QueryBudget,
+        plan_run,
+    )
+    from boro_gtm.discovery.live.runner import preflight_credential, run_live_discovery
+    from boro_gtm.discovery.providers.google_places import (
+        PROVIDER_KEY,
+        GooglePlacesAdapter,
+    )
+    from boro_gtm.market_intelligence.domain.models import Market
+
+    if not yes:
+        raise typer.BadParameter(
+            "pass --yes. This issues real, billed Google Places requests; run "
+            "`discovery plan-live` first to see the planned request count."
+        )
+
+    keys = _metro_keys(metros, SMOKE_METROS, PHASE_B_METROS, METROS)
+    chosen = tuple(i.strip() for i in intents.split(",")) if intents else QUERY_INTENTS
+    planned = plan_run(
+        metros=keys, intents=chosen,
+        budget=QueryBudget(max_queries=max_queries, max_results=max_results),
+    )
+
+    try:
+        # Before the network, before the database, before anything is spent.
+        preflight_credential()
+    except GtmError as exc:
+        typer.echo(f"{exc.code}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    import httpx
+
+    try:
+        with session_scope() as session:
+            provider_row = session.scalar(
+                select(DiscoveryProvider).where(
+                    DiscoveryProvider.provider_key == PROVIDER_KEY)
+            )
+            if provider_row is None:
+                raise NotFoundError(
+                    f"Provider {PROVIDER_KEY!r} is not seeded. Run: discovery seed",
+                    details={"provider_key": PROVIDER_KEY},
+                )
+            market_id = None
+            if market:
+                market_id = session.scalar(
+                    select(Market.id).where(Market.iso2 == market.upper()))
+                if market_id is None:
+                    raise NotFoundError(
+                        f"No M1 market with code {market!r}.",
+                        details={"iso2": market.upper()},
+                    )
+            vertical_id = _vertical_id(session, vertical) if vertical else None
+            if allow_partial:
+                # Recorded on the run, exactly as the fixture path does.
+                pass
+
+            with httpx.Client(timeout=30.0) as client:
+                adapter = GooglePlacesAdapter(client=client)
+                report = run_live_discovery(
+                    session, provider=provider_row, adapter=adapter,
+                    planned=planned, market_id=market_id, vertical_id=vertical_id,
+                )
+            payload = report.as_dict()
+            payload["plan"] = planned.as_dict()
+            _echo(payload)
+    except GtmError as exc:
+        typer.echo(f"{exc.code}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@discovery_app.command("evaluate-holdout")
+def discovery_evaluate_holdout(
+    path: Path = typer.Argument(..., exists=True, readable=True,
+                                help="CSV: company_name,canonical_domain"),
+) -> None:
+    """Score the discovered set against known accounts. Read-only, no network.
+
+    The holdout is evaluation data. It is never loaded into M2 and never reaches
+    the provider, so a run cannot score itself (§15).
+    """
+    _bootstrap()
+    from boro_gtm.discovery.live.holdout import evaluate, read_holdout_csv
+
+    rows, problems = read_holdout_csv(path)
+    with session_scope() as session:
+        result = evaluate(session, rows)
+        session.rollback()
+        payload = result.as_dict()
+        payload["parse_problems"] = [{"row": r, "reason": w} for r, w in problems]
+        _echo(payload)
+
+
+def _metro_keys(spec: str, smoke, phase_b, all_metros) -> tuple[str, ...]:
+    """`smoke` / `phase-b` / `all`, or an explicit list. Phases are prefixes."""
+    named = {"smoke": smoke, "phase-b": phase_b,
+             "all": tuple(m.key for m in all_metros)}
+    if spec in named:
+        return named[spec]
+    return tuple(k.strip() for k in spec.split(",") if k.strip())
+
+
+def _places_credential_present() -> bool:
+    """Whether a key exists. The value is never read out or logged."""
+    import os
+
+    from boro_gtm.discovery.providers.google_places import API_KEY_ENV
+
+    return bool(os.environ.get(API_KEY_ENV, "").strip())
+
+
+def _vertical_id(session, key: str):
+    from sqlalchemy import select
+
+    from boro_gtm.market_intelligence.domain.models import Vertical
+
+    found = session.scalar(select(Vertical.id).where(Vertical.key == key))
+    if found is None:
+        raise NotFoundError(f"No M1 vertical with key {key!r}.", details={"key": key})
+    return found
 
 
 @discovery_app.command("project")
