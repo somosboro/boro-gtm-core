@@ -1377,3 +1377,170 @@ alternative.
 * **Generalisable:** an evaluation set that touches the system it evaluates
   stops being an evaluation set, and nothing about the resulting number warns
   you.
+
+---
+
+## M2-ADR-049 — A run report answers what *this run* did
+
+**Status:** accepted (pre-flight correction, before the first paid request)
+
+### Context
+
+`_fill_resolution_counts` scoped resolution decisions by `provider_id` and read
+`canonical_companies`, `companies_with_identity_domain` and
+`companies_without_domain` straight off the whole database.
+
+Reproduced before fixing: run A discovered two companies, run B discovered one,
+and B's report said **three** for every company metric. An operator reading it
+after the second metro would have concluded discovery was three times as
+productive as it was, and the number would have grown monotonically no matter
+what any individual run found.
+
+### Decision
+
+Every primary metric is scoped to the run through the provenance M2 already
+maintains for exactly this question:
+
+```
+DiscoveryRun → DiscoveryQuery → ProviderRecordSighting
+             → ProviderRecordVersion → ProviderEntity
+             → EntityResolutionHead.company_id
+```
+
+Attribution runs through **sightings**, not `provider_id` and not
+`ProviderRecordVersion.discovery_query_id` — a second run over unchanged
+evidence creates no new versions, so keying on the version's own query would
+report that it saw nothing.
+
+The created / matched / ambiguous / unchanged / claims counts come from
+`resolve_run`'s return value rather than being recomputed. It already counts what
+the run *did* instead of what the heads happen to say: an entity resolved by an
+earlier run has a `CREATED_NEW` head and created nothing now, and recomputing
+from heads reported a creation that did not happen.
+
+Database-wide figures remain available as `cumulative_canonical_companies` and
+`cumulative_companies_with_identity_domain`. The two semantics never share a
+field name.
+
+### Consequences
+
+* `companies_without_domain` is renamed `companies_without_identity_domain`,
+  because within a run that is what it measures.
+* **Generalisable:** a metric computed from "everything matching this provider"
+  answers a question nobody asked, and it answers it with a number that only ever
+  rises. Scope follows the provenance you already keep.
+
+---
+
+## M2-ADR-050 — Breadth before depth
+
+**Status:** accepted (pre-flight correction, before the first paid request)
+
+### Context
+
+The scheduler walked the plan depth-first: every page of step one, then every
+page of step two. With a bounded query budget that means pagination on the
+earliest metros consumes the budget and the later metros are never asked at all.
+
+For market discovery that is the wrong priority. The first page of Milwaukee is
+worth more than the third page of Dallas, and a run that returns 60 Dallas
+contractors and nothing from 24 other metros has not discovered a market.
+
+### Decision
+
+Round-based scheduling. Round 1 is page 1 of **every** planned step, in plan
+order. Round *n* > 1 revisits only the steps that came back with a next-page
+token, in the same order. No second page is requested until every first page has
+been attempted.
+
+Ordering inside a round is the plan's declared order, so a run remains
+reproducible and a budget cut removes the same steps every time.
+
+### Consequences
+
+* A budget equal to the step count buys exactly one page of everything, which is
+  now the default (M2-ADR-051).
+* `first_page_queries_issued` and `pagination_queries_issued` are reported
+  separately, so an operator can see which kind of request the money went on.
+* **Generalisable:** when a budget is smaller than the plan, the traversal order
+  *is* the sampling strategy. Depth-first quietly samples one region thoroughly
+  and the rest not at all.
+
+---
+
+## M2-ADR-051 — The default budget buys breadth, and a short budget says so
+
+**Status:** accepted (pre-flight correction, before the first paid request)
+
+### Context
+
+`QueryBudget.max_queries` defaulted to 50. The full plan is 25 metros × 5
+intents = **125** first-page searches. So `--metros all` advertised national
+coverage and could only ever attempt the first 50 steps — and because the
+scheduler was depth-first, far fewer than 50 distinct steps at that.
+
+Nothing in the plan output or the run report said this. `status = COMPLETED`
+meant "finished without raising", and it read as "asked everything".
+
+### Decision
+
+`max_queries = None` by default, meaning *exactly one page of every planned
+step*. Smoke buys 10, phase B buys 50, the full plan buys 125. Pagination is
+opt-in: an operator raises the number explicitly and the plan reports the
+leftover as `pagination_capacity`.
+
+The plan states four things before any spend: `first_page_queries`,
+`max_queries`, `first_page_coverage_possible` and `pagination_capacity`. An
+explicitly supplied budget below full first-page coverage emits a `WARNING`
+naming the shortfall and the number that would fix it.
+
+The run report separates coverage from success:
+`planned_first_page_queries`, `first_page_queries_issued`,
+`first_page_coverage_complete`, `pagination_queries_issued` and
+`budget_stopped_at`. A run can be `COMPLETED` with
+`first_page_coverage_complete = false`, and those are different facts.
+
+No new database status vocabulary: hitting an intended budget is not a provider
+failure, and `PARTIAL_FETCH` means the provider or the network failed.
+
+### Consequences
+
+* The phase lists are prefixes of one ordered metro tuple, so the default budget
+  and the phase definition cannot drift apart.
+* **Generalisable:** a default that cannot execute the thing it is the default
+  for is a lie with a number in it. Either the default fits the plan or the plan
+  reports that it does not.
+
+---
+
+## M2-ADR-052 — No partial-resolution control on the live path
+
+**Status:** accepted (pre-flight correction, before the first paid request)
+
+### Context
+
+`discovery run-live` accepted `--allow-partial` and did:
+
+```python
+if allow_partial:
+    pass
+```
+
+It read as a control over whether an incomplete run could write canonical
+companies. It controlled nothing.
+
+### Decision
+
+Removed from the live command. A provider or network failure leaves the run
+`PARTIAL_FETCH` with its evidence retained and nothing canonical written, which
+is the behaviour production wants and the only behaviour the live path offers.
+
+The fixture path keeps its `--allow-partial`, where it is wired to
+`allow_partial_resolution` on the run and exists for internal M2 work. New
+partial-live semantics are not invented in this phase.
+
+### Consequences
+
+* **Generalisable:** a flag that looks like a safety control and does nothing is
+  worse than its absence — it answers the question an operator was right to ask,
+  wrongly.

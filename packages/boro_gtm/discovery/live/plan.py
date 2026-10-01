@@ -141,9 +141,15 @@ class QueryBudget:
     `max_queries` bounds provider requests, which is what Places bills for;
     `max_results` bounds records stored. Both are checked before each request,
     so the cap is never exceeded rather than noticed afterwards.
+
+    `max_queries = None` means "exactly enough for one page of every planned
+    step" — breadth and no pagination. A fixed default of 50 could not execute
+    the 125-step full plan, so `metros=all` advertised national coverage while
+    silently giving the first 50 steps a chance and none to the rest
+    (M2-ADR-051). Pagination is opt-in: raise the number explicitly.
     """
 
-    max_queries: int = 50
+    max_queries: int | None = None
     max_results: int = 1_000
     page_size: int = 20
     #: Provider pages per (intent, metro). Places serves at most three.
@@ -165,37 +171,65 @@ class PlannedRun:
         return len(self.steps)
 
     @property
+    def max_queries(self) -> int:
+        """The effective cap: breadth-only unless an operator raised it."""
+        if self.budget.max_queries is None:
+            return self.planned_first_page_queries
+        return self.budget.max_queries
+
+    @property
+    def first_page_coverage_possible(self) -> bool:
+        """Whether the budget can even ask every planned step once."""
+        return self.max_queries >= self.planned_first_page_queries
+
+    @property
+    def pagination_capacity(self) -> int:
+        """Requests left over for second and third pages. Zero by default."""
+        return max(self.max_queries - self.planned_first_page_queries, 0)
+
+    @property
     def worst_case_queries(self) -> int:
         """Every step paginated to the provider's limit, capped by the budget."""
         return min(
-            len(self.steps) * self.budget.max_pages_per_query,
-            self.budget.max_queries,
+            len(self.steps) * self.budget.max_pages_per_query, self.max_queries
         )
 
     @property
     def worst_case_results(self) -> int:
         return min(
-            self.worst_case_queries * self.budget.page_size,
-            self.budget.max_results,
+            self.worst_case_queries * self.budget.page_size, self.budget.max_results
         )
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "query_plan_version": self.query_plan_version,
             "provider": "google_places",
             "intents": list(self.intents),
             "metros": list(self.metros),
             "metro_labels": [METROS_BY_KEY[m].label for m in self.metros],
             "first_page_queries": self.planned_first_page_queries,
+            "max_queries": self.max_queries,
+            "first_page_coverage_possible": self.first_page_coverage_possible,
+            "pagination_capacity": self.pagination_capacity,
             "worst_case_queries": self.worst_case_queries,
             "worst_case_results": self.worst_case_results,
             "budget": {
                 "max_queries": self.budget.max_queries,
+                "effective_max_queries": self.max_queries,
                 "max_results": self.budget.max_results,
                 "page_size": self.budget.page_size,
                 "max_pages_per_query": self.budget.max_pages_per_query,
             },
         }
+        if not self.first_page_coverage_possible:
+            shortfall = self.planned_first_page_queries - self.max_queries
+            payload["WARNING"] = (
+                f"max_queries={self.max_queries} cannot ask every planned step "
+                f"once: {self.planned_first_page_queries} steps planned, "
+                f"{shortfall} would never be attempted. Raise max_queries to "
+                f"{self.planned_first_page_queries} for full first-page coverage."
+            )
+        return payload
 
 
 def plan_run(

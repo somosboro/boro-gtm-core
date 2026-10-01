@@ -307,3 +307,26 @@ def test_fact_type_remains_exactly_five_members():
     assert [f.value for f in FactType] == [
         "FACT", "ESTIMATE", "PROXY", "INFERENCE", "HYPOTHESIS"]
     assert "N/D" not in {f.value for f in FactType}
+
+
+def test_the_live_cli_has_no_non_functional_partial_option():
+    """`--allow-partial` on the live command did nothing but `pass`.
+
+    A control that reads as if it changes behaviour and does not is worse than no
+    control. The live path's answer to a provider failure is `PARTIAL_FETCH` with
+    the evidence retained and nothing canonical written; the fixture path keeps
+    its own partial-resolution capability for internal M2 work (M2-ADR-052).
+    """
+    import inspect
+
+    from boro_gtm import cli
+
+    live = inspect.signature(cli.discovery_run_live).parameters
+    assert "allow_partial" not in live
+    assert {"metros", "intents", "max_queries", "max_results", "yes"} <= set(live)
+
+    # The fixture path is untouched and still offers it.
+    assert "allow_partial" in inspect.signature(cli.discovery_run).parameters
+
+    source = inspect.getsource(cli.discovery_run_live)
+    assert "if allow_partial" not in source

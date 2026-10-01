@@ -27,8 +27,9 @@ from boro_gtm.discovery.domain.models import (
     DiscoveryProvider,
     DiscoveryQuery,
     DiscoveryRun,
-    EntityResolutionDecision,
-    ProviderEntity,
+    EntityResolutionHead,
+    ProviderRecordSighting,
+    ProviderRecordVersion,
 )
 from boro_gtm.discovery.enums import DiscoveryRunStatus
 from boro_gtm.discovery.live.plan import PlannedRun, PlanStep
@@ -56,7 +57,13 @@ class LiveDiscoveryReport:
     intents: list[str] = field(default_factory=list)
 
     status: str = "PENDING"
-    queries_planned: int = 0
+    #: Coverage, stated separately from success. `status = COMPLETED` says the
+    #: run finished without error; it must not imply every planned metro and
+    #: intent was actually asked (M2-ADR-051).
+    planned_first_page_queries: int = 0
+    first_page_queries_issued: int = 0
+    pagination_queries_issued: int = 0
+    first_page_coverage_complete: bool = False
     queries_issued: int = 0
     pages_issued: int = 0
     records_fetched: int = 0
@@ -67,13 +74,22 @@ class LiveDiscoveryReport:
     provider_error: str | None = None
 
     normalized: int = 0
+    #: Every company metric below is **this run's**, reached through
+    #: run → query → sighting → version → entity → resolution head. Scoping them
+    #: by `provider_id` reported the whole history of the provider: a second run
+    #: that discovered one company said three (M2-ADR-049).
     canonical_companies: int = 0
     new_companies: int = 0
     matched_companies: int = 0
     ambiguous_entities: int = 0
+    unchanged_entities: int = 0
+    claims_written: int = 0
     companies_with_identity_domain: int = 0
-    companies_without_domain: int = 0
+    companies_without_identity_domain: int = 0
     fetch_complete: bool = False
+    #: Database-wide, and named so the two can never be read as the same thing.
+    cumulative_canonical_companies: int = 0
+    cumulative_companies_with_identity_domain: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -84,7 +100,10 @@ class LiveDiscoveryReport:
             "intents": self.intents,
             "status": self.status,
             "fetch_complete": self.fetch_complete,
-            "queries_planned": self.queries_planned,
+            "planned_first_page_queries": self.planned_first_page_queries,
+            "first_page_queries_issued": self.first_page_queries_issued,
+            "first_page_coverage_complete": self.first_page_coverage_complete,
+            "pagination_queries_issued": self.pagination_queries_issued,
             "queries_issued": self.queries_issued,
             "pages_issued": self.pages_issued,
             "records_fetched": self.records_fetched,
@@ -98,8 +117,13 @@ class LiveDiscoveryReport:
             "new_companies": self.new_companies,
             "matched_companies": self.matched_companies,
             "ambiguous_entities": self.ambiguous_entities,
+            "unchanged_entities": self.unchanged_entities,
+            "claims_written": self.claims_written,
             "companies_with_identity_domain": self.companies_with_identity_domain,
-            "companies_without_domain": self.companies_without_domain,
+            "companies_without_identity_domain": self.companies_without_identity_domain,
+            "cumulative_canonical_companies": self.cumulative_canonical_companies,
+            "cumulative_companies_with_identity_domain":
+                self.cumulative_companies_with_identity_domain,
         }
 
 
@@ -131,7 +155,7 @@ def run_live_discovery(
         query_plan_version=planned.query_plan_version,
         metros=list(planned.metros),
         intents=list(planned.intents),
-        queries_planned=planned.planned_first_page_queries,
+        planned_first_page_queries=planned.planned_first_page_queries,
     )
     run = create_run(
         session, provider, market_id=market_id, vertical_id=vertical_id,
@@ -146,31 +170,48 @@ def run_live_discovery(
     entity_ids: set[uuid.UUID] = set()
     page_number = 0
     budget = planned.budget
+    # The *effective* cap, which is "one page of every planned step" unless the
+    # operator raised it. Reading `budget.max_queries` directly would be None.
+    max_queries = planned.max_queries
+
+    # Breadth before depth. Depth-first spends the budget paginating Dallas
+    # while Milwaukee is never asked at all, which for market discovery is the
+    # wrong priority: the first page of every metro is worth more than the third
+    # page of one (M2-ADR-050).
+    #
+    # Round 1 is page 1 of every step, in plan order. Round n>1 revisits only the
+    # steps that came back with a token, in the same order.
+    frontier: list[tuple[PlanStep, str | None]] = [(s, None) for s in planned.steps]
 
     try:
-        for step in planned.steps:
-            token: str | None = None
-            for page_index in range(budget.max_pages_per_query):
-                if report.queries_issued >= budget.max_queries:
+        for round_index in range(budget.max_pages_per_query):
+            if not frontier:
+                break
+            next_frontier: list[tuple[PlanStep, str | None]] = []
+            for step, token in frontier:
+                if report.queries_issued >= max_queries:
                     report.budget_stopped_at = "MAX_QUERIES"
                     break
                 if report.records_fetched >= budget.max_results:
                     report.budget_stopped_at = "MAX_RESULTS"
                     break
 
-                paged = PlanStep(step.intent, step.metro, page=page_index,
+                paged = PlanStep(step.intent, step.metro, page=round_index,
                                  page_token=token)
                 params = paged.as_query(limit=budget.page_size)
 
                 result = adapter.search_page(params)
                 report.queries_issued += 1
                 report.pages_issued += 1
+                if round_index == 0:
+                    report.first_page_queries_issued += 1
+                else:
+                    report.pagination_queries_issued += 1
 
                 # The query row is written **after** the page returns, with its
-                # count already set. `discovery_queries` is append-only, so
-                # there is no second write to fill the count in later — and a
-                # row that records what the query returned is the more honest
-                # one anyway.
+                # count already set. `discovery_queries` is append-only, so there
+                # is no second write to fill the count in later — and a row that
+                # records what the query returned is the more honest one anyway.
                 query = _query_row(session, run, params, page_number,
                                    result_count=len(result.records))
                 page_number += 1
@@ -188,11 +229,11 @@ def run_live_discovery(
 
                 if commit is not None:
                     commit()
-                token = result.next_page_token
-                if not token:
-                    break
+                if result.next_page_token:
+                    next_frontier.append((step, result.next_page_token))
             if report.budget_stopped_at:
                 break
+            frontier = next_frontier
     except (ProviderQuotaError, MissingCredentialError, Exception) as exc:  # noqa: BLE001
         # The provider refused, or the network failed. Truthfully partial: the
         # evidence stays, and `fetch_completed_at` is never set.
@@ -208,11 +249,14 @@ def run_live_discovery(
     run.status = DiscoveryRunStatus.FETCHED.value
     run.fetch_completed_at = datetime.now(UTC)
     report.fetch_complete = True
+    report.first_page_coverage_complete = (
+        report.first_page_queries_issued >= report.planned_first_page_queries
+    )
     report.provider_entities = len(entity_ids)
     session.flush()
 
     report.normalized = normalize_run(session, run, adapter)
-    resolve_run(session, run, adapter)
+    stats = resolve_run(session, run, adapter)
     session.flush()
     # Names, domains and profiles are projections, rebuilt from the claim
     # ledger. Without this an operator sees canonical companies with no name and
@@ -223,7 +267,7 @@ def run_live_discovery(
     run.completed_at = datetime.now(UTC)
     report.status = run.status
     session.flush()
-    _fill_resolution_counts(session, run, report)
+    _fill_resolution_counts(session, run, report, stats)
     return report
 
 
@@ -242,29 +286,56 @@ def _query_row(session: Session, run: DiscoveryRun, params: dict,
 
 
 def _fill_resolution_counts(
-    session: Session, run: DiscoveryRun, report: LiveDiscoveryReport
+    session: Session, run: DiscoveryRun, report: LiveDiscoveryReport,
+    stats: dict[str, int] | None = None,
 ) -> None:
-    """Counts an operator reads, derived from what M2 actually decided."""
-    decisions = session.execute(
-        select(EntityResolutionDecision.decision,
-               func.count(EntityResolutionDecision.id))
-        .join(ProviderEntity,
-              ProviderEntity.id == EntityResolutionDecision.provider_entity_id)
-        .where(ProviderEntity.provider_id == run.provider_id)
-        .group_by(EntityResolutionDecision.decision)
-    ).all()
-    by_decision = {d: n for d, n in decisions}
-    report.new_companies = by_decision.get("CREATED_NEW", 0)
-    report.matched_companies = by_decision.get("MATCHED", 0)
-    report.ambiguous_entities = by_decision.get("AMBIGUOUS", 0)
+    """What **this run** did, plus clearly-named cumulative totals.
 
-    report.canonical_companies = session.scalar(
+    `resolve_run` already counts what the run did rather than what the heads
+    happen to say — an entity resolved by an earlier run has a `CREATED_NEW`
+    head and created nothing now — so those counts are used directly instead of
+    being recomputed less accurately (M2-ADR-049).
+    """
+    if stats is not None:
+        report.new_companies = stats.get("created", 0)
+        report.matched_companies = stats.get("matched", 0)
+        report.ambiguous_entities = stats.get("ambiguous", 0)
+        report.unchanged_entities = stats.get("unchanged", 0)
+        report.claims_written = stats.get("claims", 0)
+
+    # The companies this run's own records resolved to, through the provenance
+    # chain M2 already maintains for exactly this question.
+    company_ids = set(session.scalars(
+        select(EntityResolutionHead.company_id)
+        .join(ProviderRecordVersion,
+              ProviderRecordVersion.provider_entity_id
+              == EntityResolutionHead.provider_entity_id)
+        .join(ProviderRecordSighting,
+              ProviderRecordSighting.provider_record_version_id
+              == ProviderRecordVersion.id)
+        .join(DiscoveryQuery,
+              DiscoveryQuery.id == ProviderRecordSighting.discovery_query_id)
+        .where(DiscoveryQuery.discovery_run_id == run.id,
+               EntityResolutionHead.company_id.is_not(None))
+        .distinct()
+    ).all())
+
+    report.canonical_companies = len(company_ids)
+    if company_ids:
+        report.companies_with_identity_domain = len(set(session.scalars(
+            select(CompanyDomain.company_id).where(
+                CompanyDomain.company_id.in_(company_ids),
+                CompanyDomain.domain_role == "IDENTITY",
+            )
+        ).all()))
+    report.companies_without_identity_domain = (
+        report.canonical_companies - report.companies_with_identity_domain
+    )
+
+    report.cumulative_canonical_companies = session.scalar(
         select(func.count()).select_from(Company)
     ) or 0
-    report.companies_with_identity_domain = session.scalar(
+    report.cumulative_companies_with_identity_domain = session.scalar(
         select(func.count(func.distinct(CompanyDomain.company_id)))
         .where(CompanyDomain.domain_role == "IDENTITY")
     ) or 0
-    report.companies_without_domain = max(
-        report.canonical_companies - report.companies_with_identity_domain, 0
-    )

@@ -99,3 +99,70 @@ def test_presentation_parameters_do_not_make_a_second_document():
     paged = f"{base}?location=columbus"
     assert strip_presentation_params(paged) == paged
     assert strip_presentation_params(f"{base}?location=columbus&hsLang=en") == paged
+
+
+# --- §4 the default budget buys breadth, and says what it cannot do ----------
+
+
+def test_the_default_budget_is_exactly_one_page_per_planned_step():
+    """A fixed default of 50 could not execute the 125-step full plan.
+
+    `metros=all` then advertised national coverage while silently giving the
+    first 50 steps a chance and none to the other 75 (M2-ADR-051).
+    """
+    from boro_gtm.discovery.live.plan import (
+        METROS,
+        PHASE_B_METROS,
+        SMOKE_METROS,
+        plan_run,
+    )
+
+    for metros, expected in ((SMOKE_METROS, 10), (PHASE_B_METROS, 50),
+                             (tuple(m.key for m in METROS), 125)):
+        plan = plan_run(metros=metros)
+        assert plan.planned_first_page_queries == expected
+        assert plan.max_queries == expected, "breadth, exactly"
+        assert plan.first_page_coverage_possible is True
+        assert plan.pagination_capacity == 0, "pagination is opt-in"
+
+
+def test_raising_the_budget_buys_pagination_capacity():
+    from boro_gtm.discovery.live.plan import QueryBudget, plan_run
+
+    plan = plan_run(budget=QueryBudget(max_queries=200))
+    assert plan.planned_first_page_queries == 125
+    assert plan.max_queries == 200
+    assert plan.pagination_capacity == 75
+    assert plan.first_page_coverage_possible is True
+    assert "WARNING" not in plan.as_dict()
+
+
+def test_a_budget_below_first_page_coverage_warns_loudly_before_spend():
+    from boro_gtm.discovery.live.plan import QueryBudget, plan_run
+
+    plan = plan_run(budget=QueryBudget(max_queries=50))
+    payload = plan.as_dict()
+    assert plan.first_page_coverage_possible is False
+    assert plan.pagination_capacity == 0
+    warning = payload["WARNING"]
+    assert "125 steps planned" in warning
+    assert "75 would never be attempted" in warning
+    assert "Raise max_queries to 125" in warning
+
+
+def test_the_plan_reports_the_four_coverage_fields():
+    from boro_gtm.discovery.live.plan import SMOKE_METROS, plan_run
+
+    payload = plan_run(metros=SMOKE_METROS).as_dict()
+    for field in ("first_page_queries", "max_queries",
+                  "first_page_coverage_possible", "pagination_capacity"):
+        assert field in payload, field
+
+
+def test_phases_are_prefixes_so_they_cannot_drift_apart():
+    from boro_gtm.discovery.live.plan import METROS, PHASE_B_METROS, SMOKE_METROS
+
+    keys = tuple(m.key for m in METROS)
+    assert SMOKE_METROS == keys[:2]
+    assert PHASE_B_METROS == keys[:10]
+    assert SMOKE_METROS == PHASE_B_METROS[:2]

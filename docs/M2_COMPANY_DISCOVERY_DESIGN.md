@@ -1267,10 +1267,36 @@ are prefixes of one ordered list. Every record is attributable to a plan version
 an intent, a metro, a provider page and a page token, because a record is one
 place and one `DiscoveryQuery` is one provider page (M2-ADR-041).
 
+**Scheduling is breadth-first.** Round 1 is page 1 of every planned step, in plan
+order; round *n* revisits only the steps that returned a token. No second page is
+requested until every first page has been attempted, because with a bounded
+budget the traversal order *is* the sampling strategy — depth-first spent it
+paginating Dallas while Milwaukee was never asked (M2-ADR-050).
+
 **Budget.** `max_queries` and `max_results` are checked before each request, so a
-cap is never exceeded rather than noticed afterwards. `discovery plan-live` costs
-the plan and touches no network; `discovery run-live` requires `--yes` and checks
-the credential before anything is spent.
+cap is never exceeded rather than noticed afterwards. The default is *one page of
+every planned step*: smoke 10, phase B 50, the full plan 125. Pagination is
+opt-in. The plan states `first_page_queries`, `max_queries`,
+`first_page_coverage_possible` and `pagination_capacity` before any spend, and an
+explicit budget too small for full first-page coverage warns with the shortfall
+and the number that fixes it (M2-ADR-051).
+
+**Coverage is reported separately from success.** `status = COMPLETED` means the
+run finished without raising. Whether every planned metro and intent was actually
+asked is `first_page_coverage_complete`, beside
+`planned_first_page_queries`, `first_page_queries_issued`,
+`pagination_queries_issued` and `budget_stopped_at`. Hitting an intended budget is
+not a provider failure and does not become `PARTIAL_FETCH`.
+
+**Run metrics are run-scoped.** Every primary count describes what *this* run did,
+attributed through run → query → sighting → version → entity → resolution head,
+with created/matched/ambiguous/unchanged taken from `resolve_run`'s own counts.
+Database-wide totals appear only as `cumulative_*` (M2-ADR-049).
+
+`discovery plan-live` costs the plan and touches no network; `discovery run-live`
+requires `--yes`, checks the credential before anything is spent, and offers no
+partial-resolution control — a provider failure is `PARTIAL_FETCH` with evidence
+retained and nothing canonical written (M2-ADR-052).
 
 **Partial runs.** A provider or network failure leaves the run `PARTIAL_FETCH`
 with `fetch_completed_at` unset, so canonical writes stay blocked and the evidence

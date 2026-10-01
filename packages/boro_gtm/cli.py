@@ -279,7 +279,10 @@ def discovery_plan_live(
                       "list of metro keys.",
     ),
     intents: str = typer.Option(None, help="Comma-separated subset of the query intents."),
-    max_queries: int = typer.Option(50, help="Hard cap on provider requests."),
+    max_queries: int = typer.Option(
+        None, help="Hard cap on provider requests. Default: exactly one page of "
+                   "every planned step (breadth, no pagination).",
+    ),
     max_results: int = typer.Option(1000, help="Hard cap on records stored."),
 ) -> None:
     """Cost a live discovery plan. Touches no network and writes nothing.
@@ -318,13 +321,13 @@ def discovery_plan_live(
 def discovery_run_live(
     metros: str = typer.Option("smoke", help="`smoke`, `phase-b`, `all`, or metro keys."),
     intents: str = typer.Option(None, help="Comma-separated subset of the query intents."),
-    max_queries: int = typer.Option(50, help="Hard cap on provider requests."),
+    max_queries: int = typer.Option(
+        None, help="Hard cap on provider requests. Default: exactly one page of "
+                   "every planned step (breadth, no pagination).",
+    ),
     max_results: int = typer.Option(1000, help="Hard cap on records stored."),
     market: str | None = typer.Option(None, help="M1 market ISO2 code for context."),
     vertical: str | None = typer.Option(None, help="M1 vertical key for context."),
-    allow_partial: bool = typer.Option(
-        False, help="Permit canonical writes from a run that never completed its fetch."
-    ),
     yes: bool = typer.Option(
         False, "--yes", help="Required. Confirms real, billed provider requests.",
     ),
@@ -333,7 +336,12 @@ def discovery_run_live(
 
     `--yes` is mandatory and not a default, and the credential is checked before
     any request is made, so a missing key fails clearly rather than half-way
-    through a plan (§23).
+    through a plan.
+
+    There is no partial-resolution option on the live path. A provider or network
+    failure leaves the run `PARTIAL_FETCH` with its evidence retained and nothing
+    canonical written, which is the safe production behaviour; the fixture path
+    keeps its own `--allow-partial` for internal M2 work (M2-ADR-052).
     """
     _bootstrap()
     from sqlalchemy import select
@@ -397,9 +405,6 @@ def discovery_run_live(
                         details={"iso2": market.upper()},
                     )
             vertical_id = _vertical_id(session, vertical) if vertical else None
-            if allow_partial:
-                # Recorded on the run, exactly as the fixture path does.
-                pass
 
             with httpx.Client(timeout=30.0) as client:
                 adapter = GooglePlacesAdapter(client=client)

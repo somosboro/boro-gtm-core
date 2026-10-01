@@ -278,7 +278,7 @@ def test_two_place_ids_sharing_a_domain_do_not_merge_wrongly(m2, provider):
     # Recorded as a duplicate for the operator, never silently averaged away.
     assert report.canonical_companies == 2
     assert report.companies_with_identity_domain == 1
-    assert report.companies_without_domain == 1
+    assert report.companies_without_identity_domain == 1
     assert report.new_companies == 2
 
 
@@ -648,3 +648,219 @@ def test_a_discovered_company_is_researchable_by_m3_without_being_loaded(
     assert operational is not None
     assert operational.facts, "M3 produced operational facts for a discovered account"
     assert extraction_module.DEFAULT_EXTRACTORS, "the real extractors ran"
+
+
+# --- §1/§2 run-scoped metrics ------------------------------------------------
+
+
+def test_a_second_run_reports_only_its_own_companies(m2, provider):
+    """The defect: metrics were scoped by `provider_id`, not by the run.
+
+    Reproduced before the fix: run A discovered two companies, run B discovered
+    one, and B's report said three for `new_companies`, `canonical_companies` and
+    `companies_with_identity_domain` (M2-ADR-049).
+    """
+    first = _handler([{"places": [
+        _place("ChIJa1", "Alpha Mechanical", "https://alphamech.com/"),
+        _place("ChIJa2", "Beta Mechanical", "https://betamech.com/"),
+    ]}])
+    a = run_live_discovery(m2, provider=provider, adapter=_adapter(first),
+                           planned=_plan())
+    m2.flush()
+    assert a.canonical_companies == 2
+    assert a.new_companies == 2
+
+    second = _handler([{"places": [
+        _place("ChIJb1", "Gamma Mechanical", "https://gammamech.com/")]}])
+    b = run_live_discovery(m2, provider=provider, adapter=_adapter(second),
+                           planned=_plan(intents=("commercial HVAC service",)))
+    m2.flush()
+
+    assert b.provider_entities == 1
+    assert b.new_companies == 1, "run B created one company"
+    assert b.canonical_companies == 1, "and reached exactly one"
+    assert b.companies_with_identity_domain == 1
+    assert b.companies_without_identity_domain == 0
+
+    # The database-wide figure is available, under a name that cannot be mistaken
+    # for the run's own.
+    assert b.cumulative_canonical_companies == 3
+    assert b.cumulative_companies_with_identity_domain == 3
+
+
+def test_unrelated_companies_in_the_database_are_not_in_the_run_metrics(m2, provider):
+    """A company nothing in this run touched must not appear in its counts."""
+    import uuid as _uuid
+    from datetime import UTC, datetime
+
+    stranger = Company(id=_uuid.uuid4(), created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                       identity_policy_version="1.0", lifecycle_status="ACTIVE")
+    m2.add(stranger)
+    m2.flush()
+    m2.add(CompanyDomain(company_id=stranger.id, domain_normalized="stranger.com",
+                         domain_role="IDENTITY", derived_from_claim_ids=[]))
+    m2.flush()
+
+    handler = _handler([{"places": [
+        _place("ChIJa", "Only This One", "https://onlythisone.com/")]}])
+    report = run_live_discovery(m2, provider=provider, adapter=_adapter(handler),
+                               planned=_plan())
+    m2.flush()
+
+    assert report.canonical_companies == 1
+    assert report.companies_with_identity_domain == 1
+    assert report.cumulative_canonical_companies == 2, (
+        "the stranger is visible only in the cumulative figure"
+    )
+
+
+def test_the_run_counts_come_from_resolve_run_not_from_resolution_heads(m2, provider):
+    """A re-run over unchanged evidence created nothing and must say so.
+
+    An entity resolved by an earlier run still has a `CREATED_NEW` head, so
+    counting heads would report a creation that did not happen.
+    """
+    place = _place("ChIJsame", "Same Mechanical", "https://samemech.com/")
+    first = run_live_discovery(m2, provider=provider,
+                               adapter=_adapter(_handler([{"places": [place]}])),
+                               planned=_plan())
+    m2.flush()
+    assert first.new_companies == 1
+
+    again = run_live_discovery(
+        m2, provider=provider, adapter=_adapter(_handler([{"places": [place]}])),
+        planned=_plan(intents=("commercial HVAC service",)),
+    )
+    m2.flush()
+
+    assert again.new_companies == 0, "nothing new was observed"
+    assert again.unchanged_entities == 1
+    assert again.canonical_companies == 1, "it still reached one company"
+    assert m2.scalar(select(func.count()).select_from(Company)) == 1
+
+
+# --- §3 breadth before depth ------------------------------------------------
+
+
+def test_every_first_page_is_attempted_before_any_second_page(m2, provider):
+    """Depth-first spent the budget paginating Dallas while Milwaukee was never
+    asked. For market discovery the first page of every metro is worth more than
+    the third page of one (M2-ADR-050)."""
+    seen: list[dict] = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body)
+        return httpx.Response(200, json={
+            "places": [_place(f"ChIJ{len(seen)}", f"Co {len(seen)}",
+                              f"https://co{len(seen)}.com/")],
+            "nextPageToken": f"T{len(seen)}",
+        })
+
+    planned = _plan(metros=("dallas_tx", "atlanta_ga", "chicago_il"),
+                    intents=("commercial HVAC contractor",), max_queries=3)
+    report = run_live_discovery(m2, provider=provider, adapter=_adapter(handler),
+                                planned=planned)
+    m2.flush()
+
+    assert len(seen) == 3
+    assert report.first_page_queries_issued == 3
+    assert report.pagination_queries_issued == 0, "no second page before every first"
+    # Every planned metro got its first page, and none was paginated.
+    assert [b.get("pageToken") for b in seen] == [None, None, None]
+    metros = [b["textQuery"].split(" in ")[-1] for b in seen]
+    assert len(set(metros)) == 3
+
+
+def test_a_budget_with_room_to_spare_paginates_only_after_full_breadth(m2, provider):
+    seen: list[dict] = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body)
+        return httpx.Response(200, json={
+            "places": [_place(f"ChIJ{len(seen)}", f"Co {len(seen)}",
+                              f"https://co{len(seen)}.com/")],
+            "nextPageToken": f"T{len(seen)}",
+        })
+
+    planned = _plan(metros=("dallas_tx", "atlanta_ga", "chicago_il"),
+                    intents=("commercial HVAC contractor",), max_queries=4)
+    report = run_live_discovery(m2, provider=provider, adapter=_adapter(handler),
+                                planned=planned)
+    m2.flush()
+
+    assert len(seen) == 4
+    assert report.first_page_queries_issued == 3
+    assert report.pagination_queries_issued == 1
+    # The first three carried no token; only the fourth did.
+    assert [b.get("pageToken") for b in seen[:3]] == [None, None, None]
+    assert seen[3].get("pageToken") is not None
+
+
+def test_only_steps_that_returned_a_token_are_revisited(m2, provider):
+    """Round two asks the steps that have more, and nobody else."""
+    seen: list[dict] = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body)
+        # Only Dallas has a second page.
+        has_more = "Dallas" in body["textQuery"] and body.get("pageToken") is None
+        payload = {"places": [_place(f"ChIJ{len(seen)}", f"Co {len(seen)}",
+                                     f"https://co{len(seen)}.com/")]}
+        if has_more:
+            payload["nextPageToken"] = "DALLAS2"
+        return httpx.Response(200, json=payload)
+
+    planned = _plan(metros=("dallas_tx", "atlanta_ga"),
+                    intents=("commercial HVAC contractor",), max_queries=10)
+    report = run_live_discovery(m2, provider=provider, adapter=_adapter(handler),
+                                planned=planned)
+    m2.flush()
+
+    assert report.first_page_queries_issued == 2
+    assert report.pagination_queries_issued == 1
+    paginated = [b for b in seen if b.get("pageToken")]
+    assert len(paginated) == 1
+    assert "Dallas" in paginated[0]["textQuery"]
+
+
+# --- §5 coverage is stated, not implied -------------------------------------
+
+
+def test_a_completed_run_states_whether_it_covered_the_whole_plan(m2, provider):
+    handler = _handler([{"places": [
+        _place("ChIJa", "A Mechanical", "https://amech.com/")]}])
+    planned = _plan(metros=("dallas_tx", "atlanta_ga", "chicago_il"),
+                    intents=("commercial HVAC contractor",))
+    report = run_live_discovery(m2, provider=provider, adapter=_adapter(handler),
+                                planned=planned)
+    m2.flush()
+
+    assert report.status == "COMPLETED"
+    assert report.planned_first_page_queries == 3
+    assert report.first_page_queries_issued == 3
+    assert report.first_page_coverage_complete is True
+
+
+def test_a_truncated_run_says_so_even_though_it_completed(m2, provider):
+    """`COMPLETED` means "finished without error", not "asked everything"."""
+    def handler(request):
+        return httpx.Response(200, json={"places": [
+            _place("ChIJa", "A Mechanical", "https://amech.com/")]})
+
+    planned = _plan(metros=("dallas_tx", "atlanta_ga", "chicago_il"),
+                    intents=("commercial HVAC contractor",), max_queries=2)
+    report = run_live_discovery(m2, provider=provider, adapter=_adapter(handler),
+                                planned=planned)
+    m2.flush()
+
+    assert report.status == "COMPLETED"
+    assert report.fetch_complete is True
+    assert report.planned_first_page_queries == 3
+    assert report.first_page_queries_issued == 2
+    assert report.first_page_coverage_complete is False, (
+        "one planned metro was never asked, and the report has to say that"
+    )
+    assert report.budget_stopped_at == "MAX_QUERIES"
