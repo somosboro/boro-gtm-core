@@ -169,7 +169,7 @@ def test_the_display_name_is_stored_as_a_trading_name_not_a_legal_name(m2, provi
 
 def test_a_first_party_website_becomes_the_identity_domain(m2, provider):
     handler = _handler([{"places": [
-        _place("ChIJa", "Big Mechanical Inc", "https://www.bigmechanical.com/contact")]}])
+        _place("ChIJa", "Big Mechanical Inc", "https://www.bigmechanical.com/")]}])
     run_live_discovery(m2, provider=provider, adapter=_adapter(handler),
                        planned=_plan())
     m2.flush()
@@ -202,7 +202,9 @@ def test_a_directory_or_platform_website_never_becomes_identity(m2, provider, we
     identity = report_domains(m2)
     assert identity == set(), f"{website} must not carry identity"
     roles = set(m2.scalars(select(CompanyDomain.domain_role)).all())
-    assert roles <= {"GROUP"}, "a shared host is recorded, and it is not identity"
+    # A platform's own domain is GROUP; a tenant hostname on one is ALTERNATE
+    # (M2-ADR-054). Either way the host is recorded, and it is not identity.
+    assert roles <= {"GROUP", "ALTERNATE"}
 
 
 # --- §12 resolution convergence --------------------------------------------
@@ -864,3 +866,177 @@ def test_a_truncated_run_says_so_even_though_it_completed(m2, provider):
         "one planned metro was never asked, and the report has to say that"
     )
     assert report.budget_stopped_at == "MAX_QUERIES"
+
+
+# --- identity correction: shared hosts and deep paths (M2-ADR-053..055) ------
+#
+# Every case below is two *sequential* runs. The deterministic match reads the
+# domain projection, which a run only rebuilds when it finishes, so a
+# single-run test would pass for the wrong reason.
+
+
+def _two_runs(m2, provider, first, second):
+    """Discover `first`, then `second` in a later run. Returns the second report."""
+    run_live_discovery(m2, provider=provider,
+                       adapter=_adapter(_handler([{"places": [first]}])),
+                       planned=_plan())
+    m2.flush()
+    report = run_live_discovery(m2, provider=provider,
+                                adapter=_adapter(_handler([{"places": [second]}])),
+                                planned=_plan())
+    m2.flush()
+    return report
+
+
+def _decisions(m2) -> list[str]:
+    return sorted(m2.scalars(select(EntityResolutionDecision.decision)).all())
+
+
+def _domain_rows(m2) -> set[tuple[str, str]]:
+    return set(m2.execute(select(CompanyDomain.domain_normalized,
+                                 CompanyDomain.domain_role)).all())
+
+
+@pytest.mark.parametrize("platform", [
+    "lovable.app", "web.app", "pages.dev", "vercel.app", "github.io",
+])
+def test_two_tenants_of_one_hosting_platform_are_two_companies(m2, provider, platform):
+    """The Phase A finding. `foo.lovable.app` once normalized to `lovable.app`
+    and took it as IDENTITY, so the next tenant merged into the first."""
+    report = _two_runs(
+        m2, provider,
+        _place("ChIJfoo", "Foo Heating & Air", f"https://foo.{platform}/"),
+        _place("ChIJbar", "Bar Mechanical", f"https://bar.{platform}/"),
+    )
+
+    assert report.matched_companies == 0
+    assert _decisions(m2) == ["CREATED_NEW", "CREATED_NEW"]
+    assert m2.scalar(select(func.count()).select_from(Company)) == 2
+    # Each tenant keeps its own hostname, as evidence and not as identity.
+    assert _domain_rows(m2) == {(f"foo.{platform}", "ALTERNATE"),
+                                (f"bar.{platform}", "ALTERNATE")}
+    assert report_domains(m2) == set()
+
+
+def test_tenants_of_a_platform_no_list_knows_are_still_two_companies(m2, provider):
+    """The invariant does not depend on the platform being listed anywhere."""
+    report = _two_runs(
+        m2, provider,
+        _place("ChIJfoo", "Foo Heating & Air", "https://foo.brand-new-host.app/"),
+        _place("ChIJbar", "Bar Mechanical", "https://bar.brand-new-host.app/"),
+    )
+
+    assert report.matched_companies == 0
+    assert m2.scalar(select(func.count()).select_from(Company)) == 2
+    assert report_domains(m2) == set()
+    assert {role for _, role in _domain_rows(m2)} == {"GROUP"}
+
+
+def test_two_franchisees_on_the_franchisor_domain_are_two_companies(m2, provider):
+    """Aire Serv of Dallas, from Phase A: a location page is not the franchisee's
+    domain, and the next franchisee must not merge into the first."""
+    report = _two_runs(
+        m2, provider,
+        _place("ChIJdal", "Aire Serv of Dallas", "https://aireserv.com/dallas/"),
+        _place("ChIJatl", "Aire Serv of Atlanta", "https://aireserv.com/atlanta/",
+               city="Atlanta"),
+    )
+
+    assert report.matched_companies == 0
+    assert _decisions(m2) == ["CREATED_NEW", "CREATED_NEW"]
+    assert m2.scalar(select(func.count()).select_from(Company)) == 2
+    assert report_domains(m2) == set(), "a deep path never supplies identity"
+    assert _domain_rows(m2) == {("aireserv.com", "GROUP")}
+
+
+def test_two_brands_of_one_parent_are_two_companies(m2, provider):
+    """Almcoe Refrigeration, from Phase A: a page under the parent's `/providers/`."""
+    report = _two_runs(
+        m2, provider,
+        _place("ChIJa", "Subsidiary A", "https://group.com/brands/a/"),
+        _place("ChIJb", "Subsidiary B", "https://group.com/brands/b/"),
+    )
+
+    assert report.matched_companies == 0
+    assert m2.scalar(select(func.count()).select_from(Company)) == 2
+    assert report_domains(m2) == set()
+
+
+def test_a_franchisee_page_does_not_merge_into_the_franchisor(m2, provider):
+    """The franchisor's own root listing holds the domain as identity. A page
+    beneath it is somebody else."""
+    report = _two_runs(
+        m2, provider,
+        _place("ChIJhq", "Aire Serv", "https://aireserv.com/"),
+        _place("ChIJdal", "Aire Serv of Dallas", "https://aireserv.com/dallas/"),
+    )
+
+    assert report.matched_companies == 0
+    assert m2.scalar(select(func.count()).select_from(Company)) == 2
+    assert report_domains(m2) == {"aireserv.com"}
+    assert _domain_rows(m2) == {("aireserv.com", "IDENTITY"), ("aireserv.com", "GROUP")}
+
+
+def test_a_root_website_is_still_an_identity_and_still_matches(m2, provider):
+    """The correction must not cost the ordinary case: one company, two listings
+    of its own root domain, found in two runs."""
+    report = _two_runs(
+        m2, provider,
+        _place("ChIJhq", "McKenney's Inc", "https://mckenneys.com/"),
+        _place("ChIJbr", "McKenney's Inc", "https://www.mckenneys.com", city="Marietta"),
+    )
+
+    assert report.matched_companies == 1
+    assert _decisions(m2) == ["CREATED_NEW", "MATCHED"]
+    assert m2.scalar(select(func.count()).select_from(Company)) == 1
+    assert _domain_rows(m2) == {("mckenneys.com", "IDENTITY")}
+
+
+@pytest.mark.parametrize("tagged", [
+    "https://mckenneys.com/?utm_source=google",
+    "https://www.mckenneys.com/?utm_source=google&utm_medium=gbp&utm_campaign=x",
+    "https://mckenneys.com/?gclid=EAIaIQobChMI",
+    "https://mckenneys.com/?cid=LSTL-1&se_campaign=local",
+])
+def test_a_tracking_tag_does_not_demote_a_root_website(m2, provider, tagged):
+    """22 of the 115 Phase A websites carried a campaign tag. They are roots."""
+    report = _two_runs(
+        m2, provider,
+        _place("ChIJhq", "McKenney's Inc", "https://mckenneys.com/"),
+        _place("ChIJbr", "McKenney's Inc", tagged, city="Marietta"),
+    )
+
+    assert report.matched_companies == 1
+    assert m2.scalar(select(func.count()).select_from(Company)) == 1
+    assert _domain_rows(m2) == {("mckenneys.com", "IDENTITY")}
+
+
+def test_a_deep_path_keeps_the_domain_as_evidence(m2, provider):
+    """Demoted, not discarded: the company exists and the domain is on file."""
+    handler = _handler([{"places": [
+        _place("ChIJa", "Big Mechanical Inc", "https://www.bigmechanical.com/contact")]}])
+    report = run_live_discovery(m2, provider=provider, adapter=_adapter(handler),
+                                planned=_plan())
+    m2.flush()
+
+    assert report.new_companies == 1
+    assert report.companies_with_identity_domain == 0
+    assert _domain_rows(m2) == {("bigmechanical.com", "GROUP")}
+    # The listed URL itself is untouched in the stored body.
+    body = m2.scalar(select(ProviderRecordVersion.parsed_payload))
+    assert body["websiteUri"] == "https://www.bigmechanical.com/contact"
+
+
+def test_a_tenant_site_is_not_handed_to_research_as_the_platform(m2, provider):
+    """M3 asks M2 which hosts are this company. A tenant hostname is not an
+    identity-capable domain, and the platform must never be in scope for it."""
+    from boro_gtm.research.live.discovery import NoResearchableDomainError, domain_scope
+
+    handler = _handler([{"places": [
+        _place("ChIJa", "Express Heating & Air", "http://expressheatingandair.lovable.app/")]}])
+    run_live_discovery(m2, provider=provider, adapter=_adapter(handler), planned=_plan())
+    m2.flush()
+    company_id = m2.scalar(select(Company.id))
+
+    with pytest.raises(NoResearchableDomainError):
+        domain_scope(m2, company_id)

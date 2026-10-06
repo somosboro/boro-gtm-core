@@ -20,7 +20,7 @@ from boro_gtm.discovery.enums import ClaimAssertion
 from boro_gtm.discovery.providers.base import CandidateCompany
 from boro_gtm.discovery.registry import ATTRIBUTE_REGISTRY_VERSION, get_definition
 from boro_gtm.discovery.services.resolution import (
-    is_identity_domain,
+    domain_role,
     normalize_domain,
     normalize_name,
 )
@@ -123,12 +123,14 @@ def write_claims_for_candidate(
 
     domain = normalize_domain(candidate.registrable_domain)
     if domain:
-        # A shared hosting domain is where a company lives, not who it is
-        # (design §8), so it is recorded as GROUP and never carries identity.
-        add("domain",
-            {"value": domain,
-             "role": "IDENTITY" if is_identity_domain(domain) else "GROUP"},
-            FactType.FACT.value)
+        # Where a company lives is not who it is (design §8). A platform's own
+        # domain is GROUP, a tenant hostname on one is ALTERNATE, and a domain
+        # the record only has a page on is GROUP whatever the domain itself
+        # could be for its real owner (M2-ADR-054, M2-ADR-055).
+        role = domain_role(domain) or "GROUP"
+        if candidate.registrable_domain_shared and role == "IDENTITY":
+            role = "GROUP"
+        add("domain", {"value": domain, "role": role}, FactType.FACT.value)
     for other in candidate.other_domains:
         normalized = normalize_domain(other)
         if normalized and normalized != domain:

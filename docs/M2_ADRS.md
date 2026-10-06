@@ -1544,3 +1544,188 @@ partial-live semantics are not invented in this phase.
 * **Generalisable:** a flag that looks like a safety control and does nothing is
   worse than its absence — it answers the question an operator was right to ask,
   wrongly.
+
+---
+
+## M2-ADR-053 — A registrable domain comes from the Public Suffix List
+
+**Status:** accepted (identity correction after the first live run)
+
+### Context
+
+`normalize_domain` took the last two labels of a host, with six hand-written
+two-label suffixes. The first paid Google Places run returned a real contractor
+whose website was `expressheatingandair.lovable.app`. It normalized to
+`lovable.app` and was written as that company's `IDENTITY` domain.
+
+`lovable.app` is a hosting platform. An offline replay then showed an unrelated
+listing on `a-totally-different-company.lovable.app` being `MATCHED` into the
+first company by `identity_domain_exact`. No wrong merge happened in the real
+data only because the run contained one tenant of that platform.
+
+The shared-host blocklist did not catch it and could not have: it listed 56
+hosts, and `lovable.app`, `web.app`, `pages.dev`, `webflow.io`,
+`herokuapp.com`, `azurewebsites.net` and `firebaseapp.com` were not among them.
+A list of platforms is always one platform behind.
+
+M3 carried the same assumption in `research.policies.registrable_domain`, where
+it decides research scope: a company on `acme.co.uk` had `co.uk` in scope.
+
+### Decision
+
+The registrable domain is computed from the Public Suffix List, **private
+section included**. Under it `lovable.app` is a suffix other people register
+beneath, exactly as `co.uk` is, so `foo.lovable.app` and `bar.lovable.app` are
+two registrable domains.
+
+* The list is a snapshot committed at
+  `packages/boro_gtm/core/data/public_suffix_list.dat`, read by
+  `boro_gtm.core.public_suffix`. Nothing fetches it at runtime, so the answer is
+  the same offline, in CI and in production.
+* Its SHA-256 is pinned in code. An edited or truncated file raises
+  `PublicSuffixSnapshotError` rather than quietly changing which companies are
+  the same company. Updating the list is one reviewed change to the file and the
+  digest together.
+* One implementation, used by M2 (`normalize_domain`) and by M3
+  (`registrable_domain`, for scope and publisher identity).
+* Raw evidence is untouched. Stored bodies keep the URL the provider returned;
+  only what is derived from it changed.
+
+A host that is itself a private suffix (`github.io`) still has an owner, so it
+falls back to its ICANN reading for *recording* and is never identity.
+
+### Consequences
+
+* `co.uk`, `com.au` and the other four keep working, now with the other several
+  thousand suffixes they stood in for.
+* Tenants of blocklisted platforms that the list also knows (`wixsite.com`,
+  `github.io`, `vercel.app`) are no longer collapsed to the platform: each keeps
+  its own hostname. The blocklist remains for hosts the list does not describe:
+  directories, social networks, booking platforms.
+* A legitimately registered name under a private registry suffix
+  (`contractor.us.com`) is treated as a tenant and loses identity. That is the
+  conservative direction and is accepted.
+* **Generalisable:** when a rule has a hand-kept list of exceptions and the
+  world has a maintained one, the hand-kept list is a sample of the bug, not a
+  fix for it.
+
+---
+
+## M2-ADR-054 — A tenant hostname on a third-party platform is `ALTERNATE`
+
+**Status:** accepted (identity correction after the first live run)
+
+### Context
+
+With M2-ADR-053 a tenant hostname survives normalization. It then needs a role,
+and M2 has three that could be argued for.
+
+* `IDENTITY` — the hostname belongs to one tenant, so an exact match on it is a
+  same-site signal.
+* `GROUP` — the role M2 already gives a shared host, and what the blocklist
+  produced for these platforms before.
+* `ALTERNATE` — a domain associated with the company that does not carry
+  identity.
+
+### Decision
+
+**`ALTERNATE`.**
+
+It is not `GROUP`, because it is not shared: `expressheatingandair.lovable.app`
+is one company's site and nobody else's. Recording it as `GROUP` would say
+something false about it and would make it a `shared_group_domain` scoring
+signal between unrelated listings.
+
+It is not `IDENTITY`, because the company does not hold the registration. The
+platform does, and it can release or reassign the name. An identity key must be
+something the organisation controls; a tenancy is not.
+
+`domain_role()` is the single place this is decided:
+
+| Domain | Role |
+|---|---|
+| Registered by the organisation (`mckenneys.com`) | `IDENTITY` |
+| Tenant of a private suffix (`foo.lovable.app`) | `ALTERNATE` |
+| The platform's own domain (`lovable.app`), or a blocklisted host | `GROUP` |
+
+Only `IDENTITY` takes part in `identity_domain_exact`, so two tenants of one
+platform cannot deterministically match — and neither can two listings of the
+*same* tenant, which is the accepted cost.
+
+The projection applies the same function, so a claim written as `IDENTITY`
+before this decision is demoted the next time projections are rebuilt.
+
+### Consequences
+
+* The company anchor is still created. A Places listing has a provider-native
+  id; only its domain stopped being an identity key.
+* M3 does not research a tenant site today: its scope requires an
+  identity-capable domain. The site is the company's own first-party content,
+  so this is a recall gap, recorded as a follow-up rather than widened here.
+* **Generalisable:** "unique to this company" and "controlled by this company"
+  are different properties, and identity needs the second.
+
+---
+
+## M2-ADR-055 — Only the root of a listed website supplies an identity domain
+
+**Status:** accepted (identity correction after the first live run)
+
+### Context
+
+Two real listings from the first live run:
+
+* *Aire Serv of Dallas* → `https://www.aireserv.com/dallas/?cid=…`
+* *Almcoe Refrigeration* → `https://smartcaresolutions.com/providers/almcoe-refrigeration/`
+
+Both were written with the franchisor's or parent's domain as `IDENTITY`. The
+next franchisee or sibling brand discovered would have matched into them.
+
+A listed website such as `https://franchisor.com/location/` does not establish
+that the registrable domain identifies the local operating account. It
+establishes that the account has a page there.
+
+### Decision
+
+For the Google Places adapter, `website_identity()` classifies the listed URL:
+
+| Shape | Example | Supplies identity |
+|---|---|---|
+| `ROOT` | `https://contractor.com/`, `…/index.html`, `…/home` | yes |
+| `ROOT` with tracking parameters | `https://contractor.com/?utm_source=google` | yes |
+| `DEEP_PATH` | `https://aireserv.com/dallas/` | no |
+| `CONTENT_QUERY` | `https://franchisor.com/?location=dallas` | no |
+| `SUBDOMAIN` | `https://dallas.franchisor.com/` | no |
+
+A non-root URL sets `CandidateCompany.registrable_domain_shared`. A shared
+domain is skipped by `identity_domain_exact` and written as `GROUP`. No new
+domain role and no new table: `GROUP` already means "a domain this company sits
+behind without holding alone".
+
+**Tracking parameters are noise, not shape.** 22 of the 115 websites in the
+first run carried one. `utm_*` and a named set of click identifiers are ignored;
+the set includes `cid` and `se_campaign` because the real corpus contained them.
+A parameter this module cannot name is treated as content — the cost of being
+wrong is one company without an identity domain, never a merge.
+
+**`SUBDOMAIN` is what makes the invariant independent of any list.** A hosting
+platform the Public Suffix List has never heard of still presents its tenants as
+subdomains of a domain somebody else registered, and those never supply
+identity.
+
+The adapter's `normalizer_version` moved to `2`, so normalizations stored under
+`1` are re-derived rather than reused.
+
+### Consequences
+
+* Replaying the first run's 121 real places: 8 deep-path listings move from
+  `IDENTITY` to `GROUP`. Two were the franchisor and parent cases. The other six
+  are contractors whose listing links to a page on what is probably their own
+  domain (`bellmechanicalllc.com/form__map`). They keep their anchor and their
+  domain as evidence, and lose deterministic matching and M3 research until a
+  root listing or a reviewer establishes the domain. That recall is spent
+  deliberately.
+* The policy is the adapter's, not the resolver's. Another provider that knows
+  more about a URL may decide differently; the resolver only honours the flag.
+* **Generalisable:** a URL is two claims, where and what. Identity may be read
+  from the first only when the second is "everything".

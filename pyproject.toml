@@ -50,6 +50,10 @@ build-backend = "setuptools.build_meta"
 where = ["packages"]
 include = ["boro_gtm*"]
 
+[tool.setuptools.package-data]
+# The Public Suffix List snapshot normalization reads at runtime (M2-ADR-053).
+boro_gtm = ["core/data/*.dat"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["integration: requires a live PostgreSQL database"]

@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from boro_gtm.core import public_suffix
 from boro_gtm.research.enums import (
     CanonicalizationStrategy,
     SourceClass,
@@ -92,11 +93,17 @@ def host_of(normalized: str) -> str:
 
 
 def registrable_domain(host: str) -> str:
-    """Last two labels. Adequate for fixtures; a public-suffix list is not.
+    """The registrable domain under the Public Suffix List (M2-ADR-053).
 
-    Named honestly rather than pretending: `co.uk` would be wrong here, and no
-    fixture uses one.
+    Research scope and publisher identity are both keyed on this, so it must be
+    the same answer M2 gives: with "the last two labels", a company on
+    `acme.co.uk` had `co.uk` in scope, and two tenants of one hosting platform
+    were one publisher. A name the list cannot place (a bare label, an address)
+    keeps its old reading rather than becoming nothing.
     """
+    known = public_suffix.registrable_domain(host)
+    if known:
+        return known
     labels = host.split(".")
     return ".".join(labels[-2:]) if len(labels) >= 2 else host
 
@@ -266,7 +273,7 @@ PUBLISHER_BY_DOMAIN: dict[str, Publisher] = {
         "meridianmechanical", SourceClass.COMPANY_OWN_SITE.value
     ),
     "hvacjobsboard.example": Publisher("hvacjobsboard", SourceClass.JOB_BOARD.value),
-    # Keyed on the *registrable* domain, which is the last two labels: the
+    # Keyed on the *registrable* domain, not the host that served the page: the
     # registry lives at `sos.ohio.example`, so keying it there made every
     # registry filing fall through to UNKNOWN and lose a whole trust tier.
     "ohio.example": Publisher("ohio-sos", SourceClass.GOVERNMENT_REGISTRY.value),

@@ -94,6 +94,11 @@ class CandidateCompany:
     legal_name: str | None = None
     trading_names: list[str] = field(default_factory=list)
     registrable_domain: str | None = None
+    #: The record points at this domain without holding it alone: its website
+    #: is a page on a franchisor's or parent's site, or a subdomain of a domain
+    #: someone else registered. The domain is recorded as GROUP and never takes
+    #: part in a deterministic identity match (M2-ADR-055).
+    registrable_domain_shared: bool = False
     other_domains: list[str] = field(default_factory=list)
     country: str | None = None
     city: str | None = None

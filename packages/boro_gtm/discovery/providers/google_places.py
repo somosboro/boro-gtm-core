@@ -17,7 +17,6 @@ import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
 
 from boro_gtm.core.errors import GtmError
 from boro_gtm.discovery.enums import ProviderIdentityCapability
@@ -27,10 +26,14 @@ from boro_gtm.discovery.providers.base import (
     ProviderCapabilities,
     RawRecord,
 )
+from boro_gtm.discovery.website_identity import website_identity
 
 PROVIDER_KEY = "google_places"
 ADAPTER_VERSION = "1.0.0"
-NORMALIZER_VERSION = "1"
+#: 2 — a listed website only supplies an identity domain when it is the root of a
+#: domain; a deep path or a foreign subdomain is recorded as shared (M2-ADR-055).
+#: Bumped so normalizations stored under 1 are re-derived, not reused.
+NORMALIZER_VERSION = "2"
 SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 
 #: The environment variable the key is read from. Never persisted, never logged,
@@ -240,8 +243,11 @@ class GooglePlacesAdapter(ProviderAdapter):
                     return (entry.get("shortText") or entry.get("longText") or "").strip() or None
             return None
 
-        website = (parsed.get("websiteUri") or "").strip()
-        host = urlsplit(website).hostname if website else None
+        # The listed website is the only identity evidence a place carries, and
+        # only its root says "this domain is mine". A page deep inside a
+        # franchisor's or parent's site keeps the domain as evidence and drops
+        # it as identity (M2-ADR-055).
+        website = website_identity(parsed.get("websiteUri"))
 
         # Provider taxonomy, carried as hints. M2's claim writer records these
         # as PROXY: a Places category is what Google filed the business under,
@@ -254,7 +260,8 @@ class GooglePlacesAdapter(ProviderAdapter):
         return CandidateCompany(
             legal_name=None,
             trading_names=[display] if display else [],
-            registrable_domain=host,
+            registrable_domain=website.host,
+            registrable_domain_shared=website.shared,
             country=component("country"),
             city=component("locality", "postal_town", "administrative_area_level_3"),
             postal_code=component("postal_code"),
@@ -265,5 +272,6 @@ class GooglePlacesAdapter(ProviderAdapter):
                 "place_id": parsed.get("id"),
                 "business_status": parsed.get("businessStatus"),
                 "location": parsed.get("location"),
+                "website_shape": website.shape,
             },
         )

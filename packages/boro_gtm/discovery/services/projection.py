@@ -53,6 +53,7 @@ from boro_gtm.discovery.registry import (
     IDENTITY_POLICY_VERSION,
 )
 from boro_gtm.discovery.services.resolution import (
+    domain_role,
     is_identity_domain,
     rebuild_heads,
 )
@@ -329,8 +330,9 @@ def _project_domains(session, by_company) -> None:
             role = value.get("role", "ALTERNATE")
             if role == "IDENTITY" and not is_identity_domain(domain):
                 # Policy is enforced where the projection is written, not left
-                # to every reader to re-apply.
-                role = "GROUP"
+                # to every reader to re-apply. A claim written before the policy
+                # tightened is demoted to what the domain may be today.
+                role = domain_role(domain) or "GROUP"
             if role == "IDENTITY":
                 roles[domain] = "IDENTITY"
             roles.setdefault(domain, role)

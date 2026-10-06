@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from boro_gtm.core import public_suffix
 from boro_gtm.discovery.domain.models import (
     Company,
     CompanyDomain,
@@ -103,26 +104,31 @@ class ResolutionOutcome:
     written: bool = True
 
 
-def normalize_domain(domain: str | None) -> str | None:
-    """Reduce to the registrable domain. Subdomains are never identity."""
+def _bare_host(domain: str | None) -> str | None:
+    """The host inside whatever a provider handed over: a URL, or a bare name."""
     if not domain:
         return None
-    value = domain.strip().lower().rstrip(".")
+    value = domain.strip().lower()
     for prefix in ("https://", "http://"):
         if value.startswith(prefix):
             value = value[len(prefix):]
-    value = value.split("/")[0].split("?")[0]
+    value = value.split("/")[0].split("?")[0].split("#")[0]
+    value = value.rsplit("@", 1)[-1].split(":")[0].rstrip(".")
     if value.startswith("www."):
         value = value[4:]
-    if not value or "." not in value:
-        return None
-    # Two-label public suffixes we handle explicitly; a full Public Suffix List
-    # belongs in the first production adapter, not in a fixture-only engine.
-    parts = value.split(".")
-    two_label_suffixes = {"co.uk", "com.au", "co.nz", "com.br", "co.jp", "com.mx"}
-    if len(parts) >= 3 and ".".join(parts[-2:]) in two_label_suffixes:
-        return ".".join(parts[-3:])
-    return ".".join(parts[-2:])
+    return value or None
+
+
+def normalize_domain(domain: str | None) -> str | None:
+    """Reduce to the registrable domain under the Public Suffix List.
+
+    Subdomains of a company's own domain are dropped: `shop.acme.de` is
+    `acme.de`. A *tenant* of a hosting platform is not a subdomain in that
+    sense. `someone.lovable.app` stays `someone.lovable.app`, because the list's
+    private section says other people register beneath `lovable.app`, and
+    collapsing to it would hand every tenant the same identity (M2-ADR-053).
+    """
+    return public_suffix.registrable_domain(_bare_host(domain))
 
 
 def normalize_name(name: str | None) -> str | None:
@@ -142,10 +148,34 @@ def normalize_name(name: str | None) -> str | None:
     return value or None
 
 
+def domain_role(domain: str | None) -> str | None:
+    """The strongest role M2 may give a domain: IDENTITY, ALTERNATE or GROUP.
+
+    `IDENTITY` — a domain an organisation registered for itself. The only role
+        that takes part in `identity_domain_exact`.
+    `ALTERNATE` — a tenant hostname on somebody else's platform
+        (`someone.lovable.app`). It is this company's site and nobody else's,
+        so it is not shared; but the company does not hold the registration and
+        the platform can reassign the name, so it never decides identity
+        (M2-ADR-054).
+    `GROUP` — a host many unrelated companies sit behind: the platform's own
+        domain, a directory, a social network.
+    """
+    parts = public_suffix.split(_bare_host(domain))
+    if parts is None:
+        return None
+    if parts.private:
+        return "ALTERNATE" if parts.registrable else "GROUP"
+    if parts.registrable is None:
+        return None
+    if parts.registrable in DOMAIN_BLOCKLIST:
+        return "GROUP"
+    return "IDENTITY"
+
+
 def is_identity_domain(domain: str | None) -> bool:
     """Whether a domain may stand alone as identity (design §8)."""
-    normalized = normalize_domain(domain)
-    return bool(normalized) and normalized not in DOMAIN_BLOCKLIST
+    return domain_role(domain) == "IDENTITY"
 
 
 def has_identity_collision(session: Session, entity: ProviderEntity) -> bool:
@@ -324,6 +354,11 @@ def current_head(session: Session, provider_entity_id: uuid.UUID
 def _deterministic_match(session: Session, candidate: CandidateCompany
                          ) -> uuid.UUID | None:
     """Exact identity-domain match, subject to the domain policy."""
+    if candidate.registrable_domain_shared:
+        # The provider pointed at a page on a domain the record does not hold
+        # alone — a franchisor's location page, a parent's brand page. Sharing
+        # that domain is not evidence of being the same company (M2-ADR-055).
+        return None
     domain = normalize_domain(candidate.registrable_domain)
     if not domain or not is_identity_domain(domain):
         return None

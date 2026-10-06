@@ -203,6 +203,32 @@ def test_a_blocklisted_platform_host_cannot_be_crawled_even_as_identity(session)
         domain_scope(session, company.id)
 
 
+def test_scope_is_the_registrable_domain_not_its_public_suffix(session):
+    """With "the last two labels", a company on `acme.co.uk` had `co.uk` in scope
+    — every British company's website (M2-ADR-053)."""
+    seed_all(session)
+    session.flush()
+    company = _company(session, name="Acme Mechanical",
+                       domains=(("acme.co.uk", "IDENTITY"),))
+    scope = domain_scope(session, company.id)
+
+    assert set(scope.registrable) == {"acme.co.uk"}
+    assert scope.allows("https://www.acme.co.uk/services")
+    assert not scope.allows("https://someone-else.co.uk/")
+    assert not scope.allows("https://co.uk/")
+
+
+def test_a_tenant_hostname_is_never_researched_as_its_platform(session):
+    """Whatever role a row claims, `lovable.app` is not this company's site."""
+    seed_all(session)
+    session.flush()
+    for role in ("IDENTITY", "ALTERNATE"):
+        company = _company(session, name=f"Express Heating {role}",
+                           domains=(("expressheatingandair.lovable.app", role),))
+        with pytest.raises(NoResearchableDomainError):
+            domain_scope(session, company.id)
+
+
 def test_a_defunct_domain_is_out_of_scope(session):
     seed_all(session)
     session.flush()

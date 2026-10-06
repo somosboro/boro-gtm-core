@@ -1320,6 +1320,28 @@ gtm discovery run-live  --metros smoke --yes    # real, billed requests
 gtm discovery evaluate-holdout known.csv        # offline scoring
 ```
 
+### 14a.1 Identity from a listed website (after the first live run)
+
+The first paid run (10 requests, 121 places, 115 companies) produced no wrong
+merge and proved two ways one would happen. Both are closed, and the run was
+replayed offline against the correction.
+
+| | Before | After |
+|---|---|---|
+| Registrable domain | last two labels + six exceptions | Public Suffix List, private section included (M2-ADR-053) |
+| `foo.lovable.app` | `lovable.app`, `IDENTITY` | `foo.lovable.app`, `ALTERNATE` (M2-ADR-054) |
+| `https://aireserv.com/dallas/` | `aireserv.com`, `IDENTITY` | `aireserv.com`, `GROUP` (M2-ADR-055) |
+| `https://contractor.com/?utm_source=google` | `IDENTITY` | `IDENTITY` — tracking is not shape |
+
+Replay of the real corpus: company anchors 115 → 115, `IDENTITY` domains
+113 → 104, `GROUP` 2 → 10, `ALTERNATE` 0 → 1, ambiguous entities 6 → 6.
+
+Known and deliberately not addressed here: two places sharing a root domain
+within one run still create two anchors (the deterministic match reads a
+projection the run has not rebuilt yet); `canonical_name` is empty for
+Places-only companies; Google reorders `types` between responses, creating
+versions that differ only in order; M3 does not research a tenant-hosted site.
+
 ## 15. How M3 consumes M2
 
 M3 (Operational Research) takes a canonical company and gathers operational

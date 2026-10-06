@@ -109,14 +109,15 @@ def test_shared_platform_domain_does_not_merge_distinct_companies(
                external_id="B")])
     assert stats["created"] == 1
     assert _company_count(m2_session) == 2
-    # The blocklisted domain is never projected as IDENTITY, for either
-    # company — the policy is applied where the projection is written.
+    # A tenant hostname is never projected as IDENTITY, for either company —
+    # the policy is applied where the projection is written. Each keeps its own
+    # hostname rather than collapsing to the platform's (M2-ADR-053, -054).
     rebuild_projections(m2_session)
     rows = m2_session.execute(
         select(CompanyDomain.domain_normalized, CompanyDomain.domain_role)).all()
     assert rows, "the domains were still recorded, just not as identity"
-    assert {role for _, role in rows} == {"GROUP"}
-    assert {domain for domain, _ in rows} == {"wixsite.com"}
+    assert {role for _, role in rows} == {"ALTERNATE"}
+    assert {domain for domain, _ in rows} == {"krause.wixsite.com", "nowak.wixsite.com"}
 
 
 def test_similar_names_without_shared_identity_do_not_merge(
