@@ -84,7 +84,12 @@ class CompanyOut(BaseModel):
     identity_policy_version: str
     merged_into_company_id: uuid.UUID | None = None
     created_at: datetime
+    #: The label the company is shown under: its best legal name, or failing
+    #: that its best trading name. A presentation label, not a statement that
+    #: the value is a registered legal name (M2-ADR-057).
     canonical_name: str | None = None
+    #: `LEGAL` or `TRADING` — which kind of name `canonical_name` is.
+    canonical_name_type: str | None = None
     primary_domain: str | None = None
     legal_form: str | None = None
     founded_year: int | None = None

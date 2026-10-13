@@ -243,12 +243,76 @@ def _scalar_winner(grouped, key, contributing) -> tuple[Any, bool]:
     return (winner.claim.value_jsonb or {}).get("value"), len(values) > 1
 
 
+@dataclass(slots=True)
+class _PrimaryName:
+    """The one name a company is shown under, and where it came from."""
+
+    #: `(name_normalized, name_type)` — the `company_names` row that is primary.
+    key: tuple[str, str]
+    raw: str
+    claim: _ScoredClaim
+    #: Equal-precedence legal names that disagree. Trading names differing is
+    #: not a conflict: a company may trade under several.
+    conflict: bool = False
+
+
+def _primary_name(grouped: dict[str, list[_ScoredClaim]]) -> _PrimaryName | None:
+    """Pick the canonical label: the best legal name, else the best trading name.
+
+    A label, not a claim. A company known only from a listing has a trading
+    name and no legal name; showing nothing would hide what is known, and
+    promoting the trading name to a legal-name FACT would assert a registration
+    nobody established. So the underlying claims keep their types, and the
+    label falls back (M2-ADR-057).
+
+    Deterministic without reference to claim ids or provider order: legal names
+    by the usual precedence, trading names by precedence and then by the name
+    itself, so two databases holding the same evidence show the same label.
+    """
+    legal = grouped.get("legal_name") or []
+    if legal:
+        winner = _winner(legal)
+        value = winner.claim.value_jsonb or {}
+        normalized = value.get("normalized") or value.get("value")
+        raw = value.get("value") or normalized
+        if normalized and raw:
+            top_rank = winner.precedence_key()[:4]
+            tied = {json.dumps(w.claim.value_jsonb, sort_keys=True, default=str)
+                    for w in legal if w.precedence_key()[:4] == top_rank}
+            return _PrimaryName(key=(normalized, "LEGAL"), raw=raw, claim=winner,
+                                conflict=len(tied) > 1)
+
+    buckets: dict[str, list[_ScoredClaim]] = defaultdict(list)
+    for scored in grouped.get("trading_name") or []:
+        value = scored.claim.value_jsonb or {}
+        normalized = value.get("normalized") or value.get("value")
+        if normalized:
+            buckets[normalized].append(scored)
+    if not buckets:
+        return None
+
+    def rank(normalized: str) -> tuple:
+        human, fact, trust, observed = max(
+            c.precedence_key()[:4] for c in buckets[normalized])
+        # Highest precedence first; the name breaks ties. Never the claim id.
+        return (-human, -fact, -trust, -observed.toordinal(), normalized)
+
+    chosen = min(buckets, key=rank)
+    winner = _winner(buckets[chosen])
+    raw = (winner.claim.value_jsonb or {}).get("value") or chosen
+    return _PrimaryName(key=(chosen, "TRADING"), raw=raw, claim=winner)
+
+
 def _project_profiles(session, by_company, registry_version) -> None:
     for company_id, claims in by_company.items():
         grouped = _by_attribute(claims)
         contributing: list[_ScoredClaim] = []
 
-        name, name_conflict = _scalar_winner(grouped, "legal_name", contributing)
+        primary = _primary_name(grouped)
+        name, name_conflict = None, False
+        if primary is not None:
+            name, name_conflict = primary.raw, primary.conflict
+            contributing.append(primary.claim)
         legal_form, form_conflict = _scalar_winner(grouped, "legal_form", contributing)
         founded, founded_conflict = _scalar_winner(grouped, "founded_year", contributing)
         conflict = name_conflict or form_conflict or founded_conflict
@@ -299,10 +363,10 @@ def _project_names(session, by_company) -> None:
                 normalized = value.get("normalized") or value.get("value")
                 if normalized:
                     buckets[(normalized, name_type)].append(scored)
-        primary = None
-        legal = [k for k in buckets if k[1] == "LEGAL"]
-        if legal:
-            primary = min(legal)
+        # The same choice the profile shows as `canonical_name`, so the primary
+        # row and the label can never name different things.
+        chosen = _primary_name(grouped)
+        primary = chosen.key if chosen is not None else None
         for (normalized, name_type), group in buckets.items():
             winner = _winner(group)
             session.add(CompanyName(

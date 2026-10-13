@@ -19,6 +19,7 @@ from boro_gtm.discovery.domain.models import (
     CompanyClaim,
     CompanyLocation,
     CompanyMarketPresence,
+    CompanyName,
     CompanyProfile,
     CompanyRelationship,
     CompanyVertical,
@@ -253,6 +254,11 @@ def get_company(company_id: uuid.UUID, db: Session = Depends(get_db)) -> Any:
 
 def _company_out(db: Session, company: Company) -> s.CompanyOut:
     profile = db.get(CompanyProfile, company.id)
+    name_type = db.scalar(
+        select(CompanyName.name_type).where(
+            CompanyName.company_id == company.id, CompanyName.is_primary.is_(True))
+        .order_by(CompanyName.name_type, CompanyName.name_normalized).limit(1)
+    )
     return s.CompanyOut(
         id=company.id,
         lifecycle_status=company.lifecycle_status,
@@ -260,6 +266,7 @@ def _company_out(db: Session, company: Company) -> s.CompanyOut:
         merged_into_company_id=company.merged_into_company_id,
         created_at=company.created_at,
         canonical_name=profile.canonical_name if profile else None,
+        canonical_name_type=name_type if profile and profile.canonical_name else None,
         primary_domain=profile.primary_domain if profile else None,
         legal_form=profile.legal_form if profile else None,
         founded_year=profile.founded_year if profile else None,

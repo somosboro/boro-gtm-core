@@ -695,6 +695,9 @@ class CompanyProfile(Base):
     company_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True
     )
+    #: The label the company is shown under: the best legal name, else the best
+    #: trading name. It is a presentation label derived from claims, never a
+    #: claim that the value is legally registered (M2-ADR-057).
     canonical_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     primary_domain: Mapped[str | None] = mapped_column(Text, nullable=True)
     legal_form: Mapped[str | None] = mapped_column(Text, nullable=True)

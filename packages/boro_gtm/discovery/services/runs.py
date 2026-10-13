@@ -37,7 +37,7 @@ from boro_gtm.discovery.enums import DiscoveryRunStatus
 from boro_gtm.discovery.providers.base import CandidateCompany, ProviderAdapter
 from boro_gtm.discovery.services.claims import write_claims_for_candidate
 from boro_gtm.discovery.services.ingestion import ingest_record
-from boro_gtm.discovery.services.resolution import resolve
+from boro_gtm.discovery.services.resolution import RunIdentityIndex, resolve
 
 logger = logging.getLogger(__name__)
 
@@ -241,11 +241,15 @@ def resolve_run(session: Session, run: DiscoveryRun, adapter: ProviderAdapter,
     provider = session.get(DiscoveryProvider, run.provider_id)
     stats = {"entities": 0, "matched": 0, "created": 0, "ambiguous": 0,
              "unchanged": 0, "claims": 0}
+    # Projections are rebuilt once the run is resolved, so without this the
+    # second listing of a domain could not see the first (M2-ADR-056).
+    identity_index = RunIdentityIndex()
 
     for version in _run_versions(session, run):
         entity = session.get(ProviderEntity, version.provider_entity_id)
         candidate = _candidate_from_version(session, adapter, version)
-        outcome = resolve(session, entity, version, candidate, provider)
+        outcome = resolve(session, entity, version, candidate, provider,
+                          identity_index=identity_index)
         stats["entities"] += 1
         # Count what this run *did*, not what the head happens to say: an
         # already-resolved entity has a CREATED_NEW head but created nothing.

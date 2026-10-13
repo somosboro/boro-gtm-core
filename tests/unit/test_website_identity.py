@@ -166,3 +166,57 @@ def test_the_adapter_keeps_a_tenant_hostname_whole():
 
 def test_the_normalizer_version_moved_so_old_normalizations_are_not_reused():
     assert GooglePlacesAdapter().capabilities().normalizer_version == "2"
+
+
+# --- what may enter the same-run identity index (M2-ADR-056) -----------------
+
+
+def _identity_key(website):
+    from boro_gtm.discovery.services.resolution import identity_key
+
+    return identity_key(_candidate(website))
+
+
+@pytest.mark.parametrize(("website", "key"), [
+    ("https://mckenneys.com/", "mckenneys.com"),
+    ("https://www.mckenneys.com/?utm_source=google", "mckenneys.com"),
+    ("https://www.acme.co.uk/", "acme.co.uk"),
+    # Everything below is recorded as evidence and is never an identity key.
+    ("https://aireserv.com/dallas/", None),                # deep path
+    ("https://group.com/brands/a/", None),                 # parent brand page
+    ("https://franchisor.com/?location=dallas", None),     # content query
+    ("https://dallas.franchisor.com/", None),              # foreign subdomain
+    ("https://foo.lovable.app/", None),                    # hosting tenant: ALTERNATE
+    ("https://lovable.app/", None),                        # the platform: GROUP
+    ("https://www.facebook.com/", None),                   # blocklisted: GROUP
+    (None, None),
+])
+def test_only_an_identity_capable_root_is_an_identity_key(website, key):
+    assert _identity_key(website) == key
+
+
+def test_the_index_refuses_one_domain_for_two_companies():
+    import uuid
+
+    from boro_gtm.discovery.services.resolution import (
+        IdentityIndexInvariantError,
+        RunIdentityIndex,
+    )
+
+    index = RunIdentityIndex()
+    first, second = uuid.uuid4(), uuid.uuid4()
+    index.record("mckenneys.com", first)
+    index.record("mckenneys.com", first)          # idempotent
+    assert index.get("mckenneys.com") == first and len(index) == 1
+    with pytest.raises(IdentityIndexInvariantError):
+        index.record("mckenneys.com", second)
+    assert index.get("mckenneys.com") == first, "the first acceptance is not overwritten"
+
+
+def test_each_index_is_its_own_state():
+    from boro_gtm.discovery.services.resolution import RunIdentityIndex
+
+    one, two = RunIdentityIndex(), RunIdentityIndex()
+    import uuid
+    one.record("mckenneys.com", uuid.uuid4())
+    assert two.get("mckenneys.com") is None

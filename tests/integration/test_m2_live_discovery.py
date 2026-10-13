@@ -8,6 +8,7 @@ company identity are exactly the ones that run against BoRo's real cohort.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime
 
 import httpx
@@ -16,12 +17,15 @@ from sqlalchemy import func, select
 
 from boro_gtm.discovery.domain.models import (
     Company,
+    CompanyClaim,
     CompanyDomain,
+    CompanyLocation,
     CompanyName,
     CompanyProfile,
     DiscoveryProvider,
     DiscoveryQuery,
     EntityResolutionDecision,
+    EntityResolutionHead,
     ProviderEntity,
     ProviderRecordBody,
     ProviderRecordSighting,
@@ -38,6 +42,7 @@ from boro_gtm.discovery.providers.google_places import (
     GooglePlacesAdapter,
 )
 from boro_gtm.discovery.seeds import seed_all
+from boro_gtm.discovery.services.projection import rebuild_projections
 
 pytestmark = pytest.mark.integration
 
@@ -229,19 +234,13 @@ def test_the_same_place_id_twice_is_one_provider_entity(m2, provider):
     assert m2.scalar(select(func.count()).select_from(Company)) == 1
 
 
-def test_two_place_ids_sharing_a_domain_do_not_merge_wrongly(m2, provider):
+def test_two_place_ids_sharing_a_root_domain_are_one_company(m2, provider):
     """Two branch listings of one contractor, discovered in the same run.
 
-    Measured behaviour, not aspiration. `_deterministic_match` reads
-    `CompanyDomain`, which is a **projection** rebuilt after resolution — so
-    within a single run the second listing cannot yet see the first company's
-    domain, and two canonical companies are created. The projection's partial
-    unique index then gives the domain `IDENTITY` on one and demotes it to
-    `GROUP` on the other (M2-ADR-047).
-
-    That is a duplicate, and it is the safe direction: M2 under-merges rather
-    than merging two organisations that might not be one. What this test
-    protects is the part that must never slip — no wrong merge, and never two
+    This used to record the measured limitation of M2-ADR-047: the second
+    listing could not see the first, two canonical companies were created, and
+    the projection demoted one of them to `GROUP`. M2-ADR-056 closed it. What
+    the test always protected still holds, and is now the easy half — never two
     companies holding one domain as identity.
     """
     handler = _handler([{"places": [
@@ -265,31 +264,20 @@ def test_two_place_ids_sharing_a_domain_do_not_merge_wrongly(m2, provider):
             CompanyDomain.domain_role == "IDENTITY",
         )
     ).all()
-    assert len(identity_owners) == 1, (
-        "two companies holding one identity domain would be a merge waiting to "
-        "happen"
-    )
-    demoted = m2.execute(
-        select(CompanyDomain.company_id).where(
-            CompanyDomain.domain_normalized == "bigmechanical.com",
-            CompanyDomain.domain_role == "GROUP",
-        )
-    ).all()
-    assert len(demoted) == 1, "the duplicate's domain is demoted, not duplicated"
+    assert len(identity_owners) == 1
+    # And no second anchor left behind holding it as GROUP.
+    assert m2.scalar(select(func.count()).select_from(CompanyDomain)) == 1
+    assert m2.scalar(select(func.count()).select_from(Company)) == 1
 
-    # Recorded as a duplicate for the operator, never silently averaged away.
-    assert report.canonical_companies == 2
+    assert report.canonical_companies == 1
     assert report.companies_with_identity_domain == 1
-    assert report.companies_without_identity_domain == 1
-    assert report.new_companies == 2
+    assert report.companies_without_identity_domain == 0
+    assert (report.new_companies, report.matched_companies) == (1, 1)
 
 
 def test_a_domain_seen_in_an_earlier_run_matches_instead_of_duplicating(m2, provider):
-    """Across runs the projection exists, so the deterministic match works.
-
-    This is the other half of M2-ADR-047: the limitation is intra-run ordering,
-    not the matching rule.
-    """
+    """Across runs the match reads the projection. Within a run it reads the
+    run's own index (M2-ADR-056). Same rule, either way."""
     first = _handler([{"places": [
         _place("ChIJnorth", "Big Mechanical Inc", "https://bigmechanical.com/")]}])
     run_live_discovery(m2, provider=provider, adapter=_adapter(first),
@@ -1040,3 +1028,338 @@ def test_a_tenant_site_is_not_handed_to_research_as_the_platform(m2, provider):
 
     with pytest.raises(NoResearchableDomainError):
         domain_scope(m2, company_id)
+
+
+# --- same-run identity convergence (M2-ADR-056) ------------------------------
+#
+# Phase B: 597 places, 12 domains shared by more than one company anchor. The
+# deterministic match read a projection that the run rebuilds only when it
+# finishes, so the second root listing of a domain could not see the first.
+
+
+def _one_run(m2, provider, *places):
+    report = run_live_discovery(m2, provider=provider,
+                                adapter=_adapter(_handler([{"places": list(places)}])),
+                                planned=_plan())
+    m2.flush()
+    return report
+
+
+def _heads(m2) -> dict[str, tuple[str, str | None]]:
+    """place id -> (effective decision, company id)."""
+    rows = m2.execute(
+        select(ProviderEntity.provider_external_id, EntityResolutionDecision.decision,
+               EntityResolutionHead.company_id)
+        .join(EntityResolutionHead,
+              EntityResolutionHead.provider_entity_id == ProviderEntity.id)
+        .join(EntityResolutionDecision,
+              EntityResolutionDecision.id == EntityResolutionHead.current_decision_id)
+    ).all()
+    return {pid: (decision, str(cid) if cid else None) for pid, decision, cid in rows}
+
+
+def test_two_root_listings_of_one_domain_in_one_run_are_one_company(m2, provider):
+    """The exact Phase B defect: McKenney's Atlanta and McKenney's Charlotte."""
+    report = _one_run(
+        m2, provider,
+        _place("ChIJatl", "McKenney's Atlanta", "https://mckenneys.com/", city="Atlanta"),
+        _place("ChIJclt", "McKenney's Charlotte", "https://mckenneys.com/",
+               city="Charlotte"),
+    )
+
+    assert m2.scalar(select(func.count()).select_from(ProviderEntity)) == 2
+    assert m2.scalar(select(func.count()).select_from(Company)) == 1
+    assert _decisions(m2) == ["CREATED_NEW", "MATCHED"]
+    heads = _heads(m2)
+    assert len({company for _, company in heads.values()}) == 1
+    assert (report.new_companies, report.matched_companies) == (1, 1)
+    assert report.canonical_companies == 1
+    assert _domain_rows(m2) == {("mckenneys.com", "IDENTITY")}
+
+
+def test_the_same_run_match_is_the_same_rule_and_says_where_it_came_from(m2, provider):
+    _one_run(
+        m2, provider,
+        _place("ChIJatl", "McKenney's Atlanta", "https://mckenneys.com/"),
+        _place("ChIJclt", "McKenney's Charlotte", "https://www.mckenneys.com/?utm_source=gbp"),
+    )
+    matched = m2.scalars(select(EntityResolutionDecision).where(
+        EntityResolutionDecision.decision == "MATCHED")).one()
+    assert matched.method == "DETERMINISTIC"
+    assert matched.signals == {"rule": "identity_domain_exact",
+                               "domain": "mckenneys.com", "source": "same_run"}
+
+
+def test_a_later_run_matches_through_the_projection_and_says_so(m2, provider):
+    _two_runs(
+        m2, provider,
+        _place("ChIJatl", "McKenney's Atlanta", "https://mckenneys.com/"),
+        _place("ChIJclt", "McKenney's Charlotte", "https://mckenneys.com/"),
+    )
+    matched = m2.scalars(select(EntityResolutionDecision).where(
+        EntityResolutionDecision.decision == "MATCHED")).one()
+    assert matched.signals == {"rule": "identity_domain_exact",
+                               "domain": "mckenneys.com",
+                               "source": "durable_projection"}
+    assert m2.scalar(select(func.count()).select_from(Company)) == 1
+
+
+def test_n_root_listings_converge_and_keep_every_listings_evidence(m2, provider):
+    """Five branches of one supplier, as United Refrigeration appeared in Phase B."""
+    cities = ["Charlotte", "Columbus", "Gahanna", "St Paul", "Atlanta"]
+    report = _one_run(m2, provider, *[
+        _place(f"ChIJ{i}", "United Refrigeration Inc", "http://www.uri.com/",
+               city=city, postal=f"2820{i}", phone=f"(704) 555-010{i}")
+        for i, city in enumerate(cities)
+    ])
+
+    assert m2.scalar(select(func.count()).select_from(ProviderEntity)) == 5
+    assert m2.scalar(select(func.count()).select_from(Company)) == 1
+    assert _decisions(m2) == ["CREATED_NEW"] + ["MATCHED"] * 4
+    assert len({company for _, company in _heads(m2).values()}) == 1
+    assert (report.new_companies, report.matched_companies) == (1, 4)
+
+    # No evidence loss: every listing's claims are attached through its own
+    # effective decision, and its location survives in the projection.
+    company_id = m2.scalar(select(Company.id))
+    claimed_entities = set(m2.scalars(
+        select(ProviderRecordVersion.provider_entity_id)
+        .join(CompanyClaim,
+              CompanyClaim.provider_record_version_id == ProviderRecordVersion.id)
+        .join(EntityResolutionHead,
+              EntityResolutionHead.provider_entity_id
+              == ProviderRecordVersion.provider_entity_id)
+        .where(EntityResolutionHead.company_id == company_id)).all())
+    assert len(claimed_entities) == 5, "every listing's claims reach the one company"
+    located = set(m2.scalars(select(CompanyLocation.city).where(
+        CompanyLocation.company_id == company_id)).all())
+    assert located == set(cities)
+
+
+@pytest.mark.parametrize(("first", "second"), [
+    ("https://aireserv.com/dallas/", "https://aireserv.com/atlanta/"),
+    ("https://foo.lovable.app/", "https://bar.lovable.app/"),
+    ("https://group.com/brands/a/", "https://group.com/brands/b/"),
+    ("https://foo.brand-new-host.app/", "https://bar.brand-new-host.app/"),
+])
+def test_same_run_convergence_never_widens_the_identity_policy(m2, provider, first, second):
+    """What must not match across runs must not match within one either."""
+    report = _one_run(
+        m2, provider,
+        _place("ChIJa", "Listing A", first),
+        _place("ChIJb", "Listing B", second),
+    )
+    assert report.matched_companies == 0
+    assert _decisions(m2) == ["CREATED_NEW", "CREATED_NEW"]
+    assert m2.scalar(select(func.count()).select_from(Company)) == 2
+    assert report_domains(m2) == set()
+
+
+@pytest.mark.parametrize("order", ["root_first", "deep_first"])
+def test_a_deep_path_does_not_match_a_root_listed_in_the_same_run(m2, provider, order):
+    """Dilling and AirWorks, from Phase B: the root entering the index must not
+    pull a page beneath it into the same company."""
+    root = _place("ChIJroot", "Dilling", "https://dillingnc.com/")
+    deep = _place("ChIJdeep", "AirWorks", "https://dillingnc.com/brands/airworks/")
+    places = (root, deep) if order == "root_first" else (deep, root)
+    report = _one_run(m2, provider, *places)
+
+    assert report.matched_companies == 0
+    assert m2.scalar(select(func.count()).select_from(Company)) == 2
+    heads = _heads(m2)
+    assert heads["ChIJroot"][1] != heads["ChIJdeep"][1]
+    assert _domain_rows(m2) == {("dillingnc.com", "IDENTITY"), ("dillingnc.com", "GROUP")}
+    # The identity belongs to the root listing, whichever was resolved first.
+    root_company = heads["ChIJroot"][1]
+    assert m2.scalar(select(CompanyDomain.domain_role).where(
+        CompanyDomain.company_id == uuid.UUID(root_company))) == "IDENTITY"
+
+
+def test_a_converged_company_is_one_researchable_account(m2, provider):
+    """Downstream: several listings, one company, one domain M3 may research."""
+    from boro_gtm.research.live.discovery import domain_scope
+
+    _one_run(
+        m2, provider,
+        _place("ChIJatl", "McKenney's Inc", "https://mckenneys.com/", city="Atlanta"),
+        _place("ChIJclt", "McKenney's Inc", "https://mckenneys.com/", city="Charlotte"),
+    )
+    company_id = m2.scalar(select(Company.id))
+    scope = domain_scope(m2, company_id)
+    assert scope.registrable == {"mckenneys.com": "IDENTITY"}
+    assert scope.primary == "https://mckenneys.com/"
+    # Both provider entities remain, each attributable to the one company.
+    assert set(_heads(m2)) == {"ChIJatl", "ChIJclt"}
+
+
+def test_a_projection_and_a_same_run_index_that_disagree_are_not_resolved(
+    m2, provider, monkeypatch
+):
+    """If two writers each accepted one identity domain for a different company,
+    the next listing of that domain joins neither."""
+    from boro_gtm.discovery.services import runs as runs_service
+    from boro_gtm.discovery.services.resolution import RunIdentityIndex
+
+    _one_run(m2, provider, _place("ChIJhq", "McKenney's Inc", "https://mckenneys.com/"))
+    durable = m2.scalar(select(Company.id))
+    other = Company(created_at=NOW, identity_policy_version="1.0",
+                    lifecycle_status="ACTIVE")
+    m2.add(other)
+    m2.flush()
+
+    def conflicting_index() -> RunIdentityIndex:
+        index = RunIdentityIndex()
+        index.record("mckenneys.com", other.id)
+        return index
+
+    monkeypatch.setattr(runs_service, "RunIdentityIndex", conflicting_index)
+    report = _one_run(m2, provider,
+                      _place("ChIJbr", "McKenney's Inc", "https://mckenneys.com/",
+                             city="Charlotte"))
+
+    assert (report.new_companies, report.matched_companies) == (0, 0)
+    assert report.ambiguous_entities == 1
+    decision, company = _heads(m2)["ChIJbr"]
+    assert (decision, company) == ("AMBIGUOUS", None)
+    parked = m2.scalars(select(EntityResolutionDecision).where(
+        EntityResolutionDecision.decision == "AMBIGUOUS")).one()
+    assert parked.signals == {
+        "reason": "identity_domain_conflict", "domain": "mckenneys.com",
+        "durable_company_id": str(durable), "same_run_company_id": str(other.id),
+    }
+    assert m2.scalar(select(func.count()).select_from(Company)) == 2, "nothing was minted"
+
+
+def test_anchors_left_by_an_earlier_duplicate_are_not_merged_and_do_not_conflict(
+    m2, provider, monkeypatch
+):
+    """A database resolved before M2-ADR-056 holds two anchors on one domain.
+
+    Re-seeing those listings must change nothing — no mass merge of history —
+    and must not read as a conflict. A new listing joins the anchor the
+    projection names.
+    """
+    from boro_gtm.discovery.services import runs as runs_service
+
+    class NoIndex:
+        """A resolve pass as it was before the index existed."""
+
+        def get(self, domain):
+            return None
+
+        def record(self, domain, company_id):
+            return None
+
+    north = _place("ChIJnorth", "Big Mechanical Inc", "https://bigmechanical.com/")
+    south = _place("ChIJsouth", "Big Mechanical Inc", "https://bigmechanical.com/",
+                   city="Fort Worth")
+    with monkeypatch.context() as patched:
+        patched.setattr(runs_service, "RunIdentityIndex", NoIndex)
+        _one_run(m2, provider, north, south)
+    assert m2.scalar(select(func.count()).select_from(Company)) == 2
+    before = _heads(m2)
+    identity_owner = str(m2.scalar(select(CompanyDomain.company_id).where(
+        CompanyDomain.domain_role == "IDENTITY")))
+
+    report = _one_run(m2, provider, north, south,
+                      _place("ChIJeast", "Big Mechanical Inc",
+                             "https://bigmechanical.com/", city="Plano"))
+
+    after = _heads(m2)
+    assert {k: after[k] for k in before} == before, "history is left as it was"
+    assert after["ChIJeast"] == ("MATCHED", identity_owner)
+    assert report.ambiguous_entities == 0
+    assert (report.new_companies, report.matched_companies) == (0, 1)
+    assert m2.scalar(select(func.count()).select_from(Company)) == 2
+
+
+# --- the name a company is shown under (M2-ADR-057) --------------------------
+
+
+def _names(m2) -> set[tuple[str, str, bool]]:
+    return set(m2.execute(select(CompanyName.name_raw, CompanyName.name_type,
+                                 CompanyName.is_primary)).all())
+
+
+def _shown(m2):
+    from boro_gtm.discovery.api.routes import _company_out
+
+    return _company_out(m2, m2.scalars(select(Company)).one())
+
+
+def test_a_places_only_company_is_shown_under_its_trading_name(m2, provider):
+    """Every one of the 538 Phase B companies had `canonical_name = null`."""
+    _one_run(m2, provider,
+             _place("ChIJa", "Big Mechanical Inc", "https://bigmechanical.com/"))
+
+    profile = m2.scalars(select(CompanyProfile)).one()
+    assert profile.canonical_name == "Big Mechanical Inc"
+    # A label, not a promotion: the evidence is still a trading name, and
+    # nothing was written as a legal name.
+    assert _names(m2) == {("Big Mechanical Inc", "TRADING", True)}
+    kinds = set(m2.scalars(select(CompanyClaim.attribute_key).where(
+        CompanyClaim.attribute_key.in_(("legal_name", "trading_name")))).all())
+    assert kinds == {"trading_name"}
+    shown = _shown(m2)
+    assert (shown.canonical_name, shown.canonical_name_type) == (
+        "Big Mechanical Inc", "TRADING")
+
+
+def test_a_legal_name_arriving_later_becomes_the_label_and_keeps_the_trading_name(
+    m2, provider
+):
+    from boro_gtm.discovery.providers.fixtures import (
+        FixtureJsonDirectoryAdapter,
+        json_record,
+    )
+    from tests.integration.conftest_m2 import run_discovery
+
+    _one_run(m2, provider,
+             _place("ChIJa", "Big Mechanical", "https://bigmechanical.com/"))
+    registry = m2.scalar(select(DiscoveryProvider).where(
+        DiscoveryProvider.provider_key == FixtureJsonDirectoryAdapter.PROVIDER_KEY))
+    _, _, stats = run_discovery(
+        m2, FixtureJsonDirectoryAdapter(), registry,
+        [json_record({"legal_name": "Big Mechanical Contractors, Inc.",
+                      "website_domain": "bigmechanical.com"}, external_id="REG-1")])
+    assert stats["matched"] == 1, "the registry record is the same company"
+    rebuild_projections(m2)
+    m2.flush()
+
+    assert m2.scalar(select(func.count()).select_from(Company)) == 1
+    profile = m2.scalars(select(CompanyProfile)).one()
+    assert profile.canonical_name == "Big Mechanical Contractors, Inc."
+    assert _names(m2) == {
+        ("Big Mechanical Contractors, Inc.", "LEGAL", True),
+        ("Big Mechanical", "TRADING", False),
+    }
+    assert _shown(m2).canonical_name_type == "LEGAL"
+
+
+@pytest.mark.parametrize("order", ["as_listed", "reversed"])
+def test_the_trading_label_does_not_depend_on_which_listing_came_first(m2, provider, order):
+    """Two listings of one domain under slightly different names, as
+    `sunmechanical.net` appeared in Phase B. Same evidence, same label."""
+    listings = [
+        _place("ChIJa", "Sun Mechanical Contracting, Inc.", "https://sunmechanical.net/"),
+        _place("ChIJb", "J D Sun Mechanical", "https://sunmechanical.net/"),
+    ]
+    if order == "reversed":
+        listings.reverse()
+    _one_run(m2, provider, *listings)
+
+    assert m2.scalar(select(func.count()).select_from(Company)) == 1
+    profile = m2.scalars(select(CompanyProfile)).one()
+    assert profile.canonical_name == "J D Sun Mechanical"
+    primaries = [raw for raw, _, primary in _names(m2) if primary]
+    assert primaries == ["J D Sun Mechanical"], "exactly one primary name"
+    assert {raw for raw, _, _ in _names(m2)} == {
+        "J D Sun Mechanical", "Sun Mechanical Contracting, Inc."}
+
+
+def test_a_company_with_no_name_at_all_is_still_shown_as_unnamed(m2, provider):
+    """Nothing is invented: no display name, no label."""
+    _one_run(m2, provider, _place("ChIJa", "", "https://bigmechanical.com/"))
+    profile = m2.scalars(select(CompanyProfile)).one()
+    assert profile.canonical_name is None
+    assert _shown(m2).canonical_name_type is None

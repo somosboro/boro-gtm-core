@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from boro_gtm.core import public_suffix
+from boro_gtm.core.errors import GtmError
 from boro_gtm.discovery.domain.models import (
     Company,
     CompanyDomain,
@@ -88,6 +89,85 @@ SIGNAL_WEIGHTS: dict[str, float] = {
     "fuzzy_name": 0.10,
     "same_country": 0.05,
 }
+
+
+class IdentityIndexInvariantError(GtmError):
+    """One resolve pass accepted the same identity domain for two companies.
+
+    Tier 1 consults the index before anything can create or match, so this is
+    unreachable unless that ordering is broken. It stops the pass: choosing
+    either company would be a merge nobody decided.
+    """
+
+    code = "IDENTITY_INDEX_INVARIANT"
+    http_status = 500
+
+
+@dataclass(slots=True)
+class RunIdentityIndex:
+    """Identity domains accepted earlier in *this* resolve pass.
+
+    The deterministic match reads `company_domains`, a projection rebuilt when a
+    run finishes. Within one pass the second listing of a domain therefore could
+    not see the first, and a company found twice in a run became two companies
+    (M2-ADR-056). This index is that missing visibility and nothing more: the
+    rule is still `identity_domain_exact`, and only a domain that the identity
+    policy accepts for the candidate itself is ever put in it.
+
+    It lives for one `resolve_run` call and is passed in explicitly. It is not
+    module state, and it writes no row.
+    """
+
+    _accepted: dict[str, uuid.UUID] = field(default_factory=dict)
+
+    def get(self, domain: str) -> uuid.UUID | None:
+        return self._accepted.get(domain)
+
+    def record(self, domain: str, company_id: uuid.UUID) -> None:
+        held = self._accepted.setdefault(domain, company_id)
+        if held != company_id:
+            raise IdentityIndexInvariantError(
+                f"{domain} was accepted as the identity of two companies in one "
+                "resolve pass.",
+                details={"domain": domain, "company_ids": sorted([str(held),
+                                                                  str(company_id)])},
+            )
+
+    def __len__(self) -> int:
+        return len(self._accepted)
+
+
+def identity_key(candidate: CandidateCompany) -> str | None:
+    """The domain this candidate may be identified by, or `None`.
+
+    The whole identity policy for a candidate, in one place, so the lookup and
+    the index can never disagree about what counts: the record must hold the
+    domain alone, and the domain must be one an organisation registers for
+    itself. A deep path, a hosting tenant, a platform and a directory all
+    return `None` (M2-ADR-053, -054, -055).
+    """
+    if candidate.registrable_domain_shared:
+        return None
+    domain = normalize_domain(candidate.registrable_domain)
+    if not domain or domain_role(domain) != "IDENTITY":
+        return None
+    return domain
+
+
+@dataclass(frozen=True, slots=True)
+class _IdentityMatch:
+    company_id: uuid.UUID
+    domain: str
+    #: `durable_projection` or `same_run`. Where the fact was read from, not a
+    #: different rule.
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class _IdentityConflict:
+    domain: str
+    durable_company_id: uuid.UUID
+    same_run_company_id: uuid.UUID
 
 
 @dataclass(slots=True)
@@ -224,10 +304,36 @@ def resolve(
     provider: DiscoveryProvider,
     now: datetime | None = None,
     decided_by: str = "system:resolver",
+    identity_index: RunIdentityIndex | None = None,
 ) -> ResolutionOutcome:
-    """Resolve one provider entity to a canonical company."""
-    now = now or datetime.now(UTC)
+    """Resolve one provider entity to a canonical company.
 
+    `identity_index` carries the identity domains this resolve pass has already
+    accepted, so resolving within a run is the same as resolving across runs.
+    """
+    outcome = _resolve(session, entity, version, candidate, provider,
+                       now or datetime.now(UTC), decided_by, identity_index)
+    if identity_index is not None and outcome.written and outcome.company_id is not None:
+        # Only a decision this pass wrote enters the index. An entity resolved
+        # by an earlier run is already in the projection, and re-asserting it
+        # here could contradict that projection where history left two anchors
+        # on one domain.
+        key = identity_key(candidate)
+        if key is not None:
+            identity_index.record(key, outcome.company_id)
+    return outcome
+
+
+def _resolve(
+    session: Session,
+    entity: ProviderEntity,
+    version: ProviderRecordVersion,
+    candidate: CandidateCompany,
+    provider: DiscoveryProvider,
+    now: datetime,
+    decided_by: str,
+    identity_index: RunIdentityIndex | None,
+) -> ResolutionOutcome:
     existing = current_head(session, entity.id)
     if existing is not None and existing.decision not in (
         ResolutionDecision.AMBIGUOUS.value,
@@ -257,14 +363,29 @@ def resolve(
 
     # --- tier 1: deterministic ------------------------------------------
     if not collision:
-        deterministic = _deterministic_match(session, candidate)
+        deterministic = _deterministic_match(session, candidate, identity_index)
+        if isinstance(deterministic, _IdentityConflict):
+            # The projection and this pass name different companies for one
+            # identity domain — another writer got there first. Neither is
+            # chosen: a wrong-company merge is worse than an unmerged record.
+            return _write_decision(
+                session, entity, version, None,
+                ResolutionDecision.AMBIGUOUS.value,
+                ResolutionMethod.CANDIDATE_AUTO.value,
+                {"reason": "identity_domain_conflict",
+                 "domain": deterministic.domain,
+                 "durable_company_id": str(deterministic.durable_company_id),
+                 "same_run_company_id": str(deterministic.same_run_company_id)},
+                now, decided_by, supersedes=existing,
+            )
         if deterministic is not None:
             return _write_decision(
-                session, entity, version, deterministic,
+                session, entity, version, deterministic.company_id,
                 ResolutionDecision.MATCHED.value,
                 ResolutionMethod.DETERMINISTIC.value,
                 {"rule": "identity_domain_exact",
-                 "domain": normalize_domain(candidate.registrable_domain)},
+                 "domain": deterministic.domain,
+                 "source": deterministic.source},
                 now, decided_by, supersedes=existing,
             )
 
@@ -351,18 +472,24 @@ def current_head(session: Session, provider_entity_id: uuid.UUID
     ).first()
 
 
-def _deterministic_match(session: Session, candidate: CandidateCompany
-                         ) -> uuid.UUID | None:
-    """Exact identity-domain match, subject to the domain policy."""
-    if candidate.registrable_domain_shared:
-        # The provider pointed at a page on a domain the record does not hold
-        # alone — a franchisor's location page, a parent's brand page. Sharing
-        # that domain is not evidence of being the same company (M2-ADR-055).
+def _deterministic_match(
+    session: Session, candidate: CandidateCompany,
+    identity_index: RunIdentityIndex | None = None,
+) -> _IdentityMatch | _IdentityConflict | None:
+    """Exact identity-domain match, subject to the domain policy.
+
+    One rule, read from two places: the durable projection, and the domains
+    this pass has accepted and the projection does not show yet. They are the
+    same signal. If they name different companies, that is reported rather than
+    resolved.
+    """
+    domain = identity_key(candidate)
+    if domain is None:
+        # Includes a page on a domain the record does not hold alone — a
+        # franchisor's location page, a parent's brand page. Sharing that
+        # domain is not evidence of being the same company (M2-ADR-055).
         return None
-    domain = normalize_domain(candidate.registrable_domain)
-    if not domain or not is_identity_domain(domain):
-        return None
-    row = session.scalar(
+    durable = session.scalar(
         select(CompanyDomain.company_id)
         .join(Company, Company.id == CompanyDomain.company_id)
         .where(
@@ -371,7 +498,16 @@ def _deterministic_match(session: Session, candidate: CandidateCompany
             Company.lifecycle_status == CompanyLifecycle.ACTIVE.value,
         )
     )
-    return row
+    same_run = identity_index.get(domain) if identity_index is not None else None
+    if durable is not None and same_run is not None and durable != same_run:
+        return _IdentityConflict(domain=domain, durable_company_id=durable,
+                                 same_run_company_id=same_run)
+    if durable is not None:
+        return _IdentityMatch(company_id=durable, domain=domain,
+                              source="durable_projection")
+    if same_run is not None:
+        return _IdentityMatch(company_id=same_run, domain=domain, source="same_run")
+    return None
 
 
 def _score_candidates(session: Session, candidate: CandidateCompany,

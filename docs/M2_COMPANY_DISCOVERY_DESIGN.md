@@ -1303,12 +1303,13 @@ with `fetch_completed_at` unset, so canonical writes stay blocked and the eviden
 already paid for is kept. A `429` or `403` is recorded truthfully; there is no
 scraping fallback and no working around a provider's limit.
 
-**Duplicates.** Within one run, two listings sharing a domain create two
-companies, because the deterministic match reads a projection that is rebuilt
-after resolution. The database still guarantees one identity holder per domain, so
-the second company's domain is demoted to `GROUP` and it is not researchable.
-M2 under-merges rather than merging two organisations that might not be one, and
-the run reports the duplicate (M2-ADR-047).
+**Duplicates.** Two root listings of one identity domain are one company,
+within a run as across runs: a resolve pass carries the identity domains it has
+accepted, so the second listing matches the first (M2-ADR-056, which supersedes
+the limitation recorded in M2-ADR-047). Listings that share a domain without
+holding it — franchisees on a franchisor's domain, tenants of a platform, a page
+beneath someone's root — stay separate, with the domain as `GROUP` evidence
+(§14a.1).
 
 **Evaluation.** The known-accounts holdout is never a provider and never ingested.
 Recovery is an exact normalized domain match; name similarity is a reported
@@ -1336,11 +1337,33 @@ replayed offline against the correction.
 Replay of the real corpus: company anchors 115 → 115, `IDENTITY` domains
 113 → 104, `GROUP` 2 → 10, `ALTERNATE` 0 → 1, ambiguous entities 6 → 6.
 
-Known and deliberately not addressed here: two places sharing a root domain
-within one run still create two anchors (the deterministic match reads a
-projection the run has not rebuilt yet); `canonical_name` is empty for
-Places-only companies; Google reorders `types` between responses, creating
-versions that differ only in order; M3 does not research a tenant-hosted site.
+### 14a.2 Convergence within a run, and the name a company is shown under
+
+The 10-metro run (50 requests, 597 places, 538 anchors) again merged nothing
+wrongly, and measured the cost of a limitation accepted earlier: a company
+listed at several addresses became several companies, because the match read a
+projection the run had not rebuilt yet. A resolve pass now carries the identity
+domains it has accepted (M2-ADR-056), and the profile shows a company under its
+best trading name when it has no legal name (M2-ADR-057).
+
+Replay of that corpus, offline:
+
+| | Before | After |
+|---|---|---|
+| Company anchors | 538 | 529 |
+| `MATCHED` within the run | 0 | 9 |
+| Root/root duplicate groups | 6 | 0 |
+| Domains shared by more than one anchor | 12 | 6 |
+| `IDENTITY` / `GROUP` / `ALTERNATE` | 474 / 62 / 2 | 474 / 53 / 2 |
+| Companies with a `canonical_name` | 0 | 529 |
+
+The six shared domains that remain are franchisor, parent and platform domains,
+and one root listing beside a deep path. They are meant to stay apart.
+
+Known and deliberately not addressed: Google reorders `types` between
+responses, creating versions that differ only in order; a listing that links to
+a page on its own domain loses identity (the recall cost of M2-ADR-055); M3
+does not research a tenant-hosted site; the run report's `normalized` field.
 
 ## 15. How M3 consumes M2
 

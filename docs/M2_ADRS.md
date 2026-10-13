@@ -1287,7 +1287,8 @@ platforms. The policy itself is unchanged — a blocklisted domain is recorded a
 
 ## M2-ADR-047 — Intra-run domain duplicates, and why they are the safe direction
 
-**Status:** accepted (BoRo-first live discovery; **measured limitation**)
+**Status:** superseded by M2-ADR-056 (the limitation was measured at scale and
+closed). Kept as the record of what was accepted and why.
 
 ### Context
 
@@ -1729,3 +1730,122 @@ The adapter's `normalizer_version` moved to `2`, so normalizations stored under
   more about a URL may decide differently; the resolver only honours the flag.
 * **Generalisable:** a URL is two claims, where and what. Identity may be read
   from the first only when the second is "everything".
+
+---
+
+## M2-ADR-056 — A resolve pass can see the identity domains it has just accepted
+
+**Status:** accepted (pre-national correction). Supersedes the limitation
+recorded in M2-ADR-047.
+
+### Context
+
+The deterministic match reads `company_domains`, a projection, and a run
+rebuilds projections once, after every entity is resolved. So within one run the
+second listing of a domain could not see the first: both created a company, and
+the projection then gave one of them the domain as `IDENTITY` and demoted the
+other to `GROUP`.
+
+M2-ADR-047 accepted that as the safe direction. The 10-metro run measured what
+it costs: 597 places, 538 anchors, 12 domains shared by more than one anchor.
+Six of those were one company listed at several addresses under its own root
+domain (`mckenneys.com`, `twcservices.com`, `lsmech.com`, `rsandrews.com`,
+`sunmechanical.net`, `uri.com`), nine extra anchors in all. They were silent
+— no candidate, no review signal — and which anchor kept `IDENTITY` was
+decided by UUID order: for McKenney's the Charlotte branch was the researchable
+company and the Atlanta headquarters was not.
+
+### Decision
+
+`resolve_run` owns a `RunIdentityIndex`: identity domain → company, for the
+domains this pass has accepted. It is passed to `resolve` explicitly, lives for
+one call, and writes nothing. It is not module state and not a second
+deduplication system: the rule is still `identity_domain_exact`, read from two
+places.
+
+* **What may enter it** is decided by one function, `identity_key(candidate)`,
+  which the lookup uses too. The record must hold the domain alone
+  (`registrable_domain_shared` false) and the domain's role must be `IDENTITY`.
+  A deep path, a hosting tenant, a platform, a blocklisted host and a foreign
+  subdomain all return `None` and are never inserted or looked up.
+* **When it is written:** only by a decision this pass wrote that names a
+  company. An entity resolved by an earlier run is already in the projection;
+  re-asserting it could contradict that projection where history left two
+  anchors on one domain.
+* **Precedence:** none. The projection and the index are the same signal. The
+  decision records which was read: `source: durable_projection | same_run`.
+* **Disagreement:** if the projection and the index name different companies for
+  one domain, the entity is parked `AMBIGUOUS` with
+  `reason: identity_domain_conflict` and both ids. Neither is chosen. If the
+  index itself is asked to hold one domain for two companies, it raises
+  `IdentityIndexInvariantError` and the pass stops; tier 1 runs before anything
+  can create, so that is unreachable unless the ordering is broken.
+
+The durable side is read per candidate, as before, rather than copied into the
+index at the start. That keeps it current, and it is what makes a disagreement
+representable: one merged dictionary could not hold both answers to compare.
+
+### Consequences
+
+* Replaying the 597-place corpus: anchors 538 → 529, the six root/root groups
+  collapse to one company each (nine `MATCHED`), `IDENTITY` rows stay at 474 and
+  the nine demoted `GROUP` rows disappear. Every claim still reaches a company.
+* The six groups that remain are not this defect and are left alone: four are
+  franchisees or brands on a franchisor's or parent's domain, one is two tenants
+  of a hosting platform, and one is a root listing and a deep path on the same
+  domain. None of them may match on the domain (M2-ADR-055).
+* Nothing historical is merged. A database resolved before this decision keeps
+  its anchors; a new listing joins the one the projection names.
+* **Generalisable:** a rule that reads a derived table is only as current as the
+  last rebuild. When writes and the reads that depend on them share a pass,
+  either the pass carries what it has written or the rule is silently
+  different inside a batch than across batches.
+
+---
+
+## M2-ADR-057 — `canonical_name` is a label: the best legal name, else the best trading name
+
+**Status:** accepted (pre-national correction)
+
+### Context
+
+A Google Places display name is a trading name, and M2 records it as one
+(M2-ADR-042). `company_profiles.canonical_name` was projected from `legal_name`
+claims only, and `company_names.is_primary` was set only on a `LEGAL` row. So
+all 538 companies of the 10-metro run had `canonical_name = null` and no primary
+name, while their names sat one table away. An operator's listing was a column
+of nulls.
+
+### Decision
+
+`canonical_name` is the label a company is shown under:
+
+1. the best `legal_name` claim, by the usual precedence; otherwise
+2. the best `trading_name` — by precedence (human review, fact type, trust
+   tier, observation date) and then by the normalized name itself.
+
+Neither the claim id nor provider order takes part in the trading-name choice,
+so two databases holding the same evidence show the same label.
+
+`company_names.is_primary` marks the same row, by the same function, so the
+label and the primary name cannot disagree. Exactly one row per company is
+primary whenever any name is known.
+
+**The claims do not change.** A display name is still a `trading_name` claim and
+a `TRADING` row; nothing is written as `legal_name`. `canonical_name` is a
+presentation label derived from claims, not a statement that the value is
+registered anywhere. The API says which kind it is: `canonical_name_type` is
+`LEGAL` or `TRADING`.
+
+### Consequences
+
+* When legal-name evidence arrives later it becomes the label and the primary
+  row; the trading name stays as evidence.
+* `projection_conflict` still means equal-precedence *legal* names that
+  disagree. Several trading names are ordinary and are not a conflict.
+* For a company with more than one legal name, the primary row is now the
+  precedence winner — the name `canonical_name` already showed — rather than the
+  alphabetically first.
+* **Generalisable:** refusing to mislabel a value is not a reason to hide it.
+  Keep the type on the evidence and let the presentation say which type it is
+  showing.
