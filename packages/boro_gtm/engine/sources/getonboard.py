@@ -17,6 +17,7 @@ from html import unescape
 from typing import Any
 from urllib.parse import quote
 
+from boro_gtm.engine.scoring import DELIVERY_TITLE
 from boro_gtm.engine.sources.base import Fetcher, SignalDraft, SourcePage
 
 API = "https://www.getonbrd.com/api/v0/search/jobs"
@@ -84,5 +85,7 @@ class GetOnBoardSource:
             attributes={"modality_id": modality, "segment": "job_board_project",
                         "evidence_es": f"publicó \"{title}\" en Get on Board",
                         "evidence_en": f"posted \"{title}\" on Get on Board"},
-            reject_reason=None if project_based else "full_time_employment_not_vendor_demand",
+            reject_reason=("full_time_employment_not_vendor_demand" if not project_based else
+                           None if DELIVERY_TITLE.search(title or "") else
+                           "not_software_delivery"),
         )

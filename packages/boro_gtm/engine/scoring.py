@@ -8,6 +8,7 @@ keeps the evidence it was awarded for, so a score can be argued with.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -33,8 +34,18 @@ class Score:
 
 
 def _hits(text: str, terms: list[str]) -> list[str]:
-    lowered = f" {text.lower()} "
-    return sorted({t for t in terms if t in lowered})
+    """Whole-word matches only: "app" must not match "whatsapp" or "apply"."""
+    lowered = text.lower()
+    return sorted({t for t in terms
+                   if re.search(rf"(?<![\w]){re.escape(t)}(?![\w])", lowered)})
+
+
+#: What a job-board title must contain to be software delivery BoRo can do.
+DELIVERY_TITLE = re.compile(
+    r"(desarroll|developer|\bdev\b|programador|ingenier[oa] de software|software engineer"
+    r"|backend|back-end|frontend|front-end|full.?stack|odoo|\berp\b|integraci|\bapi\b"
+    r"|arquitect[oa] de software|devops|mobile|react|node|python|nestjs|next\.?js"
+    r"|implementaci[oó]n|consultor[a]? (t[eé]cnic|funcional|erp|odoo|sap))", re.I)
 
 
 def score_target(strategy: Strategy, *, kind: str, title: str | None, excerpt: str | None,
@@ -75,6 +86,11 @@ def score_target(strategy: Strategy, *, kind: str, title: str | None, excerpt: s
 
     fit_terms = _hits(text, strategy.terms("technical_fit_terms"))
     fit = min(w["technical_fit"], 6 + 3 * len(fit_terms)) if fit_terms else 4
+    if kind == "EXPLICIT_DEMAND" and not DELIVERY_TITLE.search(title or ""):
+        # A posting for a growth marketer that mentions "app" is not a
+        # software request, however many keywords the description carries.
+        fit = min(fit, 4)
+        fit_terms = ["title_not_software_delivery", *fit_terms]
     if kind == "PARTNER_LISTING" and "odoo" in text.lower():
         fit = w["technical_fit"]
     c["technical_fit"] = {"points": fit, "evidence": fit_terms[:6]}

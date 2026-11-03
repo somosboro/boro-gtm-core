@@ -105,3 +105,22 @@ def test_the_engine_api_refuses_a_wrong_token(monkeypatch):
     client = TestClient(create_app())
     response = client.get("/api/v1/engine/ready", headers={"Authorization": "Bearer wrong"})
     assert response.status_code == 401
+
+
+def test_keywords_match_whole_words_only(strategy):
+    from boro_gtm.engine.scoring import _hits
+
+    assert _hits("Escríbenos por WhatsApp y apply now", ["app", "api"]) == []
+    assert _hits("Necesitamos una app y una API REST", ["app", "api"]) == ["api", "app"]
+
+
+def test_a_non_software_posting_cannot_qualify_on_keywords(strategy):
+    from datetime import UTC, datetime, timedelta
+
+    score = score_target(strategy, kind="EXPLICIT_DEMAND",
+                         title="Growth Hacker & Acquisition Manager",
+                         excerpt="freelance, trabajarás con nuestra app y plataforma web, API",
+                         posted_at=datetime.now(UTC) - timedelta(days=1), expires_at=None,
+                         has_verified_channel=True, channel_is_person=False)
+    assert score.total < strategy.threshold
+    assert "title_not_software_delivery" in score.components["technical_fit"]["evidence"]

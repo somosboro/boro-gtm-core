@@ -55,6 +55,11 @@ def run_source(session: Session, strategy: Strategy, adapter: SourceAdapter, fet
             if cursor.cursor.get("exhausted_at"):
                 run.cursor_exhausted = True
                 break
+            if cursor.cursor.get("blocked_until", "") > now_utc().isoformat():
+                run.queries = [*run.queries, {"skipped": "blocked_until",
+                                              "until": cursor.cursor["blocked_until"],
+                                              "error": cursor.cursor.get("blocked_reason")}]
+                break
             page = adapter.next_page(fetcher, cursor.cursor)
             run.queries = [*run.queries, {**page.query, "items": len(page.items),
                                           "error": page.error}]
@@ -99,7 +104,18 @@ def run_source(session: Session, strategy: Strategy, adapter: SourceAdapter, fet
                 break
             if run.accepted >= wanted:
                 break
-        run.status = "EXHAUSTED" if run.cursor_exhausted else "COMPLETED"
+        attempts = [q for q in run.queries if not q.get("skipped")]
+        errors = [q for q in attempts if q.get("error")]
+        if run.queries and not attempts:
+            run.status = "BLOCKED"  # still resting from an earlier block
+        elif attempts and len(errors) == len(attempts) and run.results_inspected == 0:
+            # Every request failed. That is the site's answer, not ours to work
+            # around: the source rests for a week and the run says so.
+            run.status = "BLOCKED"
+            cursor.cursor = {**cursor.cursor, "blocked_until": (now_utc() + timedelta(days=7))
+                             .isoformat(), "blocked_reason": errors[-1]["error"]}
+        else:
+            run.status = "EXHAUSTED" if run.cursor_exhausted else "COMPLETED"
     except Exception as exc:  # noqa: BLE001 - a broken source is a record, not a crash
         run.status = "FAILED"
         run.error = f"{type(exc).__name__}: {exc}"[:2000]
@@ -130,10 +146,19 @@ def run_ladder(session: Session, strategy: Strategy, fetcher: Fetcher, *,
                      "error": run.error})
     remaining = [a.key for a in (ladder or default_ladder())
                  if a.key not in {r["source"] for r in runs}]
+    reason = None
+    if accepted < wanted:
+        if remaining:
+            reason = "stopped_before_ladder_end"
+        elif all(r["cursor_exhausted"] for r in runs):
+            reason = "ladder_exhausted"
+        elif any(r["status"] == "BLOCKED" for r in runs) and all(
+                r["cursor_exhausted"] or r["status"] == "BLOCKED" for r in runs):
+            reason = "remaining_sources_blocked_by_site"
+        else:
+            reason = "page_budget_per_source_reached"
     return {"wanted": wanted, "accepted": accepted, "runs": runs,
-            "remaining_sources": remaining,
-            "below_target_reason": None if accepted >= wanted else (
-                "ladder_exhausted" if not remaining else "page_budget_per_source_reached")}
+            "remaining_sources": remaining, "below_target_reason": reason}
 
 
 def reset_cursor(session: Session, key: str) -> None:

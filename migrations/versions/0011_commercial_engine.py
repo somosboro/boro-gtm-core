@@ -65,7 +65,7 @@ def upgrade() -> None:
     sa.Column('error', sa.Text(), nullable=True),
     sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
-    sa.CheckConstraint("status IN ('RUNNING','COMPLETED','EXHAUSTED','FAILED')", name=op.f('ck_ce_source_runs_status_vocabulary')),
+    sa.CheckConstraint("status IN ('RUNNING','COMPLETED','EXHAUSTED','BLOCKED','FAILED')", name=op.f('ck_ce_source_runs_status_vocabulary')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_ce_source_runs'))
     )
     op.create_table('ce_suppressions',

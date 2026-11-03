@@ -108,7 +108,7 @@ class CeSourceRun(Base):
 
     __tablename__ = "ce_source_runs"
     __table_args__ = (
-        CheckConstraint("status IN ('RUNNING','COMPLETED','EXHAUSTED','FAILED')",
+        CheckConstraint("status IN ('RUNNING','COMPLETED','EXHAUSTED','BLOCKED','FAILED')",
                         name="status_vocabulary"),
     )
 
