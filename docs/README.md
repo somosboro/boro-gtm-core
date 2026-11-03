@@ -10,6 +10,15 @@ These describe the system **as built**.
 | [SCORING.md](SCORING.md) | Scoring models, percentile convention, confidence, ranking, both score modes |
 | [DESIGN_NOTE_market_gtm_profiles.md](DESIGN_NOTE_market_gtm_profiles.md) | Why `market_gtm_profiles` was removed and where GTM context lives instead |
 
+## Commercial engine (active, 2026-11)
+
+| Document | What it covers |
+| --- | --- |
+| [audits/GTM_COMMERCIAL_ENGINE_AUDIT_2026-11.md](audits/GTM_COMMERCIAL_ENGINE_AUDIT_2026-11.md) | What was wrong with the old GTM architecture, what was kept, and the engine that replaced the research-first loop |
+| [CE_ADRS.md](CE_ADRS.md) | 17 decision records: source of truth, state machine, exactly-once sending, Gmail, the model boundary, sourcing, shadow mode, deployment |
+| [RUNBOOK_COMMERCIAL_ENGINE.md](RUNBOOK_COMMERCIAL_ENGINE.md) | Daily commands, cutover checklist, recovery |
+| [archive/README.md](archive/README.md) | The 2026-09 strategy (HVAC/Energy ICP, Architecture Sprint), archived and never loaded |
+
 ## M2 — Company Discovery (implemented)
 
 | Document | What it covers |
