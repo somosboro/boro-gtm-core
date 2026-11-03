@@ -92,7 +92,14 @@ def enrich_target(session: Session, strategy: Strategy, target: CeTarget, fetche
     account = session.get(CeAccount, target.account_id)
     signal = session.get(CeSignal, target.signal_id) if target.signal_id else None
     if target.contact_id is None:
-        channel = find_channel(fetcher, account.domain)
+        channel = None
+        attrs = (signal.attributes or {}) if signal else {}
+        listed = normalize_email(attrs.get("published_email"))
+        if listed and email_domain(listed) == account.domain and signal.url:
+            # Published by the company itself in a directory it maintains, on
+            # its own domain: a public channel with a citable source.
+            channel = (listed, signal.url)
+        channel = channel or find_channel(fetcher, account.domain)
         if channel is not None:
             email, source_url = channel
             contact = session.scalar(select(CeContact).where(CeContact.email == email))

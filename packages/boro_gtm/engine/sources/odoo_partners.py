@@ -17,8 +17,9 @@ COUNTRIES = {"CL": "chile-44", "PE": "peru-168", "CO": "colombia-47", "MX": "mex
              "AR": "argentina-11", "ES": "spain-67"}
 _PARTNER = re.compile(r'href="(/partners/(?!country/)[a-z0-9-]+-\d+)(?:\?[^"]*)?"')
 _PAGES = re.compile(r'href="/partners/country/[a-z0-9-]+/page/(\d+)"')
-_WEBSITE = re.compile(r'href="(https?://[^"]+)"[^>]*>\s*(?:<[^>]+>\s*)*(?:www\.|https?://)', re.I)
-_ANY_LINK = re.compile(r'href="(https?://[^"#]+)"', re.I)
+_ITEMPROP_WEBSITE = re.compile(
+    r'<a[^>]+href="(https?://[^"]+)"[^>]*>\s*<span itemprop="website"', re.I)
+_ITEMPROP_EMAIL = re.compile(r'itemprop="email"[^>]*>\s*([^<\s]+@[^<\s]+)\s*<', re.I)
 _TITLE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.S | re.I)
 _GRADE = re.compile(r"(Gold|Silver|Ready|Learning) Partner", re.I)
 _EXCLUDED_HOSTS = ("odoo.com", "odoo.sh", "facebook.com", "linkedin.com", "twitter.com",
@@ -60,12 +61,16 @@ class OdooPartnerSource:
     def _draft(self, path: str, html: str) -> SignalDraft:
         name_match = _TITLE.search(html)
         name = re.sub(r"<[^>]+>|\s+", " ", name_match.group(1)).strip() if name_match else None
-        website = None
-        for link in _ANY_LINK.findall(html):
-            host = re.sub(r"^https?://(www\.)?", "", link).split("/")[0].lower()
-            if host and not any(host == h or host.endswith("." + h) for h in _EXCLUDED_HOSTS):
-                website = link
-                break
+        # The partner's own fields, as the directory marks them up. The first
+        # external link on the page is a font CDN, which is not anyone's site.
+        site = _ITEMPROP_WEBSITE.search(html)
+        website = site.group(1) if site else None
+        if website:
+            host = re.sub(r"^https?://(www\.)?", "", website).split("/")[0].lower()
+            if any(host == h or host.endswith("." + h) for h in _EXCLUDED_HOSTS):
+                website = None
+        mail = _ITEMPROP_EMAIL.search(html)
+        published_email = mail.group(1).strip().lower() if mail else None
         grade = _GRADE.search(html)
         level = grade.group(0) if grade else "Odoo Partner"
         country_es = {"CL": "Chile", "PE": "Perú", "CO": "Colombia", "MX": "México",
@@ -80,6 +85,7 @@ class OdooPartnerSource:
             title=f"{level} — Odoo partner directory ({self.country})", excerpt=excerpt,
             company_name=name, company_domain=website, country=self.country,
             attributes={"segment": "odoo_partner", "grade": level,
+                        "published_email": published_email,
                         "evidence_es": evidence_es, "evidence_en": evidence_en},
             reject_reason=None if website else "no_company_website_on_listing",
         )

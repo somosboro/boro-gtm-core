@@ -731,3 +731,42 @@ def test_a_failed_task_is_retried_soon_not_a_whole_interval_later(session):
                           started_at=now - timedelta(minutes=5), error="interrupted"))
     session.flush()
     assert worker._due(session, "source", timedelta(hours=6)) is False
+
+
+_PARTNER_PAGE = """<html><head><link href="https://fonts.gstatic.com/" rel="preconnect"/></head>
+<body><h1>BCN CONSULTORES LIMITADA <span>Silver</span></h1><p>Silver Partner</p>
+<div><i aria-label="Website"></i>
+<a class="text-break w-100" href="http://www.bcncons.com"><span itemprop="website">http://www.bcncons.com</span></a></div>
+<div><i aria-label="Email"></i> <span class="text-break w-100" itemprop="email">jescalona@bcncons.com</span></div>
+<a href="https://github.com/odoo">github</a></body></html>"""
+
+
+def test_the_odoo_adapter_reads_the_partners_own_website_not_the_first_link():
+    """Found on the first VPS pass: every partner resolved to fonts.gstatic.com."""
+    from boro_gtm.engine.sources.odoo_partners import OdooPartnerSource
+
+    draft = OdooPartnerSource("CL")._draft("/partners/bcn-consultores-limitada-9184625",
+                                           _PARTNER_PAGE)
+    assert draft.company_domain == "http://www.bcncons.com"
+    assert draft.attributes["published_email"] == "jescalona@bcncons.com"
+    assert draft.reject_reason is None
+
+
+def test_an_email_the_partner_published_in_the_directory_is_a_usable_channel(session, strategy):
+    signal = _signal(session, domain="bcncons.com")
+    signal.attributes = {**signal.attributes, "published_email": "jescalona@bcncons.com"}
+    target, _ = target_from_signal(session, strategy, signal)
+    enrich_target(session, strategy, target, SiteFetcher())
+    contact = session.get(CeContact, target.contact_id)
+    assert contact.email == "jescalona@bcncons.com"
+    assert contact.source_url == signal.url
+    assert target.state == S.READY
+
+
+def test_a_directory_email_on_another_domain_is_not_used(session, strategy):
+    signal = _signal(session, domain="bcncons.com")
+    signal.attributes = {**signal.attributes, "published_email": "someone@gmail.com"}
+    target, _ = target_from_signal(session, strategy, signal)
+    enrich_target(session, strategy, target, SiteFetcher())
+    assert target.contact_id is None
+    assert target.state == S.BLOCKED
