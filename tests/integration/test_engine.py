@@ -770,3 +770,18 @@ def test_a_directory_email_on_another_domain_is_not_used(session, strategy):
     enrich_target(session, strategy, target, SiteFetcher())
     assert target.contact_id is None
     assert target.state == S.BLOCKED
+
+
+def test_a_support_mailbox_is_never_written_to(session, strategy):
+    target = _ready_target(session, strategy, email="soporte@acme-odoo.cl")
+    assert plan_initials(session, strategy, now=WED_10)["planned"] == 0
+    assert target.state == S.BLOCKED
+    assert "role_mailbox_not_for_sales" in target.state_reason
+
+
+def test_a_support_mailbox_in_the_directory_is_not_taken_as_the_channel(session, strategy):
+    signal = _signal(session, domain="bcncons.com")
+    signal.attributes = {**signal.attributes, "published_email": "soporte@bcncons.com"}
+    target, _ = target_from_signal(session, strategy, signal)
+    enrich_target(session, strategy, target, SiteFetcher())
+    assert target.contact_id is None

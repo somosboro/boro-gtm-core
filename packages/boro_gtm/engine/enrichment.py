@@ -95,7 +95,8 @@ def enrich_target(session: Session, strategy: Strategy, target: CeTarget, fetche
         channel = None
         attrs = (signal.attributes or {}) if signal else {}
         listed = normalize_email(attrs.get("published_email"))
-        if listed and email_domain(listed) == account.domain and signal.url:
+        if (listed and email_domain(listed) == account.domain and signal.url
+                and listed.split("@")[0] not in NEVER_LOCAL_PARTS):
             # Published by the company itself in a directory it maintains, on
             # its own domain: a public channel with a citable source.
             channel = (listed, signal.url)

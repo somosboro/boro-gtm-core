@@ -238,6 +238,10 @@ def send_blockers(session: Session, strategy: Strategy, target: CeTarget,
         reasons.append("contact_unverified")
     if normalize_email(contact.email) is None:
         reasons.append("contact_email_invalid")
+    elif contact.email.split("@")[0].split("+")[0] in NEVER_LOCAL_PARTS:
+        # Support, jobs, legal, billing: a published address, but not one a
+        # sales email belongs in, wherever it came from.
+        reasons.append("role_mailbox_not_for_sales")
     hit = suppression_for(session, contact.email)
     if hit is not None:
         reasons.append(f"suppressed_{hit.reason.lower()}")
