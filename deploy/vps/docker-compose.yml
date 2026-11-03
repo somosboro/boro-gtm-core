@@ -69,9 +69,15 @@ services:
       resources:
         limits: {cpus: "0.50", memory: 384M}
 
+  # Outreach: Gmail ingestion, reconciliation, planning, sending, closing.
   worker:
     <<: *app
-    command: ["gtm", "engine", "worker"]
+    command: ["gtm", "engine", "worker", "--tasks", "ingest,reconcile,guard,plan,send,close"]
+    environment:
+      GTM_DATABASE_URL: postgresql+psycopg://gtm:${GTM_DB_PASSWORD}@db:5432/gtm_core
+      GTM_LOG_JSON: "true"
+      GTM_ENGINE_GMAIL_CREDENTIALS: /run/secrets/gmail.json
+      GTM_ENGINE_WORKER_NAME: outreach
     depends_on:
       db: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
@@ -81,6 +87,21 @@ services:
       timeout: 30s
       retries: 3
       start_period: 120s
+    deploy:
+      resources:
+        limits: {cpus: "0.50", memory: 384M}
+
+  # Sourcing and enrichment: slow, polite crawling, kept apart from sending.
+  sourcer:
+    <<: *app
+    command: ["gtm", "engine", "worker", "--tasks", "source,enrich"]
+    environment:
+      GTM_DATABASE_URL: postgresql+psycopg://gtm:${GTM_DB_PASSWORD}@db:5432/gtm_core
+      GTM_LOG_JSON: "true"
+      GTM_ENGINE_WORKER_NAME: sourcing
+    depends_on:
+      db: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
     deploy:
       resources:
         limits: {cpus: "0.50", memory: 384M}

@@ -145,7 +145,8 @@ def run(task: str = typer.Argument(..., help="ingest, reconcile, guard, source, 
 
 @app.command("worker")
 def worker(once: bool = typer.Option(False, "--once"),
-           poll_seconds: int = typer.Option(30)) -> None:
+           poll_seconds: int = typer.Option(30),
+           tasks: str = typer.Option(None, help="Comma-separated subset of tasks.")) -> None:
     """The scheduler loop. Runs until SIGTERM."""
     from boro_gtm.core.config import get_settings
     from boro_gtm.core.logging import configure_logging
@@ -153,7 +154,8 @@ def worker(once: bool = typer.Option(False, "--once"),
 
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_json)
-    loop(once=once, poll_seconds=poll_seconds)
+    loop(once=once, poll_seconds=poll_seconds,
+         tasks=frozenset(t.strip() for t in tasks.split(",")) if tasks else None)
 
 
 @app.command("import-pool")

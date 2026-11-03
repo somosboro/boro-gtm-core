@@ -175,7 +175,10 @@ def heartbeat(worker: str, task: str | None, details: dict[str, Any]) -> None:
             beat.last_task = task or beat.last_task
 
 
-def loop(*, once: bool = False, poll_seconds: int = 30) -> None:
+def loop(*, once: bool = False, poll_seconds: int = 30,
+         tasks: frozenset[str] | None = None) -> None:
+    """Run the schedule. `tasks` restricts this process to some tasks, so a slow
+    crawl in one process never delays a send in another."""
     settings = engine_settings()
     strategy = active_strategy()
     engine = Engine(strategy, settings)
@@ -191,6 +194,8 @@ def loop(*, once: bool = False, poll_seconds: int = 30) -> None:
         for task, every, business_only in SCHEDULE:
             if stop["flag"]:
                 break
+            if tasks is not None and task not in tasks:
+                continue
             if business_only and not calendar.within_hours(now_utc()):
                 continue
             with session_scope() as session:
@@ -199,6 +204,8 @@ def loop(*, once: bool = False, poll_seconds: int = 30) -> None:
                 outcome = run_task(engine, task, worker=settings.worker_name)
                 ran = task
                 logger.info("engine task", extra={"task": task, "status": outcome["status"]})
+                heartbeat(settings.worker_name, ran, {"shadow_mode": settings.shadow_mode,
+                                                      "strategy": strategy.version})
         heartbeat(settings.worker_name, ran, {"shadow_mode": settings.shadow_mode,
                                               "strategy": strategy.version})
         if once:

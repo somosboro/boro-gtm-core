@@ -164,7 +164,11 @@ def health(session: Session) -> dict[str, Any]:
     last = {task: at.isoformat() for task, at in session.execute(
         select(CeTaskRun.task, func.max(CeTaskRun.started_at)).where(CeTaskRun.status == "OK")
         .group_by(CeTaskRun.task))}
-    alive = any(b["age_seconds"] < 300 for b in beats)
+    # A sourcing pass can hold one process for a while; the engine is healthy
+    # when the outreach worker is alive.
+    alive = any(b["age_seconds"] < 300 for b in beats if b["worker"] != "sourcing") or (
+        bool(beats) and all(b["worker"] == "sourcing" for b in beats)
+        and any(b["age_seconds"] < 3600 for b in beats))
     return {"healthy": alive and not paused(session), "workers": beats, "last_ok": last,
             "recent_failures": failed, "sending_paused": paused(session)}
 
