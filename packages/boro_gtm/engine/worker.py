@@ -158,10 +158,19 @@ def _jsonable(value: Any) -> dict[str, Any]:
     return json.loads(json.dumps({"value": value}, default=str))
 
 
+#: A failed or interrupted task is retried this soon, not a whole interval later.
+RETRY_AFTER_FAILURE = timedelta(minutes=15)
+
+
 def _due(session: Session, task: str, every: timedelta) -> bool:
-    last = session.scalar(select(func.max(CeTaskRun.started_at)).where(
-        CeTaskRun.task == task, CeTaskRun.status.in_(("OK", "FAILED"))))
-    return last is None or now_utc() - last >= every
+    ok = session.scalar(select(func.max(CeTaskRun.started_at)).where(
+        CeTaskRun.task == task, CeTaskRun.status == "OK"))
+    failed = session.scalar(select(func.max(CeTaskRun.started_at)).where(
+        CeTaskRun.task == task, CeTaskRun.status == "FAILED"))
+    moment = now_utc()
+    if failed is not None and (ok is None or failed > ok):
+        return moment - failed >= RETRY_AFTER_FAILURE
+    return ok is None or moment - ok >= every
 
 
 def heartbeat(worker: str, task: str | None, details: dict[str, Any]) -> None:
@@ -192,7 +201,9 @@ def loop(*, once: bool = False, poll_seconds: int = 30,
         interrupted = session.execute(text(
             "UPDATE ce_task_runs SET status = 'FAILED', finished_at = now(), "
             "error = 'interrupted: worker restarted' "
-            "WHERE status = 'RUNNING' AND worker = :w"), {"w": settings.worker_name}).rowcount
+            "WHERE status = 'RUNNING' "
+            "AND (worker = :w OR started_at < now() - interval '2 hours')"),
+            {"w": settings.worker_name}).rowcount
     logger.info("engine worker starting", extra={"worker": settings.worker_name,
                                                  "interrupted_runs": interrupted,
                                                  "shadow_mode": settings.shadow_mode,

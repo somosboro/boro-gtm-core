@@ -715,3 +715,19 @@ def test_an_xlsx_pool_imports_like_a_csv(session, strategy, tmp_path):
     path = tmp_path / "pool.xlsx"
     book.save(path)
     assert import_pool(session, strategy, path)["created"] == 1
+
+
+def test_a_failed_task_is_retried_soon_not_a_whole_interval_later(session):
+    from boro_gtm.engine import worker
+    from boro_gtm.engine.models import CeTaskRun
+
+    now = datetime.now(UTC)
+    session.add(CeTaskRun(task="source", worker="w", status="OK", started_at=now - timedelta(hours=8)))
+    session.add(CeTaskRun(task="source", worker="w", status="FAILED",
+                          started_at=now - timedelta(minutes=20), error="interrupted"))
+    session.flush()
+    assert worker._due(session, "source", timedelta(hours=6)) is True
+    session.add(CeTaskRun(task="source", worker="w", status="FAILED",
+                          started_at=now - timedelta(minutes=5), error="interrupted"))
+    session.flush()
+    assert worker._due(session, "source", timedelta(hours=6)) is False
