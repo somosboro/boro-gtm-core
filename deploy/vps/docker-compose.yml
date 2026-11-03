@@ -1,0 +1,94 @@
+# BoRo GTM commercial engine on the shared BoRo VPS (CE-ADR-016).
+#
+# Isolated: its own project name, network, volume and database. Nothing is
+# published on a public interface; the API listens on 127.0.0.1 only and is
+# reached through an SSH tunnel. Limits are conservative because Odoo, ACOS,
+# Qué Compro and BoRo OS share these 2 vCPU / 8 GB.
+name: boro_gtm
+
+x-app: &app
+  image: boro-gtm-core:${GTM_IMAGE_TAG:-latest}
+  env_file: .env
+  environment:
+    GTM_DATABASE_URL: postgresql+psycopg://gtm:${GTM_DB_PASSWORD}@db:5432/gtm_core
+    GTM_LOG_JSON: "true"
+    GTM_ENGINE_GMAIL_CREDENTIALS: /run/secrets/gmail.json
+  volumes:
+    - ./secrets:/run/secrets:ro
+  networks: [gtm]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "5"}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gtm
+      POSTGRES_PASSWORD: ${GTM_DB_PASSWORD}
+      POSTGRES_DB: gtm_core
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [gtm]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gtm -d gtm_core"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits: {cpus: "0.50", memory: 512M}
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      db: {condition: service_healthy}
+    deploy:
+      resources:
+        limits: {cpus: "0.50", memory: 256M}
+
+  api:
+    <<: *app
+    command: ["uvicorn", "boro_gtm.api.main:app", "--host", "0.0.0.0", "--port", "8000",
+              "--workers", "1"]
+    ports:
+      - "127.0.0.1:8110:8000"
+    depends_on:
+      db: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits: {cpus: "0.50", memory: 384M}
+
+  worker:
+    <<: *app
+    command: ["gtm", "engine", "worker"]
+    depends_on:
+      db: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD-SHELL", "gtm engine health > /dev/null"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits: {cpus: "0.50", memory: 384M}
+
+networks:
+  gtm:
+    name: boro_gtm_internal
+
+volumes:
+  pgdata:
+    name: boro_gtm_pgdata

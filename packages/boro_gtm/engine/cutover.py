@@ -36,7 +36,10 @@ def report(session: Session) -> dict[str, Any]:
     history = session.scalar(select(func.count()).select_from(CeMailEvent).where(
         CeMailEvent.direction == "OUT")) or 0
     earliest = session.scalar(select(func.min(CeMailEvent.sent_at)))
-    checks["gmail_credentials"] = {"ok": bool(settings.gmail_credentials)}
+    from pathlib import Path
+
+    creds = settings.gmail_credentials
+    checks["gmail_credentials"] = {"ok": bool(creds) and Path(creds).is_file()}
     checks["gmail_history_ingested"] = {
         "ok": history > 0 and earliest is not None and now_utc() - earliest > timedelta(days=60),
         "outbound_messages": history, "earliest": earliest}
