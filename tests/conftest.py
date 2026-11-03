@@ -141,6 +141,10 @@ _ALL_TABLES = (
     "research_source_edges, research_fetch_events, research_artifact_bodies, "
     "research_source_discoveries, research_sources, "
     "operational_research_attempts, operational_research_runs, "
+    # Commercial engine. Before `companies`, which ce_accounts may reference.
+    "ce_mail_events, ce_deals, ce_problem_signals, ce_target_events, ce_messages, "
+    "ce_targets, ce_contacts, ce_signals, ce_source_runs, ce_source_cursors, "
+    "ce_accounts, ce_suppressions, ce_controls, ce_task_runs, ce_worker_heartbeats, "
     "companies, attribute_definitions"
 )
 

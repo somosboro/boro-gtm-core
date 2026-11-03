@@ -1,0 +1,498 @@
+"""Planning, sending and following up, exactly once (CE-ADR-004, CE-ADR-006).
+
+Three guarantees, each held by the database rather than by care:
+
+* one message per target per step — `UNIQUE (target_id, step)`;
+* a message is marked SENDING and committed *before* the network call, with a
+  Message-ID fixed in advance, so a crashed send is reconciled by asking Gmail
+  whether that Message-ID exists, never by sending again blind;
+* the daily cap counts every initial already scheduled, sending, sent or
+  shadowed today, under an advisory lock.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import uuid
+from datetime import date, datetime, timedelta
+from typing import Any
+
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import Session
+
+from boro_gtm.engine import states as S
+from boro_gtm.engine.business_days import BusinessCalendar
+from boro_gtm.engine.gmail import MailGateway, build_mime
+from boro_gtm.engine.models import (
+    CeAccount,
+    CeContact,
+    CeControl,
+    CeMailEvent,
+    CeMessage,
+    CeSignal,
+    CeTarget,
+)
+from boro_gtm.engine.pipeline import (
+    EngineError,
+    now_utc,
+    send_blockers,
+    transition,
+)
+from boro_gtm.engine.strategy import Strategy
+
+SPANISH = frozenset({"CL", "PE", "CO", "MX", "AR", "ES", "UY", "EC", "BO", "PY", "CR", "PA",
+                     "GT", "DO", "VE", "SV", "HN", "NI"})
+PAUSE_KEY = "sending_paused"
+_PLACEHOLDER = re.compile(r"\{[a-z_]+\}")
+#: Advisory-lock key for the daily cap. Any constant; it only has to be shared.
+_CAP_LOCK = 774_211_001
+
+
+def language_for(country: str | None) -> str:
+    return "es" if (country or "").upper() in SPANISH else "en"
+
+
+def choose_proof(strategy: Strategy, text: str, language: str) -> str:
+    lowered = text.lower()
+    proofs = strategy.raw["proof_points"]
+    if any(t in lowered for t in ("clínic", "clinic", "salud", "health", "pacient", "patient")):
+        key = "clinical_erp"
+    elif "odoo" in lowered or "erp" in lowered:
+        key = "patient_ops"
+    elif any(t in lowered for t in ("mobile", "móvil", "movil", "react native", "expo", "app")):
+        key = "quecompro"
+    elif any(t in lowered for t in ("web", "sitio", "website", "portal")):
+        key = "viba"
+    else:
+        key = "quecompro"
+    return proofs[key][language]
+
+
+def first_name(contact: CeContact, language: str) -> str:
+    if contact.full_name and not contact.is_generic:
+        return contact.full_name.split()[0]
+    return "equipo" if language == "es" else "there"
+
+
+def render(strategy: Strategy, *, target: CeTarget, account: CeAccount, contact: CeContact,
+           signal: CeSignal | None, step: str) -> dict[str, str]:
+    language = language_for(target.country)
+    template = strategy.template(target.lane)
+    parts = template[language][step]
+    attrs = (signal.attributes if signal is not None else {}) or {}
+    evidence = attrs.get(f"evidence_{language}") or attrs.get("evidence") or ""
+    signal_title = (signal.title if signal is not None else "") or ""
+    values = {
+        "first_name": first_name(contact, language),
+        "company": account.name or account.domain,
+        "evidence": evidence,
+        "signal_title": signal_title[:90],
+        "proof": choose_proof(strategy, f"{signal_title} {signal.excerpt if signal else ''}",
+                              language),
+        "signature": strategy.sender["signature"],
+    }
+    if "{evidence}" in parts["body"] and not evidence:
+        raise EngineError("template needs observable evidence and the signal has none",
+                          details={"target_id": str(target.id)})
+    if "{signal_title}" in parts["body"] + parts["subject"] and not signal_title:
+        raise EngineError("template needs the signal title", details={"target_id": str(target.id)})
+    subject = parts["subject"].format(**values)
+    body = parts["body"].format(**values)
+    if _PLACEHOLDER.search(subject + body):
+        raise EngineError("unfilled placeholder", details={"target_id": str(target.id)})
+    return {"subject": subject, "body": body, "language": language,
+            "variant": template["variant"], "offer": template["offer"]}
+
+
+def rfc822_id(target_id: uuid.UUID, step: str, sender: str) -> str:
+    digest = hashlib.sha256(f"{target_id}:{step}".encode()).hexdigest()[:32]
+    return f"<ce.{digest}@{sender.split('@')[1]}>"
+
+
+# --- controls ---------------------------------------------------------------
+
+
+def paused(session: Session) -> dict[str, Any] | None:
+    row = session.get(CeControl, PAUSE_KEY)
+    return row.value if row is not None and row.value.get("paused") else None
+
+
+def set_pause(session: Session, *, paused_: bool, reason: str) -> None:
+    row = session.get(CeControl, PAUSE_KEY)
+    value = {"paused": paused_, "reason": reason, "at": now_utc().isoformat()}
+    if row is None:
+        session.add(CeControl(key=PAUSE_KEY, value=value, updated_at=now_utc()))
+    else:
+        row.value, row.updated_at = value, now_utc()
+    session.flush()
+
+
+# --- planning initials ------------------------------------------------------
+
+
+def initials_counted_today(session: Session, cal: BusinessCalendar, day: date) -> int:
+    start = cal.opening(day).replace(hour=0, minute=0)
+    end = start + timedelta(days=1)
+    return session.scalar(select(func.count()).select_from(CeMessage).where(
+        CeMessage.step == "INITIAL",
+        CeMessage.status.in_(("SCHEDULED", "SENDING", "SENT", "SHADOW")),
+        CeMessage.due_at >= start, CeMessage.due_at < end)) or 0
+
+
+def _lane_quotas(strategy: Strategy, slots: int) -> dict[str, int]:
+    mix = strategy.lane_mix
+    quotas = {lane: int(slots * share) for lane, share in mix.items()}
+    leftover = slots - sum(quotas.values())
+    for lane in sorted(mix, key=lambda k: -mix[k]):
+        if leftover <= 0:
+            break
+        quotas[lane] += 1
+        leftover -= 1
+    return quotas
+
+
+def plan_initials(session: Session, strategy: Strategy, *, now: datetime | None = None,
+                  actor: str = "system:planner") -> dict[str, Any]:
+    """Schedule today's first contacts, spread over the business day."""
+    cal = BusinessCalendar(strategy)
+    moment = now or now_utc()
+    day = cal.business_day_of(moment)
+    if not cal.is_business_day(day):
+        return {"planned": 0, "reason": "not_a_business_day"}
+    session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _CAP_LOCK})
+    already = initials_counted_today(session, cal, day)
+    slots = max(0, strategy.daily_cap - already)
+    if slots == 0:
+        return {"planned": 0, "reason": "daily_cap_reached", "cap": strategy.daily_cap}
+
+    has_initial = select(CeMessage.target_id).where(CeMessage.step == "INITIAL")
+    ready = list(session.scalars(
+        select(CeTarget).where(CeTarget.state == S.READY, CeTarget.id.not_in(has_initial))
+        .order_by(CeTarget.score.desc().nulls_last(), CeTarget.created_at)
+    ).all())
+    quotas = _lane_quotas(strategy, slots)
+    chosen: list[CeTarget] = []
+    for lane, quota in quotas.items():
+        chosen.extend([t for t in ready if t.lane == lane][:quota])
+    # Unused lane share goes to the best remaining targets: the mix is a
+    # guide for measurement, not a reason to send fewer than the cap allows.
+    rest = [t for t in ready if t not in chosen]
+    chosen.extend(rest[: slots - len(chosen)])
+
+    start = max(cal.next_open_moment(moment), moment)
+    gap = timedelta(minutes=strategy.min_minutes_between_sends)
+    closing = cal.closing(cal.business_day_of(start))
+    planned, blocked = 0, []
+    for target in chosen:
+        contact = session.get(CeContact, target.contact_id) if target.contact_id else None
+        reasons = send_blockers(session, strategy, target, contact, step="INITIAL")
+        if reasons:
+            _route_blocked(session, target, reasons, actor)
+            blocked.append({"target_id": str(target.id), "reasons": reasons})
+            continue
+        jitter = int(hashlib.sha256(str(target.id).encode()).hexdigest(), 16) % 5
+        due = start + gap * planned + timedelta(minutes=jitter)
+        if due > closing:
+            break
+        _create_message(session, strategy, target, contact, "INITIAL", due)
+        planned += 1
+    return {"planned": planned, "blocked": blocked, "cap": strategy.daily_cap,
+            "already_today": already, "quotas": quotas}
+
+
+def _route_blocked(session: Session, target: CeTarget, reasons: list[str], actor: str) -> None:
+    if any(r.startswith("suppressed") for r in reasons):
+        transition(session, target, S.SUPPRESSED, reason=";".join(reasons), actor=actor)
+    elif "signal_expired" in reasons:
+        transition(session, target, S.EXPIRED, reason="signal_expired", actor=actor)
+    elif reasons == ["jurisdiction_review"]:
+        # READY cannot go back to COMPLIANCE_REVIEW; it stays READY, unplanned,
+        # and the report lists it. Enrichment routes new ones before READY.
+        return
+    else:
+        transition(session, target, S.BLOCKED, reason=";".join(reasons), actor=actor)
+
+
+def _create_message(session: Session, strategy: Strategy, target: CeTarget,
+                    contact: CeContact, step: str, due: datetime,
+                    in_reply_to: str | None = None) -> CeMessage:
+    account = session.get(CeAccount, target.account_id)
+    signal = session.get(CeSignal, target.signal_id) if target.signal_id else None
+    rendered = render(strategy, target=target, account=account, contact=contact,
+                      signal=signal, step=step)
+    message = CeMessage(
+        target_id=target.id, contact_id=contact.id, step=step, lane=target.lane,
+        segment=target.segment, country=target.country, language=rendered["language"],
+        variant=rendered["variant"], offer=rendered["offer"],
+        strategy_version=strategy.version, to_email=contact.email.lower(),
+        subject=rendered["subject"], body=rendered["body"],
+        rfc822_message_id=rfc822_id(target.id, step, strategy.sender["email"]),
+        in_reply_to=in_reply_to, status="SCHEDULED", due_at=due, created_at=now_utc(),
+    )
+    session.add(message)
+    session.flush()
+    return message
+
+
+# --- follow-up dates --------------------------------------------------------
+
+
+def followup_due(strategy: Strategy, *, lane: str, step: str, initial_sent: datetime,
+                 f1_sent: datetime | None = None,
+                 expires_at: datetime | None = None) -> datetime | None:
+    """When `step` is due, or None when it must not be sent at all."""
+    cal = BusinessCalendar(strategy)
+    rule = strategy.cadence(lane)
+    sent_local = cal.local(initial_sent)
+    if step == "F1":
+        day = cal.add_business_days(sent_local.date(), rule["f1_business_days"])
+        due = datetime.combine(day, sent_local.time(), cal.tz)
+    elif step == "F2":
+        if f1_sent is None:
+            raise ValueError("F2 is computed from F1")
+        earliest = max(initial_sent + timedelta(days=rule["f2_min_calendar_days"]),
+                       f1_sent + timedelta(days=rule["f2_min_days_after_f1"]))
+        latest = (initial_sent + timedelta(days=rule["f2_max_calendar_days"])
+                  if "f2_max_calendar_days" in rule else None)
+        due = earliest
+        if latest is not None and due > latest:
+            due = latest if latest > f1_sent + timedelta(days=1) else earliest
+    else:
+        raise ValueError(step)
+    due = cal.next_open_moment(due)
+    if expires_at is not None:
+        if expires_at <= due:
+            # Explicit demand: speed matters, so a follow-up that would land
+            # after the deadline moves to the last business moment before it.
+            before = cal.next_open_moment(expires_at - timedelta(days=1))
+            if before >= expires_at or (step == "F2" and f1_sent and before <= f1_sent):
+                return None
+            due = before
+    return due
+
+
+def postpone_followups(session: Session, strategy: Strategy, target_id: uuid.UUID,
+                       until: date) -> int:
+    """An out-of-office reply moves pending follow-ups past the return date."""
+    cal = BusinessCalendar(strategy)
+    resume = cal.opening(cal.add_business_days(until, 1))
+    moved = 0
+    for message in session.scalars(select(CeMessage).where(
+            CeMessage.target_id == target_id, CeMessage.status == "SCHEDULED",
+            CeMessage.step != "INITIAL")):
+        if message.due_at < resume:
+            message.due_at = resume
+            moved += 1
+    session.flush()
+    return moved
+
+
+def cancel_pending(session: Session, target_id: uuid.UUID, reason: str) -> int:
+    rows = list(session.scalars(select(CeMessage).where(
+        CeMessage.target_id == target_id, CeMessage.status == "SCHEDULED")))
+    for message in rows:
+        message.status = "CANCELLED"
+        message.last_error = reason
+    session.flush()
+    return len(rows)
+
+
+# --- sending ----------------------------------------------------------------
+
+_NEXT_STATE = {"INITIAL": S.CONTACTED, "F1": S.F1, "F2": S.F2}
+
+
+def _last_real_send(session: Session) -> datetime | None:
+    return session.scalar(select(func.max(CeMessage.sent_at)).where(CeMessage.status == "SENT"))
+
+
+def send_due(session: Session, strategy: Strategy, gateway: MailGateway | None, *,
+             shadow: bool, now: datetime | None = None, limit: int = 1,
+             actor: str = "system:sender") -> list[dict[str, Any]]:
+    """Send (or shadow) due messages. Commits per message, by design."""
+    cal = BusinessCalendar(strategy)
+    moment = now or now_utc()
+    results: list[dict[str, Any]] = []
+    if not shadow and gateway is None:
+        return [{"skipped": "no_gateway"}]
+    if not cal.within_hours(moment):
+        return [{"skipped": "outside_business_hours"}]
+    if not shadow and (pause := paused(session)):
+        return [{"skipped": "paused", "reason": pause.get("reason")}]
+    for _ in range(limit):
+        if not shadow:
+            last = _last_real_send(session)
+            if last and moment - last < timedelta(minutes=strategy.min_minutes_between_sends):
+                results.append({"skipped": "spacing"})
+                break
+        message = session.scalar(
+            select(CeMessage).where(CeMessage.status == "SCHEDULED", CeMessage.due_at <= moment)
+            .order_by(CeMessage.due_at).limit(1).with_for_update(skip_locked=True))
+        if message is None:
+            break
+        results.append(_send_one(session, strategy, gateway, message, shadow=shadow,
+                                 moment=moment, actor=actor))
+        session.commit()
+    return results
+
+
+def _send_one(session: Session, strategy: Strategy, gateway: MailGateway | None,
+              message: CeMessage, *, shadow: bool, moment: datetime,
+              actor: str) -> dict[str, Any]:
+    target = session.get(CeTarget, message.target_id)
+    contact = session.get(CeContact, message.contact_id)
+    reasons = send_blockers(session, strategy, target, contact, step=message.step)
+    # In shadow mode the target never advances, so a follow-up would always
+    # look "out of state". That is the only check shadow mode relaxes.
+    if shadow and message.step != "INITIAL":
+        reasons = [r for r in reasons if not r.startswith("state_")]
+    if reasons:
+        message.status = "BLOCKED"
+        message.last_error = ";".join(reasons)
+        session.flush()
+        return {"message_id": str(message.id), "status": "BLOCKED", "reasons": reasons}
+    if shadow:
+        message.status = "SHADOW"
+        message.sent_at = moment
+        session.flush()
+        return {"message_id": str(message.id), "status": "SHADOW", "to": message.to_email}
+
+    message.status = "SENDING"
+    message.attempts += 1
+    message.claimed_at = now_utc()
+    session.commit()  # durable intent before the network call
+    try:
+        existing = gateway.find_by_rfc822(message.rfc822_message_id)
+        ref = existing or gateway.send(_mime(strategy, message), _thread_of(session, message))
+    except Exception as exc:  # noqa: BLE001 - recorded, reconciled later
+        message.last_error = str(exc)[:2000]
+        session.flush()
+        return {"message_id": str(message.id), "status": "SENDING_UNCONFIRMED",
+                "error": message.last_error}
+    _mark_sent(session, strategy, message, target, ref.message_id, ref.thread_id, moment, actor)
+    return {"message_id": str(message.id), "status": "SENT", "to": message.to_email,
+            "step": message.step}
+
+
+def _thread_of(session: Session, message: CeMessage) -> str | None:
+    if message.step == "INITIAL":
+        return None
+    return session.scalar(select(CeMessage.gmail_thread_id).where(
+        CeMessage.target_id == message.target_id, CeMessage.step == "INITIAL"))
+
+
+def _mime(strategy: Strategy, message: CeMessage) -> bytes:
+    return build_mime(sender=strategy.sender["email"], sender_name=strategy.sender["name"],
+                      to=message.to_email, subject=message.subject, body=message.body,
+                      rfc822_id=message.rfc822_message_id, in_reply_to=message.in_reply_to,
+                      when=now_utc())
+
+
+def _mark_sent(session: Session, strategy: Strategy, message: CeMessage, target: CeTarget,
+               gmail_id: str, thread_id: str, moment: datetime, actor: str) -> None:
+    message.status = "SENT"
+    message.sent_at = message.sent_at or moment
+    message.gmail_message_id = gmail_id
+    message.gmail_thread_id = thread_id
+    message.last_error = None
+    session.flush()
+    transition(session, target, _NEXT_STATE[message.step],
+               reason=f"{message.step.lower()}_sent", actor=actor,
+               details={"message_id": str(message.id)}, at=message.sent_at)
+    _schedule_next(session, strategy, target, message)
+
+
+def _schedule_next(session: Session, strategy: Strategy, target: CeTarget,
+                   sent: CeMessage) -> None:
+    contact = session.get(CeContact, sent.contact_id)
+    initial = session.scalar(select(CeMessage).where(
+        CeMessage.target_id == target.id, CeMessage.step == "INITIAL"))
+    if sent.step == "INITIAL":
+        due = followup_due(strategy, lane=target.lane, step="F1", initial_sent=sent.sent_at,
+                           expires_at=target.expires_at)
+        nxt = "F1"
+    elif sent.step == "F1":
+        due = followup_due(strategy, lane=target.lane, step="F2",
+                           initial_sent=initial.sent_at, f1_sent=sent.sent_at,
+                           expires_at=target.expires_at)
+        nxt = "F2"
+    else:
+        return
+    if due is None:
+        return
+    _create_message(session, strategy, target, contact, nxt, due,
+                    in_reply_to=initial.rfc822_message_id)
+
+
+def reconcile_sending(session: Session, strategy: Strategy, gateway: MailGateway,
+                      *, older_than: timedelta = timedelta(minutes=10),
+                      actor: str = "system:reconciler") -> list[dict[str, Any]]:
+    """A message left SENDING by a dead worker is resolved against Gmail, never resent blind."""
+    cutoff = now_utc() - older_than
+    out = []
+    for message in list(session.scalars(select(CeMessage).where(
+            CeMessage.status == "SENDING", CeMessage.claimed_at < cutoff)
+            .with_for_update(skip_locked=True))):
+        ref = gateway.find_by_rfc822(message.rfc822_message_id)
+        target = session.get(CeTarget, message.target_id)
+        if ref is not None:
+            _mark_sent(session, strategy, message, target, ref.message_id, ref.thread_id,
+                       now_utc(), actor)
+            out.append({"message_id": str(message.id), "resolved": "SENT"})
+        elif message.attempts >= 3:
+            message.status = "FAILED"
+            out.append({"message_id": str(message.id), "resolved": "FAILED"})
+        else:
+            message.status = "SCHEDULED"
+            message.due_at = now_utc() + timedelta(minutes=15)
+            out.append({"message_id": str(message.id), "resolved": "RESCHEDULED"})
+        session.commit()
+    return out
+
+
+# --- closing sequences ------------------------------------------------------
+
+
+def close_sequences(session: Session, strategy: Strategy, *, now: datetime | None = None,
+                    grace_days: int = 7, actor: str = "system:closer") -> dict[str, int]:
+    """F2 with no reply → CLOSED_NO_REPLY; passed deadlines → EXPIRED."""
+    moment = now or now_utc()
+    closed = expired = 0
+    for target in list(session.scalars(select(CeTarget).where(
+            CeTarget.expires_at.is_not(None), CeTarget.expires_at <= moment,
+            CeTarget.state.in_((S.DISCOVERED, S.ENRICH, S.COMPLIANCE_REVIEW, S.READY,
+                                S.CONTACTED, S.F1, S.F2))))):
+        cancel_pending(session, target.id, "expired")
+        transition(session, target, S.EXPIRED, reason="opportunity_deadline_passed",
+                   actor=actor, at=moment)
+        expired += 1
+    for target in list(session.scalars(select(CeTarget).where(CeTarget.state == S.F2))):
+        f2 = session.scalar(select(CeMessage).where(
+            CeMessage.target_id == target.id, CeMessage.step == "F2",
+            CeMessage.status == "SENT"))
+        if f2 and f2.sent_at and moment - f2.sent_at >= timedelta(days=grace_days):
+            transition(session, target, S.CLOSED_NO_REPLY, reason="no_reply_after_f2",
+                       actor=actor, at=moment)
+            closed += 1
+    return {"closed_no_reply": closed, "expired": expired}
+
+
+def deliverability_guard(session: Session, strategy: Strategy) -> dict[str, Any]:
+    """Pause sending when recent bounces exceed the configured rate."""
+    rules = strategy.deliverability
+    recent = list(session.scalars(select(CeMessage.to_email).where(CeMessage.status == "SENT")
+                                  .order_by(CeMessage.sent_at.desc())
+                                  .limit(rules["bounce_window_sends"])))
+    if len(recent) < rules["min_sends_before_bounce_check"]:
+        return {"checked": False, "sends": len(recent)}
+    bounced = session.scalar(select(func.count()).select_from(CeMailEvent).where(
+        CeMailEvent.classification == "bounce",
+        CeMailEvent.headers["failed_recipient"].astext.in_(recent))) or 0
+    rate = bounced / len(recent)
+    breached = rate > rules["max_bounce_rate"]
+    if breached and rules.get("pause_on_breach") and not paused(session):
+        set_pause(session, paused_=True,
+                  reason=f"bounce rate {rate:.1%} over the last {len(recent)} sends")
+    return {"checked": True, "sends": len(recent), "bounces": bounced, "rate": round(rate, 4),
+            "breached": breached}

@@ -27,6 +27,8 @@ dependencies = [
     # the tree was the API test client; the live first-party transport makes it
     # a runtime dependency.
     "httpx>=0.28",
+    # Reading an operator's commercial pool, which arrives as a spreadsheet.
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

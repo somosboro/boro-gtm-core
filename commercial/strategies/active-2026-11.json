@@ -1,0 +1,120 @@
+{
+  "strategy_version": "2026-11.1",
+  "effective_from": "2026-11-03",
+  "status": "ACTIVE",
+  "supersedes": "commercial/CANONICAL_CONTRACT.json (historical strategy 2026-09: HVAC/Energy ICP, Architecture Sprint entry offer). Archived, not deleted; never read by the commercial engine.",
+  "sender": {
+    "email": "abourgeoisroa@somosboro.com",
+    "name": "Amaru Bourgeois",
+    "signature": "Amaru Bourgeois\nFounder, BoRo Studio\nsomosboro.com",
+    "postal_address": null
+  },
+  "timezone": "America/Santiago",
+  "business_hours": {"start": "09:15", "end": "17:30"},
+  "holidays": [
+    "2026-11-20", "2026-12-08", "2026-12-25", "2027-01-01", "2027-04-02", "2027-04-03",
+    "2027-05-01", "2027-05-21", "2027-06-21", "2027-06-29", "2027-07-16", "2027-08-15",
+    "2027-09-17", "2027-09-18", "2027-09-19", "2027-10-11", "2027-10-31", "2027-11-01",
+    "2027-12-08", "2027-12-25"
+  ],
+  "volume": {
+    "initial_contacts_per_business_day": 20,
+    "max_initial_contacts_per_business_day": 20,
+    "min_minutes_between_sends": 12,
+    "new_qualified_candidates_per_day": 20,
+    "lane_mix": {"PARTNER_DELIVERY": 0.4, "EXPLICIT_DEMAND": 0.4, "TRIGGER_OVERFLOW": 0.2},
+    "ramp_rule": "Stay at 20/day until at least 10 business days of delivery, bounce and reply data exist. Then 30, then 50, only while the bounce rate stays under deliverability.max_bounce_rate."
+  },
+  "qualification": {
+    "threshold": 70,
+    "high_priority": 85,
+    "weights": {"signal": 25, "urgency": 20, "technical_fit": 20, "vendor_suitability": 15, "channel_access": 10, "economic": 10}
+  },
+  "deliverability": {
+    "max_bounce_rate": 0.05,
+    "bounce_window_sends": 40,
+    "min_sends_before_bounce_check": 10,
+    "pause_on_breach": true
+  },
+  "cadence": {
+    "PARTNER_DELIVERY": {"f1_business_days": 4, "f2_min_calendar_days": 14, "f2_min_days_after_f1": 7},
+    "TRIGGER_OVERFLOW": {"f1_business_days": 4, "f2_min_calendar_days": 14, "f2_min_days_after_f1": 7},
+    "EXPLICIT_DEMAND": {"f1_business_days": 2, "f2_min_calendar_days": 5, "f2_max_calendar_days": 7, "f2_min_days_after_f1": 2}
+  },
+  "jurisdictions": {
+    "allowed": ["CL", "PE", "CO", "MX", "AR", "UY", "EC", "BO", "PY", "CR", "PA", "GT", "DO"],
+    "review": ["ES", "PT", "FR", "DE", "IT", "NL", "BE", "IE", "GB", "CA"],
+    "requires_postal_address": ["US"],
+    "note": "EU/UK/Canada consent rules for unsolicited commercial email are stricter than BoRo can verify automatically, so targets there wait in COMPLIANCE_REVIEW. US (CAN-SPAM) is allowed only once sender.postal_address is configured."
+  },
+  "contact_roles": [
+    "founder", "co-founder", "cofounder", "ceo", "cto", "coo", "director", "head of delivery",
+    "delivery manager", "partnerships", "alianzas", "operaciones", "operations", "gerente general",
+    "gerente de operaciones", "socio", "managing partner", "implementation", "proyectos"
+  ],
+  "technical_fit_terms": [
+    "odoo", "erp", "api", "integración", "integracion", "integration", "backend", "nestjs", "nest.js",
+    "next.js", "nextjs", "react", "react native", "expo", "node", "typescript", "postgresql",
+    "postgres", "supabase", "python", "fastapi", "django", "internal tool", "herramienta interna",
+    "migración", "migracion", "migration", "automatización", "automatizacion", "automation",
+    "mobile", "app", "webhook", "plataforma", "platform", "sistema", "software"
+  ],
+  "vendor_terms": [
+    "freelance", "freelancer", "contractor", "contratista", "proyecto", "project-based",
+    "por proyecto", "outsourcing", "externo", "external", "partner", "proveedor", "vendor",
+    "agencia", "agency", "consultora", "consultancy", "staff augmentation", "rfp", "rfq",
+    "licitación", "licitacion", "cotización", "cotizacion", "implementation partner"
+  ],
+  "urgency_terms": ["urgente", "urgent", "asap", "inmediato", "immediate", "this week", "esta semana", "deadline", "plazo", "start now"],
+  "economic_terms": ["budget", "presupuesto", "usd", "us$", "clp", "eur", "€", "$", "salary", "sueldo", "rate", "tarifa", "pago"],
+  "proof_points": {
+    "clinical_erp": {"es": "un ERP clínico con gestión de pacientes a medida y teleconsulta cifrada integrada al sistema web", "en": "a clinical ERP with custom patient management and encrypted teleconsultation built into the web system"},
+    "patient_ops": {"es": "un sistema operativo React/Odoo con automatizaciones y eventos reales en producción", "en": "a React/Odoo operational system with automation and real production events"},
+    "quecompro": {"es": "Qué Compro, una app Expo/React Native + NestJS + PostgreSQL con un catálogo de 6.027 productos, publicada en App Store y Google Play", "en": "Qué Compro, an Expo/React Native + NestJS + PostgreSQL app with a 6,027-product catalog, live on the App Store and Google Play"},
+    "viba": {"es": "VIBA, sitio público con funcionalidad privada de gestión", "en": "VIBA, a public website with private management functionality"}
+  },
+  "templates": {
+    "PARTNER_DELIVERY": {
+      "variant": "partner-capacity-v1",
+      "offer": "delivery_capacity",
+      "es": {
+        "INITIAL": {"subject": "Capacidad de entrega para {company}", "body": "Hola {first_name},\n\nVi que {company} {evidence}.\n\nEn BoRo trabajamos como capacidad técnica detrás de partners: si tienen un cliente o proyecto y les falta capacidad para un frente acotado (Odoo, integraciones, backend/APIs o herramientas internas), lo ejecutamos nosotros y ustedes mantienen la relación con el cliente.\n\nPor ejemplo, construimos {proof}.\n\n¿Tiene sentido conversar 15 minutos para ver si encaja en algún proyecto que tengan hoy?\n\n{signature}\n\nSi no es relevante, responde \"no\" y no te vuelvo a escribir."},
+        "F1": {"subject": "Re: Capacidad de entrega para {company}", "body": "Hola {first_name}, retomo esto por si quedó enterrado: si hoy tienen algún frente de Odoo, integración o backend sin capacidad para tomarlo, podemos ejecutarlo bajo su relación con el cliente.\n\n{signature}"},
+        "F2": {"subject": "Re: Capacidad de entrega para {company}", "body": "Hola {first_name}, último mensaje de mi parte. Si más adelante necesitan capacidad técnica puntual para un proyecto, escríbeme y lo vemos.\n\n{signature}"}
+      },
+      "en": {
+        "INITIAL": {"subject": "Delivery capacity for {company}", "body": "Hi {first_name},\n\nI saw that {company} {evidence}.\n\nBoRo works as technical delivery capacity behind partners: when you have the client or the project and need hands for a bounded workstream (Odoo, integrations, backend/APIs or internal tools), we execute it and you keep the client relationship.\n\nFor example, we built {proof}.\n\nWorth a 15-minute call to see if it fits something you have on the go?\n\n{signature}\n\nIf this isn't relevant, reply \"no\" and I won't write again."},
+        "F1": {"subject": "Re: Delivery capacity for {company}", "body": "Hi {first_name}, bumping this in case it got buried: if you have an Odoo, integration or backend workstream nobody has capacity for, we can deliver it under your client relationship.\n\n{signature}"},
+        "F2": {"subject": "Re: Delivery capacity for {company}", "body": "Hi {first_name}, last note from me. If you need extra technical delivery capacity later on, just reply and we'll take it from there.\n\n{signature}"}
+      }
+    },
+    "EXPLICIT_DEMAND": {
+      "variant": "explicit-demand-v1",
+      "offer": "project_delivery",
+      "es": {
+        "INITIAL": {"subject": "Sobre: {signal_title}", "body": "Hola {first_name},\n\nVi su publicación \"{signal_title}\" y creo que podemos ayudar directamente con eso.\n\nEn BoRo construimos {proof}. Podemos tomar el proyecto completo o un frente acotado, según lo que necesiten.\n\n¿Les sirve una llamada corta para entender el alcance y los plazos?\n\n{signature}\n\nSi no es relevante, responde \"no\" y no te vuelvo a escribir."},
+        "F1": {"subject": "Re: Sobre: {signal_title}", "body": "Hola {first_name}, retomo esto: si \"{signal_title}\" sigue abierto, podemos revisar el alcance esta semana.\n\n{signature}"},
+        "F2": {"subject": "Re: Sobre: {signal_title}", "body": "Hola {first_name}, último mensaje sobre \"{signal_title}\". Si ya lo resolvieron, perfecto; si no, aquí estamos.\n\n{signature}"}
+      },
+      "en": {
+        "INITIAL": {"subject": "Re your post: {signal_title}", "body": "Hi {first_name},\n\nI saw your post \"{signal_title}\" and I think we can help with exactly that.\n\nAt BoRo we built {proof}. We can take the whole project or a bounded piece of it, whichever you need.\n\nWould a short call to go over scope and timing be useful?\n\n{signature}\n\nIf this isn't relevant, reply \"no\" and I won't write again."},
+        "F1": {"subject": "Re: Re your post: {signal_title}", "body": "Hi {first_name}, following up: if \"{signal_title}\" is still open, we can go over scope this week.\n\n{signature}"},
+        "F2": {"subject": "Re: Re your post: {signal_title}", "body": "Hi {first_name}, last note on \"{signal_title}\". If it's already covered, great; if not, we're here.\n\n{signature}"}
+      }
+    },
+    "TRIGGER_OVERFLOW": {
+      "variant": "trigger-overflow-v1",
+      "offer": "overflow_capacity",
+      "es": {
+        "INITIAL": {"subject": "{company} y capacidad por proyecto", "body": "Hola {first_name},\n\nVi que {company} {evidence}.\n\nSi parte de esa demanda es por proyecto, en BoRo podemos tomar un frente técnico acotado (backend/APIs, integraciones, Odoo o herramientas internas) sin que tengan que contratar por ese periodo. Construimos, por ejemplo, {proof}.\n\n¿Les sirve conversarlo?\n\n{signature}\n\nSi no es relevante, responde \"no\" y no te vuelvo a escribir."},
+        "F1": {"subject": "Re: {company} y capacidad por proyecto", "body": "Hola {first_name}, retomo esto por si sigue vigente la necesidad de capacidad por proyecto.\n\n{signature}"},
+        "F2": {"subject": "Re: {company} y capacidad por proyecto", "body": "Hola {first_name}, último mensaje de mi parte. Si más adelante necesitan capacidad puntual, escríbeme.\n\n{signature}"}
+      },
+      "en": {
+        "INITIAL": {"subject": "{company} and project-based capacity", "body": "Hi {first_name},\n\nI saw that {company} {evidence}.\n\nIf part of that demand is project-based, BoRo can take a bounded technical workstream (backend/APIs, integrations, Odoo or internal tools) without you hiring for that period. For example, we built {proof}.\n\nWorth a quick conversation?\n\n{signature}\n\nIf this isn't relevant, reply \"no\" and I won't write again."},
+        "F1": {"subject": "Re: {company} and project-based capacity", "body": "Hi {first_name}, following up in case the project-based capacity need is still open.\n\n{signature}"},
+        "F2": {"subject": "Re: {company} and project-based capacity", "body": "Hi {first_name}, last note from me. If you need short-term technical capacity later, just reply.\n\n{signature}"}
+      }
+    }
+  }
+}

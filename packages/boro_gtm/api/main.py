@@ -136,6 +136,7 @@ def create_app() -> FastAPI:
         }
 
     from boro_gtm.discovery.api.routes import router as discovery_router
+    from boro_gtm.engine.api import router as engine_router
     from boro_gtm.market_intelligence.api.routes import router as mi_router
     from boro_gtm.research.api.routes import router as research_router
     from boro_gtm.strategy.api.routes import router as strategy_router
@@ -144,6 +145,7 @@ def create_app() -> FastAPI:
     app.include_router(strategy_router, prefix=API_PREFIX)
     app.include_router(discovery_router, prefix=API_PREFIX)
     app.include_router(research_router, prefix=API_PREFIX)
+    app.include_router(engine_router, prefix=API_PREFIX)
     _document_error_responses(app)
     return app
 

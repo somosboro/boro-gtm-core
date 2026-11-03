@@ -48,6 +48,10 @@ app.add_typer(discovery_app, name="discovery")
 app.add_typer(research_app, name="research")
 app.add_typer(db_app, name="db")
 
+from boro_gtm.engine.cli import app as engine_app  # noqa: E402
+
+app.add_typer(engine_app, name="engine")
+
 
 def _bootstrap() -> None:
     settings = get_settings()
