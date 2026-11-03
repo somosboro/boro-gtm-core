@@ -230,8 +230,14 @@ def _path_values(client) -> dict[str, str]:
     }
 
 
-def test_no_get_operation_returns_an_undocumented_500(populated):
-    """Every GET in the OpenAPI document, probed three ways."""
+def test_no_get_operation_returns_an_undocumented_500(populated, monkeypatch):
+    """Every GET in the OpenAPI document, probed three ways.
+
+    The engine routes are closed without a token (CE-ADR-014); the matrix
+    supplies one so they are exercised rather than refused.
+    """
+    monkeypatch.setenv("GTM_ENGINE_API_TOKEN", "matrix-test-token")
+    auth = {"Authorization": "Bearer matrix-test-token"}
     spec = populated.get("/api/v1/openapi.json").json()
     values = _path_values(populated)
 
@@ -264,7 +270,7 @@ def test_no_get_operation_returns_an_undocumented_500(populated):
                     url = url.replace(f"{{{name}}}", value)
             if url is None:
                 continue
-            response = populated.get(url)
+            response = populated.get(url, headers=auth)
             probed += 1
             if response.status_code >= 500:
                 failures.append(f"{label} GET {url} -> {response.status_code}")

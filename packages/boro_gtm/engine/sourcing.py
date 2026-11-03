@@ -99,6 +99,9 @@ def run_source(session: Session, strategy: Strategy, adapter: SourceAdapter, fet
             cursor.cursor = (dict(page.cursor_after) | {"exhausted_at": now_utc().isoformat()}
                              if page.exhausted else dict(page.cursor_after))
             cursor.updated_at = now_utc()
+            # Each page's signals, targets and the cursor that follows them are
+            # durable together, so an interrupted pass resumes, not restarts.
+            session.commit()
             if page.exhausted:
                 run.cursor_exhausted = True
                 break

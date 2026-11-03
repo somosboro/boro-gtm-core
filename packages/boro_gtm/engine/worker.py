@@ -186,7 +186,15 @@ def loop(*, once: bool = False, poll_seconds: int = 30,
     stop = {"flag": False}
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.__setitem__("flag", True))
+    with session_scope() as session:
+        # A run this worker left RUNNING was cut off by a restart. Say so,
+        # rather than leaving it RUNNING for ever.
+        interrupted = session.execute(text(
+            "UPDATE ce_task_runs SET status = 'FAILED', finished_at = now(), "
+            "error = 'interrupted: worker restarted' "
+            "WHERE status = 'RUNNING' AND worker = :w"), {"w": settings.worker_name}).rowcount
     logger.info("engine worker starting", extra={"worker": settings.worker_name,
+                                                 "interrupted_runs": interrupted,
                                                  "shadow_mode": settings.shadow_mode,
                                                  "strategy": strategy.version})
     while not stop["flag"]:
