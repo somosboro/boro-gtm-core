@@ -1,6 +1,6 @@
 # OpenGTM / BoRo GTM Engine — M0 + M1 Implementation Pack
 
-This pack is the implementation handoff for Claude Code.
+This pack is the implementation handoff for the M0 + M1 build.
 
 ## Goal
 Build the first two milestones of the Market Intelligence subsystem that will become the foundation of OpenGTM (public/open-source core) and BoRo GTM Engine (private BoRo strategy/runtime).
@@ -42,7 +42,7 @@ It must provide:
 - `05_API_SPEC.md` — REST contract for M0/M1.
 - `06_TEST_AND_ACCEPTANCE.md` — acceptance criteria and test matrix.
 - `07_ADRS.md` — architecture decisions that should not be casually changed.
-- `08_CLAUDE_CODE_PROMPT.md` — copy/paste prompt for Claude Code.
+- `08_IMPLEMENTATION_BRIEF.md` — the implementation brief: mission, engineering rules, order and definition of done.
 - `market_intelligence_v1.schema.json` — validation schema for the source JSON.
 - `boro_market_intelligence_top50.json` — source dataset to ingest.
 

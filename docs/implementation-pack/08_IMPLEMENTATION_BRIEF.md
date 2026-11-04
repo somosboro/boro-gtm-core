@@ -1,6 +1,6 @@
-# Claude Code Prompt — Build OpenGTM M0 + M1
+# Implementation Brief — Build OpenGTM M0 + M1
 
-Copy/paste the prompt below into Claude Code and attach this entire implementation pack, especially `boro_market_intelligence_top50.json`.
+The brief below is addressed to the engineer implementing M0 + M1. Read it together with the entire implementation pack, especially `boro_market_intelligence_top50.json`.
 
 ---
 
