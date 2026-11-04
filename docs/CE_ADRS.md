@@ -234,3 +234,93 @@ configured, a lost disk loses the commercial database.
 **Decision.** Over the last 40 real sends (after at least 10), a bounce rate
 above 5% sets a durable pause; sending resumes only when a person resumes it.
 Sends are spaced at least 12 minutes apart inside business hours.
+
+---
+
+## CE-ADR-018 — Cutover is earned, not configured; off-host backup blocks live sending
+
+**Status:** accepted (2026-11 hardening sprint; supersedes the check list in CE-ADR-015)
+
+**Context.** The first cutover report could pass on a credentials file, a
+large-enough history count and one shadow message. The ChatGPT automations
+were still sending from the same mailbox.
+
+**Decision.** `gtm engine cutover-report` returns `ready_for_live: true` only
+when every blocking check is met by recorded fact:
+
+* Gmail read successfully within the last hour with a mode-600 credentials file;
+* a *complete* history backfill reaching back to 2026-06-01, followed by a
+  history reconciliation; nothing stuck SENDING or FAILED;
+* no READY target already contacted, suppressed or on a role mailbox, and one
+  first email per target;
+* SHADOW first emails on at least two business days *after* the backfill;
+* a recorded READY audit of at least 30 targets meeting the thresholds in
+  `cutover.AUDIT_THRESHOLDS` (identity, domain, signal, lane ≥95%; contact ≥95%;
+  channel ≥90%; support mailbox, Gmail duplicate, suppression, invented pain: 100%);
+* shadow parity recorded for at least two business days with no critical mismatch;
+* the history backfill loaded suppressions; no suppressed contact READY;
+* `gtm engine verify` passed within 7 days (bounce, opt-out and follow-up
+  dates on the production database, rolled back);
+* both workers healthy, a recent completed source run, and each worker
+  restarted at least once with a successful task after the restart;
+* a backup within 26 hours, a restore test within 8 days (both written to
+  `ce_controls` by the scripts), schema equal to the migrations, a valid
+  active strategy;
+* **an off-host copy of the latest backup.**
+
+**Off-host backup decision.** It blocks real sending, not shadow operation.
+Before live, Gmail can rebuild who was contacted. After live, the database also
+holds what Gmail cannot rebuild: manual suppressions, lanes and scores behind
+every send, human pipeline moves and deal values. A free encrypted copy on the
+existing Google Workspace Drive takes about ten minutes, so the protection is
+cheap and losing the disk unprotected is not.
+
+---
+
+## CE-ADR-019 — Gmail history is adopted, not just used as a block
+
+**Status:** accepted
+
+**Context.** Until cutover the ChatGPT automations send first emails and
+follow-ups from the corporate mailbox. Blocking every company Gmail shows as
+contacted would prevent duplicates, but at cutover every running ChatGPT
+sequence would lose its follow-ups.
+
+**Decision.** Only Gmail messages labelled SENT are outreach (drafts never are).
+When an open, not-yet-contacted target's company appears in Gmail's outbound
+history within 35 days, the engine adopts that thread: the first email (and up
+to two follow-ups) become SENT messages on the target with variant
+`external_gmail`, replacing any shadow rehearsal (kept in the transition's
+details), the state follows, replies already in the thread take effect, and the
+next follow-up is scheduled on the lane's cadence. Older threads block
+re-contact (`gmail_history_sequence_finished`). A follow-up someone else sends
+in an adopted thread is recorded as that step. Companies with a recent external
+sequence but no engine pursuit are reported, never invented.
+
+---
+
+## CE-ADR-020 — The lane mix is protected from the easiest source
+
+**Status:** accepted
+
+**Decision.** The planner fills each lane's share of the day (40/40/20). A
+short lane's share may go to other lanes' best READY targets, but no lane takes
+more than 60% of the day's first emails (`outreach.MAX_LANE_SHARE`). The rest
+is reported as `lane_shortage` / `unfilled_slots`, never filled by lowering the
+threshold. Sourcing likewise runs each lane's sources toward that lane's share
+and reports per-lane shortage with every source's counts and cursor.
+
+---
+
+## CE-ADR-021 — Sources are audited before they are automated
+
+**Status:** accepted
+
+**Decision.** A source is automated only through a public API or pages its
+robots.txt allows, without login walls, CAPTCHAs or anti-bot challenges, and
+only when it yields a company identity (its own domain) and a legitimate
+channel. Everything else is a `MANUAL_SOURCE` with a written reason and
+workflow (`engine/sources/manual.py`), listed in every ladder report.
+Platform-only channels (Upwork, LinkedIn, ATS forms) are kept as MANUAL
+applications, never turned into guessed email addresses. Historic contractor
+usage is labelled `HISTORIC_SIGNAL`, never current explicit demand.

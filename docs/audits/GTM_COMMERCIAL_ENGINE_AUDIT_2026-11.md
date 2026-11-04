@@ -174,3 +174,54 @@ PostgreSQL 16 in Docker Compose. No Redis, no broker, no model required.
   20 qualified, contactable, allowed-jurisdiction targets a day on their own.
   The ladder records exactly where it fell short. More sources are the next
   lever (see blockers).
+
+## 14. Git history and merge path (correction)
+
+The first delivery report said the engine was "13 commits on top of
+`ee711bd`". That was wrong. The repository on 2026-11-03 shows:
+
+* `main` = `fc76be4`.
+* `feat/m2-live-discovery` = `ee711bd`, **4 commits ahead of `main`**:
+  * `cfcca06`: Google Places discovery.
+  * `084d8b9`: run-scoped metrics and breadth-first discovery.
+  * `a13faaa`: Public Suffix List identity.
+  * `ee711bd`: same-run convergence and trading names.
+  These are validated (Phase C PASS) and **unmerged**.
+* `feat/commercial-engine` was **10 commits ahead of `ee711bd`** at the first
+  delivery (`3f0dbea` … `0e2c9b8`), so **14 commits ahead of `main`**. The
+  hardening sprint adds more; the current count is in the final report.
+
+So `feat/commercial-engine` contains the four unmerged M2 commits. That is not
+accidental: the engine keys accounts on M2's registrable-domain identity
+(`normalize_domain`, `domain_role` with the Public Suffix List, from `a13faaa`).
+Neither line adds a migration that the other lacks out of order: the engine's
+`0011` follows `0010_m3_review_resolution`, which `main` already has.
+
+**Recommended merge (no history rewrite):**
+
+1. Open a PR `feat/m2-live-discovery` → `main` and merge it with a merge commit
+   (4 commits, already validated by Phase C).
+2. Open a PR `feat/commercial-engine` → `main`. Its diff then shows only the
+   engine commits. Merge with a merge commit.
+
+The final tree is identical to merging all commits at once (option A), but
+each PR stays reviewable on its own. Rebasing or cherry-picking the engine
+onto `main` without M2 (option B) would break it, because it depends on the
+M2 identity code. It would also rewrite published history for no gain.
+Nothing is force-pushed.
+
+## 15. Production-readiness sprint (2026-11-03)
+
+* **Gmail is authoritative** (CE-ADR-019).
+  * Only SENT-labelled messages count as sent; drafts never do.
+  * Complete-listing cursor.
+  * Suppressions come from the backfill.
+  * Running ChatGPT sequences are adopted, with follow-ups scheduled, instead
+    of only being blocked.
+  * Tokens for any mailbox but `abourgeoisroa@somosboro.com` are refused.
+* **Sources:** see [SOURCE_COVERAGE_2026-11.md](SOURCE_COVERAGE_2026-11.md).
+* **Cutover:** earned, not configured (CE-ADR-018). Includes the READY audit,
+  shadow parity and recorded backups and restores. An off-host backup blocks
+  live sending.
+* **Lane mix:** protected (CE-ADR-020).
+* **Shadow comparison:** [SHADOW_PARITY_2026-11.md](SHADOW_PARITY_2026-11.md).
