@@ -20,7 +20,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from boro_gtm.core.db import get_engine, session_scope
-from boro_gtm.engine import enrichment, outreach, replies, sourcing
+from boro_gtm.engine import controls, enrichment, outreach, replies, sourcing
 from boro_gtm.engine.business_days import BusinessCalendar
 from boro_gtm.engine.gmail import GmailApiGateway, GmailUnavailableError, MailGateway
 from boro_gtm.engine.llm import provider_from_env
@@ -51,10 +51,18 @@ class Engine:
     def gateway(self) -> MailGateway | None:
         if self._gateway is None and self.settings.gmail_credentials:
             try:
-                self._gateway = GmailApiGateway(self.strategy.sender["email"],
-                                                self.settings.gmail_credentials)
+                gateway = GmailApiGateway(self.strategy.sender["email"],
+                                          self.settings.gmail_credentials)
             except GmailUnavailableError:
                 return None
+            # Never read or send through any mailbox but the corporate sender
+            # (a personal Gmail token would otherwise work just as well).
+            opened = gateway.mailbox()
+            if opened != self.strategy.sender["email"].lower():
+                raise GmailUnavailableError(
+                    f"Gmail credentials open {opened}, not the corporate sender "
+                    f"{self.strategy.sender['email']}; refusing to use them")
+            self._gateway = gateway
         return self._gateway
 
     # -- tasks --------------------------------------------------------------
@@ -88,7 +96,11 @@ class Engine:
             getattr(fetcher, "close", lambda: None)()
 
     def plan(self, session: Session) -> dict[str, Any]:
-        return outreach.plan_initials(session, self.strategy)
+        shadow = self.settings.shadow_mode
+        result = outreach.plan_initials(session, self.strategy, shadow=shadow)
+        if not shadow:
+            result["rearmed_followups"] = outreach.rearm_shadow_followups(session)
+        return result
 
     def send(self, session: Session) -> Any:
         gateway = None if self.settings.shadow_mode else self.gateway()
@@ -204,6 +216,7 @@ def loop(*, once: bool = False, poll_seconds: int = 30,
             "WHERE status = 'RUNNING' "
             "AND (worker = :w OR started_at < now() - interval '2 hours')"),
             {"w": settings.worker_name}).rowcount
+        controls.record_worker_start(session, settings.worker_name, interrupted)
     logger.info("engine worker starting", extra={"worker": settings.worker_name,
                                                  "interrupted_runs": interrupted,
                                                  "shadow_mode": settings.shadow_mode,

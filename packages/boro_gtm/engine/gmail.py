@@ -102,7 +102,14 @@ class GmailApiGateway:
             raise GmailUnavailableError(
                 f"no Gmail credentials: set {CREDENTIALS_ENV} to the OAuth JSON file",
                 details={"env_var": CREDENTIALS_ENV})
+        if os.name == "posix" and Path(path).stat().st_mode & 0o077:
+            raise GmailUnavailableError(
+                "Gmail credentials file must be readable by its owner only (chmod 600)",
+                details={"env_var": CREDENTIALS_ENV})
         self._creds = json.loads(Path(path).read_text())
+        missing = {"client_id", "client_secret", "refresh_token"} - set(self._creds)
+        if missing:
+            raise GmailUnavailableError(f"Gmail credentials file lacks {sorted(missing)}")
         self.sender = sender
         self._client = client or httpx.Client(timeout=30)
         self._token: str | None = None
@@ -130,6 +137,10 @@ class GmailApiGateway:
             raise GmailUnavailableError(f"Gmail {method} {path.split('?')[0]} -> "
                                         f"HTTP {response.status_code}")
         return response.json()
+
+    def mailbox(self) -> str:
+        """The address these credentials actually open (gmail.readonly allows it)."""
+        return str(self._call("GET", "/profile")["emailAddress"]).lower()
 
     def send(self, raw: bytes, thread_id: str | None) -> SentRef:
         body: dict[str, Any] = {"raw": base64.urlsafe_b64encode(raw).decode()}

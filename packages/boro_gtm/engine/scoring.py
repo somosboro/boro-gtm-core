@@ -51,6 +51,7 @@ DELIVERY_TITLE = re.compile(
 def score_target(strategy: Strategy, *, kind: str, title: str | None, excerpt: str | None,
                  posted_at: datetime | None, expires_at: datetime | None,
                  has_verified_channel: bool, channel_is_person: bool,
+                 vendor_evidence: str | None = None,
                  now: datetime | None = None) -> Score:
     w = strategy.raw["qualification"]["weights"]
     text = f"{title or ''} {excerpt or ''}"
@@ -98,10 +99,15 @@ def score_target(strategy: Strategy, *, kind: str, title: str | None, excerpt: s
     vendor = 6
     if kind in ("EXPLICIT_DEMAND", "PARTNER_LISTING"):
         vendor = 12
+    if vendor_evidence:
+        # The company says it delivers software to clients: it buys capacity.
+        vendor = max(vendor, 12)
     if signal_terms:
         vendor += 3
     c["vendor_suitability"] = {"points": min(w["vendor_suitability"], vendor),
-                               "evidence": signal_terms[:5]}
+                               "evidence": signal_terms[:5] + (
+                                   [f"delivery_firm:{vendor_evidence}"] if vendor_evidence
+                                   else [])}
 
     access = 0
     if has_verified_channel:

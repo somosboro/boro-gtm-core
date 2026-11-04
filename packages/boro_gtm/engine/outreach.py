@@ -13,6 +13,7 @@ Three guarantees, each held by the database rather than by care:
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import uuid
 from datetime import date, datetime, timedelta
@@ -140,6 +141,12 @@ def initials_counted_today(session: Session, cal: BusinessCalendar, day: date) -
         CeMessage.due_at >= start, CeMessage.due_at < end)) or 0
 
 
+#: No lane may take more than this share of a day's first emails, even when
+#: another lane is short: the mix is an experiment, and an easy lane (the Odoo
+#: directory) must not quietly become the whole programme. Shortage is reported.
+MAX_LANE_SHARE = 0.6
+
+
 def _lane_quotas(strategy: Strategy, slots: int) -> dict[str, int]:
     mix = strategy.lane_mix
     quotas = {lane: int(slots * share) for lane, share in mix.items()}
@@ -153,8 +160,16 @@ def _lane_quotas(strategy: Strategy, slots: int) -> dict[str, int]:
 
 
 def plan_initials(session: Session, strategy: Strategy, *, now: datetime | None = None,
-                  actor: str = "system:planner") -> dict[str, Any]:
-    """Schedule today's first contacts, spread over the business day."""
+                  actor: str = "system:planner", shadow: bool | None = None) -> dict[str, Any]:
+    """Schedule today's first contacts, spread over the business day.
+
+    In shadow mode a target is rehearsed once. Live, a target whose first
+    email was only ever rehearsed (SHADOW) is plannable for real.
+    """
+    if shadow is None:
+        from boro_gtm.engine.settings import engine_settings
+
+        shadow = engine_settings().shadow_mode
     cal = BusinessCalendar(strategy)
     moment = now or now_utc()
     day = cal.business_day_of(moment)
@@ -167,6 +182,8 @@ def plan_initials(session: Session, strategy: Strategy, *, now: datetime | None 
         return {"planned": 0, "reason": "daily_cap_reached", "cap": strategy.daily_cap}
 
     has_initial = select(CeMessage.target_id).where(CeMessage.step == "INITIAL")
+    if not shadow:
+        has_initial = has_initial.where(CeMessage.status.not_in(("SHADOW", "CANCELLED")))
     ready = list(session.scalars(
         select(CeTarget).where(CeTarget.state == S.READY, CeTarget.id.not_in(has_initial))
         .order_by(CeTarget.score.desc().nulls_last(), CeTarget.created_at)
@@ -175,10 +192,18 @@ def plan_initials(session: Session, strategy: Strategy, *, now: datetime | None 
     chosen: list[CeTarget] = []
     for lane, quota in quotas.items():
         chosen.extend([t for t in ready if t.lane == lane][:quota])
-    # Unused lane share goes to the best remaining targets: the mix is a
-    # guide for measurement, not a reason to send fewer than the cap allows.
-    rest = [t for t in ready if t not in chosen]
-    chosen.extend(rest[: slots - len(chosen)])
+    shortage = {lane: quota - len([t for t in chosen if t.lane == lane])
+                for lane, quota in quotas.items()}
+    shortage = {lane: n for lane, n in shortage.items() if n > 0}
+    # A short lane's share goes to the best remaining targets of other lanes,
+    # but never past MAX_LANE_SHARE of the day: quality is not lowered and one
+    # lane does not become the programme. What stays unfilled is the shortage.
+    cap_per_lane = max(1, math.ceil(strategy.daily_cap * MAX_LANE_SHARE))
+    for target in [t for t in ready if t not in chosen]:
+        if len(chosen) >= slots:
+            break
+        if sum(1 for t in chosen if t.lane == target.lane) < cap_per_lane:
+            chosen.append(target)
 
     start = max(cal.next_open_moment(moment), moment)
     gap = timedelta(minutes=strategy.min_minutes_between_sends)
@@ -187,6 +212,14 @@ def plan_initials(session: Session, strategy: Strategy, *, now: datetime | None 
     for target in chosen:
         contact = session.get(CeContact, target.contact_id) if target.contact_id else None
         reasons = send_blockers(session, strategy, target, contact, step="INITIAL")
+        if any(r.startswith("gmail_history") for r in reasons):
+            # Gmail shows BoRo already wrote here: take that sequence over if
+            # it is still running, otherwise close the pursuit.
+            from boro_gtm.engine.history import adopt_target
+
+            adopt_target(session, strategy, target, actor=actor, now=moment)
+            blocked.append({"target_id": str(target.id), "reasons": reasons})
+            continue
         if reasons:
             _route_blocked(session, target, reasons, actor)
             blocked.append({"target_id": str(target.id), "reasons": reasons})
@@ -198,7 +231,8 @@ def plan_initials(session: Session, strategy: Strategy, *, now: datetime | None 
         _create_message(session, strategy, target, contact, "INITIAL", due)
         planned += 1
     return {"planned": planned, "blocked": blocked, "cap": strategy.daily_cap,
-            "already_today": already, "quotas": quotas}
+            "already_today": already, "quotas": quotas, "lane_shortage": shortage,
+            "unfilled_slots": max(0, slots - len(chosen))}
 
 
 def _route_blocked(session: Session, target: CeTarget, reasons: list[str], actor: str) -> None:
@@ -221,18 +255,42 @@ def _create_message(session: Session, strategy: Strategy, target: CeTarget,
     signal = session.get(CeSignal, target.signal_id) if target.signal_id else None
     rendered = render(strategy, target=target, account=account, contact=contact,
                       signal=signal, step=step)
-    message = CeMessage(
-        target_id=target.id, contact_id=contact.id, step=step, lane=target.lane,
-        segment=target.segment, country=target.country, language=rendered["language"],
-        variant=rendered["variant"], offer=rendered["offer"],
-        strategy_version=strategy.version, to_email=contact.email.lower(),
-        subject=rendered["subject"], body=rendered["body"],
-        rfc822_message_id=rfc822_id(target.id, step, strategy.sender["email"]),
-        in_reply_to=in_reply_to, status="SCHEDULED", due_at=due, created_at=now_utc(),
-    )
-    session.add(message)
+    message = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id,
+                                                     CeMessage.step == step))
+    if message is not None and message.status not in ("SHADOW", "CANCELLED"):
+        raise EngineError(f"{step} already exists for this target",
+                          details={"target_id": str(target.id), "status": message.status})
+    if message is None:
+        # A rehearsed (SHADOW) or cancelled row is re-armed below; its Message-ID
+        # never left the box, so reusing it is safe.
+        message = CeMessage(target_id=target.id, step=step, created_at=now_utc())
+        session.add(message)
+    message.contact_id = contact.id
+    message.lane, message.segment, message.country = target.lane, target.segment, target.country
+    message.language, message.variant = rendered["language"], rendered["variant"]
+    message.offer, message.strategy_version = rendered["offer"], strategy.version
+    message.to_email = contact.email.lower()
+    message.subject, message.body = rendered["subject"], rendered["body"]
+    message.rfc822_message_id = rfc822_id(target.id, step, strategy.sender["email"])
+    message.in_reply_to, message.status, message.due_at = in_reply_to, "SCHEDULED", due
+    message.sent_at = message.claimed_at = message.last_error = None
+    message.attempts = 0
     session.flush()
     return message
+
+
+def rearm_shadow_followups(session: Session) -> int:
+    """Live mode: follow-ups that were only rehearsed are owed for real."""
+    expected = {"F1": S.CONTACTED, "F2": S.F1}
+    count = 0
+    for message in session.scalars(select(CeMessage).where(
+            CeMessage.status == "SHADOW", CeMessage.step.in_(tuple(expected)))):
+        target = session.get(CeTarget, message.target_id)
+        if target.state == expected[message.step]:
+            message.status, message.sent_at = "SCHEDULED", None
+            count += 1
+    session.flush()
+    return count
 
 
 # --- follow-up dates --------------------------------------------------------
@@ -261,6 +319,15 @@ def followup_due(strategy: Strategy, *, lane: str, step: str, initial_sent: date
     else:
         raise ValueError(step)
     due = cal.next_open_moment(due)
+    if step == "F2" and latest is not None and due > cal.closing(cal.local(latest).date()):
+        # A weekend or holiday pushed F2 past the window's last day: use the
+        # last business day inside the window instead, never one after it.
+        floor = cal.local(f1_sent).date() + timedelta(days=rule["f2_min_days_after_f1"])
+        day = cal.local(latest).date()
+        while day >= floor and not cal.is_business_day(day):
+            day -= timedelta(days=1)
+        if day >= floor:
+            due = cal.next_open_moment(datetime.combine(day, sent_local.time(), cal.tz))
     if expires_at is not None:
         if expires_at <= due:
             # Explicit demand: speed matters, so a follow-up that would land

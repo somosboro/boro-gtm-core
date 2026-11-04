@@ -18,12 +18,13 @@ from boro_gtm.engine import states as S
 from boro_gtm.engine.models import CeAccount, CeContact, CeSignal, CeTarget
 from boro_gtm.engine.pipeline import (
     GENERIC_LOCAL_PARTS,
-    NEVER_LOCAL_PARTS,
     email_domain,
+    is_role_mailbox,
     jurisdiction_status,
     normalize_email,
     now_utc,
     prior_contact,
+    same_company_domain,
     suppression_for,
     transition,
 )
@@ -49,8 +50,7 @@ def published_emails(html: str, domain: str) -> list[str]:
         email = normalize_email(raw)
         if not email or email_domain(email) != domain:
             continue
-        local = email.split("@")[0]
-        if local in NEVER_LOCAL_PARTS or local.split("+")[0] in NEVER_LOCAL_PARTS:
+        if is_role_mailbox(email):
             continue
         if re.search(r"\.(png|jpg|jpeg|gif|webp|svg)$", email):
             continue
@@ -58,9 +58,14 @@ def published_emails(html: str, domain: str) -> list[str]:
     return sorted(keep)
 
 
+COMMERCIAL_LOCAL_PARTS = ("partners", "alianzas", "negocios", "business", "ventas", "sales",
+                          "comercial", "proyectos", "projects", "nuevosnegocios")
+
+
 def _rank(email: str) -> tuple[int, str]:
+    """A named person first, then a commercial desk, then a general inbox."""
     local = email.split("@")[0]
-    if local in ("partners", "alianzas", "negocios", "business", "ventas", "sales", "comercial"):
+    if local in COMMERCIAL_LOCAL_PARTS:
         return (1, email)
     if local in GENERIC_LOCAL_PARTS:
         return (2, email)
@@ -68,7 +73,12 @@ def _rank(email: str) -> tuple[int, str]:
 
 
 def find_channel(fetcher: Fetcher, domain: str) -> tuple[str, str] | None:
-    """(email, page it was published on), or None."""
+    """(email, page it was published on), or None.
+
+    Keeps reading the contact pages until it finds a named person, so a
+    general inbox on the home page does not hide the team page.
+    """
+    best: tuple[str, str] | None = None
     for path in CONTACT_PATHS:
         url = urljoin(f"https://{domain}/", path)
         result = fetcher.get(url)
@@ -78,9 +88,12 @@ def find_channel(fetcher: Fetcher, domain: str) -> tuple[str, str] | None:
             continue
         emails = published_emails(result.body.decode("utf-8", "replace"), domain)
         if emails:
-            best = sorted(emails, key=_rank)[0]
-            return best, result.final_url or url
-    return None
+            found = sorted(emails, key=_rank)[0]
+            if best is None or _rank(found) < _rank(best[0]):
+                best = (found, result.final_url or url)
+            if _rank(best[0])[0] == 0:
+                break
+    return best
 
 
 def enrich_target(session: Session, strategy: Strategy, target: CeTarget, fetcher: Fetcher,
@@ -95,22 +108,26 @@ def enrich_target(session: Session, strategy: Strategy, target: CeTarget, fetche
         channel = None
         attrs = (signal.attributes or {}) if signal else {}
         listed = normalize_email(attrs.get("published_email"))
-        if (listed and email_domain(listed) == account.domain and signal.url
-                and listed.split("@")[0] not in NEVER_LOCAL_PARTS):
-            # Published by the company itself in a directory it maintains, on
-            # its own domain: a public channel with a citable source.
+        if (listed and same_company_domain(listed, account.domain) and signal.url
+                and not is_role_mailbox(listed, contact_role=attrs.get("contact_role"))):
+            # Published by the company itself in a directory it maintains, or
+            # in its own posting, on its own domain: a channel with a source.
             channel = (listed, signal.url)
-        channel = channel or find_channel(fetcher, account.domain)
+        if channel is None or _rank(channel[0])[0] != 0:
+            # A general inbox is a fallback; a named person on the site is better.
+            site = find_channel(fetcher, account.domain)
+            if site is not None and (channel is None or _rank(site[0]) < _rank(channel[0])):
+                channel = site
         if channel is not None:
             email, source_url = channel
             contact = session.scalar(select(CeContact).where(CeContact.email == email))
             if contact is None:
                 local = email.split("@")[0]
-                contact = CeContact(account_id=account.id, email=email,
-                                    is_generic=local in GENERIC_LOCAL_PARTS or not re.search(
-                                        r"[a-z]{2,}[._-]?[a-z]{2,}", local) or local in (
-                                        "partners", "alianzas", "negocios", "business",
-                                        "ventas", "sales", "comercial"),
+                listed_role = (attrs.get("contact_role")
+                               if email == listed and source_url == signal.url else None)
+                contact = CeContact(account_id=account.id, email=email, role=listed_role,
+                                    is_generic=_rank(email)[0] != 0 or not re.search(
+                                        r"[a-z]{2,}[._-]?[a-z]{2,}", local),
                                     source_url=source_url, verified_at=now_utc())
                 session.add(contact)
                 session.flush()
@@ -121,7 +138,8 @@ def enrich_target(session: Session, strategy: Strategy, target: CeTarget, fetche
         title=signal.title if signal else None, excerpt=signal.excerpt if signal else None,
         posted_at=signal.posted_at if signal else None, expires_at=target.expires_at,
         has_verified_channel=contact is not None,
-        channel_is_person=contact is not None and not contact.is_generic)
+        channel_is_person=contact is not None and not contact.is_generic,
+        vendor_evidence=((signal.attributes or {}).get("delivery_evidence") if signal else None))
     target.score = score.total
     target.score_components = score.as_json()
     target.priority = ("HIGH" if score.total >= strategy.high_priority else
@@ -142,10 +160,14 @@ def _route(session: Session, strategy: Strategy, target: CeTarget, account: CeAc
         transition(session, target, S.SUPPRESSED, reason=f"suppressed_{hit.reason.lower()}",
                    actor=actor)
         return "suppressed"
-    prior = prior_contact(session, contact.email, account.domain)
+    prior = prior_contact(session, contact.email, email_domain(contact.email) or account.domain,
+                          account.domain)
     if prior:
-        transition(session, target, S.BLOCKED, reason=prior, actor=actor)
-        return "already_contacted"
+        # Gmail says BoRo already wrote here: take over that sequence if it is
+        # still running, otherwise close the pursuit. Never a second first email.
+        from boro_gtm.engine.history import adopt_target
+
+        return adopt_target(session, strategy, target, actor=actor)
     if target.score < strategy.threshold:
         transition(session, target, S.BLOCKED, reason=f"score_{target.score}_below_threshold",
                    actor=actor, details={"score": target.score_components})
@@ -159,8 +181,25 @@ def _route(session: Session, strategy: Strategy, target: CeTarget, account: CeAc
     return "ready"
 
 
+def requalify_unusable_channels(session: Session, *, actor: str = "system:enrichment") -> int:
+    """READY targets whose contact a newer rule rejects go back to ENRICH."""
+    count = 0
+    for target, contact in session.execute(select(CeTarget, CeContact).join(
+            CeContact, CeContact.id == CeTarget.contact_id).where(CeTarget.state == S.READY)):
+        if is_role_mailbox(contact.email, contact_role=contact.role):
+            from boro_gtm.engine.outreach import cancel_pending
+
+            cancel_pending(session, target.id, "requalify_role_mailbox")
+            target.contact_id = None
+            transition(session, target, S.ENRICH, reason="requalify:role_mailbox", actor=actor,
+                       details={"dropped_contact": contact.email})
+            count += 1
+    return count
+
+
 def enrich_batch(session: Session, strategy: Strategy, fetcher: Fetcher, *,
                  limit: int = 30) -> list[dict[str, Any]]:
+    requalify_unusable_channels(session)
     targets = list(session.scalars(select(CeTarget).where(
         CeTarget.state.in_((S.DISCOVERED, S.ENRICH))).order_by(CeTarget.created_at).limit(limit)))
     out = []

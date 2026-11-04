@@ -38,7 +38,9 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     DISCOVERED: frozenset({ENRICH, BLOCKED, EXPIRED, SUPPRESSED}),
     ENRICH: frozenset({READY, COMPLIANCE_REVIEW, BLOCKED, EXPIRED, SUPPRESSED}),
     COMPLIANCE_REVIEW: frozenset({READY, BLOCKED, EXPIRED, SUPPRESSED}),
-    READY: frozenset({CONTACTED, BLOCKED, EXPIRED, SUPPRESSED}),
+    # READY → ENRICH: the chosen channel turned out unusable (e.g. a support
+    # mailbox picked before the role-mailbox rule); find another, or block.
+    READY: frozenset({CONTACTED, ENRICH, BLOCKED, EXPIRED, SUPPRESSED}),
     CONTACTED: frozenset({F1, REPLIED, EXPIRED, SUPPRESSED, LOST}),
     F1: frozenset({F2, REPLIED, EXPIRED, SUPPRESSED, LOST}),
     F2: frozenset({REPLIED, CLOSED_NO_REPLY, EXPIRED, SUPPRESSED, LOST}),

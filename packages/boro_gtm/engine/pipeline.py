@@ -42,6 +42,42 @@ NEVER_LOCAL_PARTS = frozenset({
     "abuse", "privacy", "legal", "soporte", "support", "jobs", "careers", "empleos",
     "rrhh", "hr", "billing", "facturacion", "webmaster",
 })
+#: Words that make a mailbox a service, finance, legal or hiring desk, wherever
+#: they appear in the local part: `soporte.tecnico@`, `atencionalcliente@`.
+_ROLE_WORDS = re.compile(
+    r"(soporte|support|help|ayuda|mesadeayuda|servicedesk|helpdesk|ticket|incidencia"
+    r"|atencion|servicioalcliente|servicio\.?cliente|customer|clientes|postventa|reclamo"
+    r"|billing|factura|invoice|cobranza|pagos|payment|contabilidad|accounting|tesoreria"
+    r"|^servicios?$|^servicio[._-]|finanzas|^cfo$|^admon$|administracion|^adm$"
+    r"|privacy|privacidad|legal|dpo|datospersonales|compliance|abuse|security|seguridad"
+    r"|noreply|no-reply|donotreply|mailer|bounce|unsubscribe|newsletter|notificacion"
+    r"|notification|alerts?$|webmaster|hostmaster|postmaster"
+    r"|rrhh|recursoshumanos|talento|seleccion|reclutamiento|recruit|curriculum|^cv$"
+    r"|postula|jobs?$|careers?$|empleo|trabaja|hiring|^hr$|^rh$)")
+#: Hiring desks are acceptable only where the posting itself asks contractors
+#: or freelancers to write there (a contact with this role).
+CONTRACTOR_RECRUITING = "contractor_recruiting"
+_HIRING_WORDS = re.compile(r"(jobs?$|careers?$|hiring|recruit|reclutamiento|talento|seleccion"
+                           r"|postula|empleo|trabaja|^hr$|^rh$|rrhh|curriculum|^cv$)")
+
+
+def is_role_mailbox(email_or_local: str, *, contact_role: str | None = None) -> bool:
+    """A support, finance, legal, system or hiring desk: never a sales inbox."""
+    local = email_or_local.split("@")[0].split("+")[0].lower()
+    if local in NEVER_LOCAL_PARTS or _ROLE_WORDS.search(local.replace("_", ".")):
+        if contact_role == CONTRACTOR_RECRUITING and _HIRING_WORDS.search(local) and not (
+                _ROLE_WORDS.search(_HIRING_WORDS.sub("", local))):
+            return False
+        return True
+    return False
+
+
+#: Personal mailbox providers: an address there never identifies a company.
+FREEMAIL = frozenset({
+    "gmail.com", "googlemail.com", "hotmail.com", "hotmail.es", "outlook.com", "outlook.es",
+    "live.com", "msn.com", "yahoo.com", "yahoo.es", "yahoo.com.mx", "icloud.com", "me.com",
+    "aol.com", "proton.me", "protonmail.com", "gmx.com", "yandex.com", "mail.com",
+})
 
 #: How long a "no" holds before a new signal may reopen the account.
 REJECTION_COOLDOWN = timedelta(days=180)
@@ -77,9 +113,22 @@ def account_key(domain: str | None) -> str | None:
     `someone.lovable.app` cannot be deduplicated by domain (M2-ADR-054).
     """
     normalized = normalize_domain(domain)
-    if not normalized or domain_role(normalized) != "IDENTITY":
+    if not normalized or domain_role(normalized) != "IDENTITY" or normalized in FREEMAIL:
         return None
     return normalized
+
+
+def same_company_domain(email_or_domain: str, account_domain: str) -> bool:
+    """Is this address (or domain) the company's own: its domain, a subdomain,
+    or a sister domain under the same name (`opens.lat` for `opens.cl`)?"""
+    value = email_or_domain.lower()
+    found = email_domain(value) if "@" in value else normalize_domain(value)
+    if not found or not account_domain or found in FREEMAIL:
+        return False
+    if found == account_domain or found.endswith("." + account_domain):
+        return True
+    label = found.split(".")[0]
+    return len(label) >= 4 and label == account_domain.split(".")[0]
 
 
 def get_or_create_account(session: Session, domain: str, *, name: str | None = None,
@@ -194,8 +243,13 @@ def target_from_signal(session: Session, strategy: Strategy, signal: CeSignal,
 # --- eligibility ------------------------------------------------------------
 
 
-def prior_contact(session: Session, email: str, domain: str) -> str | None:
-    """Has BoRo already written to this person or company? Gmail is the authority."""
+def prior_contact(session: Session, email: str, domain: str,
+                  *other_domains: str | None) -> str | None:
+    """Has BoRo already written to this person or company? Gmail is the authority.
+
+    Only messages Gmail labelled SENT count (drafts never do), at the address
+    or anywhere at the company's domain, its subdomains included.
+    """
     if session.scalar(select(CeMessage.id).where(
             CeMessage.to_email == email, CeMessage.step == "INITIAL",
             CeMessage.status.in_(("SENT", "SENDING"))).limit(1)):
@@ -204,11 +258,14 @@ def prior_contact(session: Session, email: str, domain: str) -> str | None:
         CeMailEvent.direction == "OUT", CeMailEvent.to_emails.any(email)).limit(1))
     if out:
         return "gmail_history_same_address"
-    domain_hit = session.scalar(select(func.count()).select_from(CeMailEvent).where(
-        CeMailEvent.direction == "OUT",
-        func.array_to_string(CeMailEvent.to_emails, ",").ilike(f"%@{domain}%")))
-    if domain_hit:
-        return "gmail_history_same_domain"
+    for each in dict.fromkeys(d for d in (domain, *other_domains) if d):
+        pattern = r"@([a-z0-9-]+\.)*" + re.escape(each.lower()) + r"(,|$)"
+        domain_hit = session.scalar(select(CeMailEvent.id).where(
+            CeMailEvent.direction == "OUT",
+            func.lower(func.array_to_string(CeMailEvent.to_emails, ",")).op("~")(pattern))
+            .limit(1))
+        if domain_hit:
+            return "gmail_history_same_domain"
     return None
 
 
@@ -238,7 +295,7 @@ def send_blockers(session: Session, strategy: Strategy, target: CeTarget,
         reasons.append("contact_unverified")
     if normalize_email(contact.email) is None:
         reasons.append("contact_email_invalid")
-    elif contact.email.split("@")[0].split("+")[0] in NEVER_LOCAL_PARTS:
+    elif is_role_mailbox(contact.email, contact_role=contact.role):
         # Support, jobs, legal, billing: a published address, but not one a
         # sales email belongs in, wherever it came from.
         reasons.append("role_mailbox_not_for_sales")
@@ -249,7 +306,8 @@ def send_blockers(session: Session, strategy: Strategy, target: CeTarget,
         reasons.append("signal_expired")
     if step == "INITIAL":
         domain = email_domain(contact.email) or ""
-        prior = prior_contact(session, contact.email, domain)
+        account = session.get(CeAccount, target.account_id)
+        prior = prior_contact(session, contact.email, domain, account.domain if account else None)
         if prior:
             reasons.append(prior)
         if jurisdiction_status(strategy, target.country) != "ALLOWED":

@@ -33,7 +33,7 @@ from boro_gtm.engine.pipeline import (
 )
 from boro_gtm.engine.strategy import Strategy
 
-LABELS = ("bounce", "auto_reply", "opt_out", "rejection", "referral", "meeting_request",
+LABELS = ("bounce", "auto_reply", "bulk", "opt_out", "rejection", "referral", "meeting_request",
           "pricing_request", "scope_request", "capability_request", "request_info",
           "positive_interest", "not_relevant", "human_other")
 
@@ -132,6 +132,10 @@ def classify(message: RemoteMessage, *, llm: LlmProvider | None = None,
             failed = normalize_email(found.group(1)) if found else None
         return Classification("bounce", failed_recipient=failed)
 
+    if "list-unsubscribe" in headers or headers.get("precedence", "").lower() in ("bulk", "list"):
+        # A newsletter's "unsubscribe" link is not anyone asking BoRo to stop.
+        return Classification("bulk")
+
     auto = headers.get("auto-submitted", "no").lower()
     if (auto not in ("", "no") or "x-autoreply" in headers or "x-autorespond" in headers
             or headers.get("precedence", "").lower() in ("auto_reply", "bulk", "junk")
@@ -149,7 +153,7 @@ def classify(message: RemoteMessage, *, llm: LlmProvider | None = None,
     source = "RULES"
     if label is None:
         suggestion = (llm or NullProvider()).classify_reply(stripped)
-        if suggestion in LABELS and suggestion not in ("bounce", "auto_reply", "opt_out"):
+        if suggestion in LABELS and suggestion not in ("bounce", "auto_reply", "bulk", "opt_out"):
             label, source = suggestion, "LLM"
         else:
             label = "human_other"
@@ -194,47 +198,82 @@ def _return_date(text: str, today: date) -> date | None:
 # --- ingestion --------------------------------------------------------------
 
 CURSOR_KEY = "gmail_ingest_cursor"
+BACKFILL_KEY = "gmail_history_backfill"
+#: Everything except chats and unsent drafts, trash included: a sent message
+#: someone later deleted was still sent. Spam is listed and then skipped.
+_QUERY = "after:{after} in:anywhere -in:chats -in:drafts"
 
 
 def ingest(session: Session, strategy: Strategy, gateway: MailGateway, *,
            since: date | None = None, max_messages: int = 500,
-           llm: LlmProvider | None = None, apply_effects: bool = True) -> dict[str, Any]:
-    """Pull new Gmail messages, store each once, and apply its consequence."""
+           llm: LlmProvider | None = None, apply_effects: bool = True,
+           backfill: bool = False) -> dict[str, Any]:
+    """Pull new Gmail messages, store each once, and apply its consequence.
+
+    `max_messages` bounds new messages fetched per call. The cursor advances
+    only when the listing was read to the end, so a busy mailbox is caught up
+    over several calls instead of having its oldest messages skipped.
+    """
+    from boro_gtm.engine import history
+
     control = session.get(CeControl, CURSOR_KEY)
     after = since or (date.fromisoformat(control.value["after"]) if control else
                       date.today() - timedelta(days=120))
-    query = f"after:{after.strftime('%Y/%m/%d')} -in:chats"
-    stats = {"seen": 0, "new": 0, "effects": 0, "query": query}
+    query = _QUERY.format(after=after.strftime("%Y/%m/%d"))
+    stats: dict[str, Any] = {"seen": 0, "new": 0, "skipped_drafts_spam": 0, "effects": 0,
+                             "query": query, "complete": False}
     token: str | None = None
     newest = after
-    while stats["seen"] < max_messages:
+    while stats["new"] < max_messages:
         ids, token = gateway.list_ids(query, token)
         for gid in ids:
             stats["seen"] += 1
             if session.scalar(select(CeMailEvent.id).where(CeMailEvent.gmail_message_id == gid)):
                 continue
+            if stats["new"] >= max_messages:
+                token = token or "budget"
+                break
             remote = gateway.get(gid)
+            if {"DRAFT", "SPAM"} & set(remote.label_ids):
+                stats["skipped_drafts_spam"] += 1
+                continue
             event = _store(session, strategy, remote, llm)
             stats["new"] += 1
             sent = event.sent_at.date() if event.sent_at else newest
             newest = max(newest, sent - timedelta(days=1))
-            if apply_effects and event.direction == "IN":
-                stats["effects"] += apply_reply(session, strategy, event)
+            if apply_effects:
+                stats["effects"] += (apply_reply(session, strategy, event)
+                                     if event.direction == "IN" else
+                                     history.apply_outbound(session, strategy, event))
         if not token:
+            stats["complete"] = True
             break
-    value = {"after": newest.isoformat()}
-    if control is None:
-        session.add(CeControl(key=CURSOR_KEY, value=value, updated_at=now_utc()))
-    else:
-        control.value, control.updated_at = value, now_utc()
+    if stats["complete"] and not since:
+        value = {"after": newest.isoformat()}
+        if control is None:
+            session.add(CeControl(key=CURSOR_KEY, value=value, updated_at=now_utc()))
+        else:
+            control.value, control.updated_at = value, now_utc()
+    if backfill:
+        record = {"since": after.isoformat(), "complete": stats["complete"],
+                  "seen": stats["seen"], "new": stats["new"], "at": now_utc().isoformat()}
+        row = session.get(CeControl, BACKFILL_KEY)
+        if row is None:
+            session.add(CeControl(key=BACKFILL_KEY, value=record, updated_at=now_utc()))
+        elif stats["complete"] or not row.value.get("complete"):
+            row.value, row.updated_at = record, now_utc()
+    if apply_effects:
+        stats["history"] = {k: (len(v) if isinstance(v, list) else v)
+                            for k, v in history.reconcile(session, strategy).items()}
     session.flush()
     return stats
 
 
 def _store(session: Session, strategy: Strategy, remote: RemoteMessage,
            llm: LlmProvider | None) -> CeMailEvent:
-    sender = strategy.sender["email"].lower()
-    outgoing = "SENT" in remote.label_ids or remote.from_email == sender
+    # Gmail's SENT label is the proof; a message merely *from* the sender
+    # (a draft, a copy) is not a send.
+    outgoing = "SENT" in remote.label_ids and "DRAFT" not in remote.label_ids
     when = parse_date(remote.headers.get("Date")) or datetime.fromtimestamp(
         remote.internal_date, UTC)
     event = CeMailEvent(
@@ -311,6 +350,8 @@ def apply_reply(session: Session, strategy: Strategy, event: CeMailEvent,
             return 1
         return 0
     if label == "opt_out":
+        if not _answers_boro(session, event):
+            return 0
         if event.from_email:
             suppress(session, kind="EMAIL", value=event.from_email, reason="OPT_OUT",
                      evidence_ref=f"gmail:{event.gmail_message_id}")
@@ -330,6 +371,18 @@ def apply_reply(session: Session, strategy: Strategy, event: CeMailEvent,
     if label in ("rejection", "not_relevant"):
         transition(session, target, S.LOST, reason=f"rejection:{label}", actor=actor)
     return 1
+
+
+def _answers_boro(session: Session, event: CeMailEvent) -> bool:
+    """Is this inbound message a response to something BoRo sent?"""
+    if event.message_id is not None or event.target_id is not None:
+        return True
+    if session.scalar(select(CeMailEvent.id).where(
+            CeMailEvent.gmail_thread_id == event.gmail_thread_id,
+            CeMailEvent.direction == "OUT").limit(1)):
+        return True
+    return bool(event.from_email and session.scalar(select(CeMailEvent.id).where(
+        CeMailEvent.direction == "OUT", CeMailEvent.to_emails.any(event.from_email)).limit(1)))
 
 
 def domain_of(email: str) -> str | None:
