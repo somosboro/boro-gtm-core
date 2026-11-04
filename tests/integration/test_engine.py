@@ -21,6 +21,7 @@ from boro_gtm.engine.importer import import_pool
 from boro_gtm.engine.models import (
     CeAccount,
     CeContact,
+    CeControl,
     CeMailEvent,
     CeMessage,
     CeSignal,
@@ -178,7 +179,7 @@ def test_gmail_history_blocks_a_first_contact(session, strategy):
     result = plan_initials(session, strategy, now=WED_10)
     assert result["planned"] == 0
     assert target.state == S.BLOCKED
-    assert "gmail_history_same_domain" in target.state_reason
+    assert target.state_reason.startswith("gmail_history")
 
 
 # --- outreach ---------------------------------------------------------------
@@ -222,12 +223,23 @@ def test_a_send_retry_checks_gmail_before_sending(session, strategy):
 
 
 def test_the_daily_cap_holds(session, strategy):
+    lanes = ("PARTNER_DELIVERY", "EXPLICIT_DEMAND", "TRIGGER_OVERFLOW")
     for i in range(25):
-        _ready_target(session, strategy, domain=f"partner{i}.cl")
+        _ready_target(session, strategy, domain=f"partner{i}.cl", lane=lanes[i % 3])
     first = plan_initials(session, strategy, now=WED_10)
     second = plan_initials(session, strategy, now=WED_10 + timedelta(hours=1))
     assert first["planned"] == 20
     assert second == {"planned": 0, "reason": "daily_cap_reached", "cap": 20}
+
+
+def test_one_easy_lane_cannot_fill_the_whole_day(session, strategy):
+    for i in range(25):
+        _ready_target(session, strategy, domain=f"partner{i}.cl")
+    result = plan_initials(session, strategy, now=WED_10)
+    # 60% of the cap at most; the rest is recorded as shortage, not filled.
+    assert result["planned"] == 12
+    assert result["lane_shortage"] == {"EXPLICIT_DEMAND": 8, "TRIGGER_OVERFLOW": 4}
+    assert result["unfilled_slots"] == 8
 
 
 def test_sends_are_spread_over_the_day(session, strategy):
@@ -605,7 +617,10 @@ def test_the_ladder_reports_why_it_fell_short(session, strategy):
     result = run_ladder(session, strategy, GetOnBoardFetcher({}), target_new=5,
                         ladder=[GetOnBoardSource()], max_pages_per_source=50)
     assert result["accepted"] == 0
-    assert result["below_target_reason"] == "ladder_exhausted"
+    assert result["lanes"]["EXPLICIT_DEMAND"]["reason"] == "every_source_on_lane_exhausted"
+    assert result["lanes"]["PARTNER_DELIVERY"]["reason"] == "no_automated_source_for_lane"
+    assert "EXPLICIT_DEMAND: every_source_on_lane_exhausted" in result["below_target_reason"]
+    assert {m["source"] for m in result["manual_sources"]} >= {"upwork", "linkedin"}
     assert session.scalar(select(CeSourceRun.status)) == "EXHAUSTED"
 
 
@@ -674,10 +689,10 @@ def test_a_pool_import_is_idempotent_and_never_trusts_an_unsourced_address(
                     "Nope,,partner,CL,,,\n")
     first = import_pool(session, strategy, pool)
     second = import_pool(session, strategy, pool)
-    assert (first["created"], second["created"], second["duplicates"]) == (2, 0, 2)
+    assert (first["created"], second["created"], second["duplicates"]) == (2, 0, 3)
     assert session.scalar(select(func.count()).select_from(CeContact)) == 1
-    reasons = {r["reason"] for r in first["rejected"]}
-    assert reasons == {"email_without_public_source", "no_identity_domain"}
+    assert first["contact_notes"] == {"contact_without_public_source": 1}
+    assert first["needs_enrichment_no_domain"] == 1
 
 
 # --- reporting ----------------------------------------------------------------
@@ -785,3 +800,578 @@ def test_a_support_mailbox_in_the_directory_is_not_taken_as_the_channel(session,
     target, _ = target_from_signal(session, strategy, signal)
     enrich_target(session, strategy, target, SiteFetcher())
     assert target.contact_id is None
+
+
+# --- production-readiness hardening (2026-11 sprint) -------------------------
+
+
+def _sent(gid, thread, to, when, subject="Capacidad de entrega", labels=("SENT",)):
+    return RemoteMessage(id=gid, thread_id=thread, label_ids=list(labels),
+                         headers={"From": "Amaru <abourgeoisroa@somosboro.com>", "To": to,
+                                  "Subject": subject, "Message-ID": f"<{gid}@mail.gmail.com>"},
+                         snippet="", internal_date=when.timestamp())
+
+
+@pytest.mark.parametrize(("address", "role", "blocked"), [
+    ("soporte@x.cl", None, True), ("soporte.tecnico@x.cl", None, True),
+    ("atencionalcliente@x.cl", None, True), ("help@x.com", None, True),
+    ("helpdesk@x.com", None, True), ("billing@x.com", None, True),
+    ("facturacion@x.cl", None, True), ("privacidad@x.cl", None, True),
+    ("customer.service@x.com", None, True), ("noreply@x.com", None, True),
+    ("jobs@x.com", None, True), ("jobs@x.com", "contractor_recruiting", False),
+    ("hiring@x.com", "contractor_recruiting", False),
+    ("soporte@x.cl", "contractor_recruiting", True),
+    ("ventas@x.cl", None, False), ("contacto@x.cl", None, False),
+    ("ana.perez@x.cl", None, False), ("gerencia@x.cl", None, False),
+])
+def test_role_mailboxes_are_never_a_sales_channel(address, role, blocked):
+    from boro_gtm.engine.pipeline import is_role_mailbox
+
+    assert is_role_mailbox(address, contact_role=role) is blocked
+
+
+def test_enrichment_keeps_looking_for_a_named_person_past_a_general_inbox(session, strategy):
+    target, _ = target_from_signal(session, strategy, _signal(session, domain="acme-odoo.cl"))
+    fetcher = SiteFetcher({"https://acme-odoo.cl": "<a href='mailto:info@acme-odoo.cl'>",
+                           "https://acme-odoo.cl/equipo": "Ana: ana.perez@acme-odoo.cl"})
+    enrich_target(session, strategy, target, fetcher)
+    assert session.get(CeContact, target.contact_id).email == "ana.perez@acme-odoo.cl"
+
+
+def test_a_draft_is_never_history_and_a_trashed_send_still_is(session, strategy):
+    gateway = FakeGateway()
+    when = WED_10 - timedelta(days=2)
+    gateway.deliver(_sent("d1", "t1", "info@afgo.com", when, labels=("DRAFT", "TRASH")))
+    gateway.deliver(_sent("s1", "t2", "ventas@cmcorp.cl", when, labels=("SENT", "TRASH")))
+    stats = ingest(session, strategy, gateway, since=date(2026, 6, 1), backfill=True)
+    assert stats["skipped_drafts_spam"] == 1
+    out = session.scalars(select(CeMailEvent.to_emails).where(CeMailEvent.direction == "OUT"))
+    assert [e for e in out] == [["ventas@cmcorp.cl"]]
+    from boro_gtm.engine.pipeline import prior_contact
+
+    assert prior_contact(session, "info@afgo.com", "afgo.com") is None
+    assert prior_contact(session, "otra@cmcorp.cl", "cmcorp.cl") == "gmail_history_same_domain"
+    backfill = session.get(CeControl, "gmail_history_backfill").value
+    assert backfill["complete"] is True and backfill["since"] == "2026-06-01"
+
+
+def test_a_newsletter_unsubscribe_link_suppresses_nobody(session, strategy):
+    gateway = FakeGateway()
+    gateway.deliver(_reply("news", "Click here to unsubscribe", sender="news@partner.cl",
+                           headers={"List-Unsubscribe": "<mailto:u@partner.cl>"}))
+    gateway.deliver(_reply("cold", "Unsubscribe me", sender="random@stranger.cl"))
+    ingest(session, strategy, gateway, since=date(2026, 11, 1))
+    assert session.scalar(select(func.count()).select_from(CeSuppression)) == 0
+
+
+def test_ingestion_never_skips_history_when_a_run_is_cut_short(session, strategy):
+    gateway = FakeGateway()
+    for i in range(5):
+        gateway.deliver(_reply(f"t{i}", "hola"))
+    first = ingest(session, strategy, gateway, max_messages=2)
+    assert first["complete"] is False
+    assert session.get(CeControl, "gmail_ingest_cursor") is None, "cursor waits for the end"
+    ingest(session, strategy, gateway, max_messages=2)
+    last = ingest(session, strategy, gateway, max_messages=10)
+    assert last["complete"] is True
+    assert session.scalar(select(func.count()).select_from(CeMailEvent)) == 5
+
+
+def test_a_chatgpt_send_today_is_adopted_not_sent_again(session, strategy):
+    target = _ready_target(session, strategy, domain="cmcorp.cl", email="gerencia@cmcorp.cl")
+    plan_initials(session, strategy, now=WED_10 - timedelta(hours=1))
+    send_due(session, strategy, None, shadow=True, now=WED_10)
+    shadow = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id))
+    assert shadow.status == "SHADOW"
+    gateway = FakeGateway()
+    sent_at = datetime.now(UTC) - timedelta(hours=2)
+    gateway.deliver(_sent("cg1", "thr1", "ventas@cmcorp.cl", sent_at))
+    stats = ingest(session, strategy, gateway, since=date(2026, 6, 1), backfill=True)
+    assert stats["history"]["adopted"] == 1
+    assert target.state == S.CONTACTED
+    initial = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id,
+                                                     CeMessage.step == "INITIAL"))
+    assert (initial.status, initial.variant, initial.to_email) == (
+        "SENT", "external_gmail", "ventas@cmcorp.cl")
+    f1 = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id,
+                                                CeMessage.step == "F1"))
+    from boro_gtm.engine.outreach import followup_due
+
+    assert f1.status == "SCHEDULED"
+    assert f1.due_at == followup_due(strategy, lane=target.lane, step="F1",
+                                     initial_sent=initial.sent_at)
+    assert f1.in_reply_to == "<cg1@mail.gmail.com>"
+    event = session.scalar(select(CeTargetEvent).where(
+        CeTargetEvent.reason == "gmail_history_initial"))
+    assert event.details["replaced_engine_message"]["status"] == "SHADOW"
+
+
+def test_a_failed_chatgpt_send_leaves_only_a_draft_and_no_contact(session, strategy):
+    target = _ready_target(session, strategy, domain="konos.cl", email="ventas@konos.cl")
+    gateway = FakeGateway()
+    gateway.deliver(_sent("k1", "tk", "ventas@konos.cl", datetime.now(UTC), labels=("DRAFT",)))
+    ingest(session, strategy, gateway, since=date(2026, 6, 1), backfill=True)
+    assert target.state == S.READY
+
+
+def test_an_old_gmail_sequence_blocks_and_is_not_adopted(session, strategy):
+    target = _ready_target(session, strategy, domain="old.cl", email="ana@old.cl")
+    gateway = FakeGateway()
+    gateway.deliver(_sent("o1", "to", "ana@old.cl", datetime.now(UTC) - timedelta(days=60)))
+    ingest(session, strategy, gateway, since=date(2026, 6, 1), backfill=True)
+    assert (target.state, target.state_reason) == (S.BLOCKED, "gmail_history_sequence_finished")
+
+
+def test_a_reply_already_in_the_adopted_thread_takes_effect(session, strategy):
+    target = _ready_target(session, strategy, domain="giraffos.com", email="ana@giraffos.com")
+    gateway = FakeGateway()
+    gateway.deliver(_sent("g1", "tg", "ana@giraffos.com", datetime.now(UTC) - timedelta(days=2)))
+    reply = _reply("tg", "Me interesa, ¿cuándo podemos hablar?", sender="Ana <ana@giraffos.com>")
+    reply.internal_date = (datetime.now(UTC) - timedelta(days=1)).timestamp()
+    gateway.deliver(reply)
+    ingest(session, strategy, gateway, since=date(2026, 6, 1), backfill=True)
+    assert target.state == S.REPLIED
+    assert session.scalar(select(func.count()).select_from(CeMessage).where(
+        CeMessage.target_id == target.id, CeMessage.status == "SCHEDULED")) == 0
+
+
+def test_a_follow_up_chatgpt_sends_after_adoption_is_recorded(session, strategy):
+    target = _ready_target(session, strategy, domain="adhoc.inc", email="tev@adhoc.inc")
+    gateway = FakeGateway()
+    first = datetime.now(UTC) - timedelta(days=6)
+    gateway.deliver(_sent("a1", "ta", "tev@adhoc.inc", first))
+    ingest(session, strategy, gateway, since=date(2026, 6, 1), backfill=True)
+    assert target.state == S.CONTACTED
+    gateway.deliver(_sent("a2", "ta", "tev@adhoc.inc", datetime.now(UTC), subject="Re: hola"))
+    ingest(session, strategy, gateway, since=date(2026, 6, 1))
+    assert target.state == S.F1
+    steps = dict(session.execute(select(CeMessage.step, CeMessage.status).where(
+        CeMessage.target_id == target.id)).all())
+    assert steps == {"INITIAL": "SENT", "F1": "SENT", "F2": "SCHEDULED"}
+
+
+def test_going_live_plans_a_target_that_was_only_rehearsed(session, strategy):
+    target = _ready_target(session, strategy, domain="dimabe.cl", email="ana@dimabe.cl")
+    plan_initials(session, strategy, now=WED_10, shadow=True)
+    send_due(session, strategy, None, shadow=True, now=WED_10 + timedelta(minutes=30))
+    assert plan_initials(session, strategy, now=WED_10 + timedelta(days=1),
+                         shadow=True)["planned"] == 0, "rehearsed once"
+    live = plan_initials(session, strategy, now=WED_10 + timedelta(days=1), shadow=False)
+    assert live["planned"] == 1
+    row = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id))
+    assert (row.status, row.attempts) == ("SCHEDULED", 0)
+    assert session.scalar(select(func.count()).select_from(CeMessage)) == 1
+
+
+def _pool_xlsx(tmp_path, rows):
+    from openpyxl import Workbook
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Week 1 Leads"
+    sheet.append(["ID", "Day", "Type", "Company / Opportunity", "Country", "Signal",
+                  "Contact / Apply", "Source", "Readiness", "Score", "Status"])
+    for row in rows:
+        sheet.append(row)
+    book.create_sheet("Feeds").append(["Feed", "Purpose"])
+    path = tmp_path / "BoRo_Week1_Commercial_Pool_100.xlsx"
+    book.save(path)
+    return path
+
+
+def test_the_week1_pool_format_imports_without_trusting_it(session, strategy, tmp_path):
+    odoo = "https://www.odoo.com/partners/country/chile-44"
+    known = _signal(session, domain="bmya.cl", source_key="odoo_partners_cl")
+    known.company_name = "Blanco Martín & Asociados"
+    known.url = "https://www.odoo.com/partners/blanco-martin-123"
+    known.attributes = {**known.attributes, "published_email": "odoocl@bmya.cl"}
+    target_from_signal(session, strategy, known)
+    path = _pool_xlsx(tmp_path, [
+        [1, 1, "Partner Delivery", "Konos", "Chile", "Gold; 78 refs", "ventas@konos.cl", odoo,
+         "READY", 95, "Queued"],
+        [5, 1, "Partner Delivery", "Elite Solutions", "Chile", "Silver",
+         "soporte@elitesolutions.cl", odoo, "READY", 93, "Queued"],
+        [12, 1, "Partner Delivery", "Blanco Martín & Asociados SpA", "Chile", "Silver",
+         "odoocl@bmya.cl", odoo, "READY", 90, "Queued"],
+        [2, 1, "Explicit Demand", "B2B SaaS Platform", "Worldwide", "USD 6k",
+         "Upwork proposal", "https://www.upwork.com/freelance-jobs/apply/x_~01/", "READY", 95,
+         "Queued"],
+        [19, 1, "Trigger / Overflow", "Moveapps", "Chile / Remote", "Freelance monthly",
+         "LinkedIn application", "https://cl.linkedin.com/jobs/view/x", "READY", 90, "Queued"],
+        [47, 3, "Trigger / Overflow", "HV Talent", "LATAM / Remote", "Contractor role",
+         "Company role/application", "https://hvtalent.com/publication/x/", "READY", 83,
+         "Queued"],
+        [34, 2, "Partner Delivery", "IT GRUPO", "Peru", "Gold; 139 refs", None,
+         "https://www.odoo.com/partners/country/peru-168", "ENRICH", 82, "Queued"],
+    ])
+    report = import_pool(session, strategy, path)
+    assert report["rows_read"] == 7
+    rows = {r["company"]: r for r in report["rows"]}
+    assert rows["Konos"]["outcome"] == "created"
+    assert rows["Konos"]["identity_from"] == "contact_email_domain"
+    assert rows["Konos"]["contact"] == "no_public_source", "the pool's word is not a source"
+    assert rows["Elite Solutions"]["contact"] == "role_mailbox_rejected"
+    assert rows["Blanco Martín & Asociados SpA"]["outcome"] == "attached"
+    assert rows["B2B SaaS Platform"]["outcome"] == "manual_application"
+    assert rows["Moveapps"]["outcome"] == "manual_application"
+    assert rows["HV Talent"]["identity_from"] == "source_url_is_company_site"
+    assert rows["IT GRUPO"]["outcome"] == "needs_enrichment_no_domain"
+    signal = session.scalar(select(CeSignal).where(CeSignal.company_name == "Konos"))
+    assert signal.attributes["pool_readiness"] == "READY"
+    assert signal.kind == "PARTNER_LISTING"
+    again = import_pool(session, strategy, path)
+    assert again["duplicates"] == 7 and again["created"] == 0
+    from boro_gtm.engine.importer import import_status
+
+    status = import_status(session, report["source_key"])
+    assert status["by_state"]["MANUAL_APPLICATION"] == 2
+    assert status["by_state"]["ENRICH_NO_DOMAIN"] == 1
+
+
+def test_a_pool_address_the_directory_published_is_attached_with_that_source(
+        session, strategy, tmp_path):
+    odoo_signal = _signal(session, domain="konos.cl", source_key="odoo_partners_cl")
+    odoo_signal.url = "https://www.odoo.com/partners/konos-1"
+    odoo_signal.attributes = {**odoo_signal.attributes, "published_email": "ventas@konos.cl"}
+    session.flush()
+    path = _pool_xlsx(tmp_path, [[1, 1, "Partner Delivery", "Konos", "Chile", "Gold",
+                                  "ventas@konos.cl",
+                                  "https://www.odoo.com/partners/country/chile-44", "READY",
+                                  95, "Queued"]])
+    report = import_pool(session, strategy, path)
+    assert report["contacts_attached"] == 1
+    contact = session.scalar(select(CeContact).where(CeContact.email == "ventas@konos.cl"))
+    assert contact.source_url == "https://www.odoo.com/partners/konos-1"
+
+
+def _algolia(hits, pages=1):
+    return json.dumps({"hits": hits, "nbPages": pages})
+
+
+def test_hn_contract_posts_become_trigger_signals_with_their_own_channel():
+    from boro_gtm.engine.sources.hn_hiring import HnHiringSource
+
+    thread = {"hits": [{"objectID": "500", "title": "Ask HN: Who is hiring? (November 2026)",
+                        "created_at": "2026-11-02T15:00:00Z"}]}
+    comments = _algolia([
+        {"objectID": "501", "parent_id": 500, "created_at": "2026-11-02T16:00:00Z",
+         "comment_text": "Acme Robotics | Backend engineer | REMOTE (US) | CONTRACT<p>"
+                         "We need Node and Postgres help. <a href=\"https://acmerobotics.com/jobs\">"
+                         "site</a> Email hiring@acmerobotics.com"},
+        {"objectID": "502", "parent_id": 500, "created_at": "2026-11-02T16:00:00Z",
+         "comment_text": "Beta | Staff engineer | ONSITE | Full-time <a href=\"https://beta.io\">x</a>"},
+        {"objectID": "503", "parent_id": 501, "created_at": "2026-11-02T17:00:00Z",
+         "comment_text": "a reply, not a post"},
+    ])
+
+    class Fetch:
+        def get(self, url):
+            body = json.dumps(thread) if "search_by_date" in url else comments
+            return FetchResult(outcome="OK", http_status=200, body=body.encode())
+
+    source = HnHiringSource()
+    page = source.next_page(Fetch(), {})
+    assert page.exhausted
+    assert [d.external_id for d in page.items] == ["501", "502"]
+    acme, beta = page.items
+    assert (acme.company_domain, acme.reject_reason, acme.country) == (
+        "acmerobotics.com", None, "US")
+    assert acme.attributes["published_email"] == "hiring@acmerobotics.com"
+    assert acme.attributes["contact_role"] == "contractor_recruiting"
+    assert beta.reject_reason == "full_time_employment_not_vendor_demand"
+
+
+def test_get_on_board_hiring_counts_only_delivery_firms():
+    from boro_gtm.engine.sources.getonboard_more import GetOnBoardHiringSource
+
+    def job(jid, title, about):
+        return {"id": jid, "attributes": {
+            "title": title, "description": "", "countries": ["Chile"],
+            "published_at": int(datetime.now(UTC).timestamp()),
+            "company": {"data": {"attributes": {"name": jid, "web": f"https://{jid}.cl",
+                                                "description": about}}}}}
+
+    payload = json.dumps({"data": [
+        job("factory", "Desarrollador Full Stack", "Somos una software factory chilena"),
+        job("product", "Desarrollador Full Stack", "Nuestra app de delivery"),
+        job("factory2", "Diseñador gráfico", "Consultora de software con clientes en LatAm"),
+    ], "meta": {"total_pages": 1}})
+
+    class Fetch:
+        def get(self, url):
+            return FetchResult(outcome="OK", http_status=200, body=payload.encode())
+
+    page = GetOnBoardHiringSource().next_page(Fetch(), {})
+    reasons = {d.external_id: d.reject_reason for d in page.items}
+    assert reasons == {"factory": None, "product": "not_a_delivery_firm",
+                       "factory2": "not_software_delivery"}
+    assert page.items[0].lane == "TRIGGER_OVERFLOW"
+
+
+def test_get_on_board_company_directory_yields_delivery_partners():
+    from boro_gtm.engine.sources.getonboard_more import GetOnBoardCompaniesSource
+
+    payload = json.dumps({"data": [
+        {"id": "fabrica", "attributes": {"name": "Fábrica", "web": "https://fabrica.cl",
+                                         "country": "CL",
+                                         "description": "Desarrollo de software a medida"}},
+        {"id": "retail", "attributes": {"name": "Retail", "web": "https://retail.cl",
+                                        "country": "CL", "description": "Tiendas de ropa"}},
+        {"id": "sinweb", "attributes": {"name": "Sin web", "web": None, "country": "CL",
+                                        "description": "Somos una software factory"}},
+    ], "meta": {"total_pages": 3}})
+
+    class Fetch:
+        def get(self, url):
+            return FetchResult(outcome="OK", http_status=200, body=payload.encode())
+
+    page = GetOnBoardCompaniesSource().next_page(Fetch(), {})
+    assert not page.exhausted and page.cursor_after == {"page": 2}
+    assert [d.reject_reason for d in page.items] == [None, "not_a_delivery_firm",
+                                                     "no_company_website"]
+
+
+def test_explicit_f2_stays_inside_its_window_across_a_holiday(strategy):
+    from boro_gtm.engine.outreach import followup_due
+
+    # Initial Wed 2026-12-02; window ends Wed 12-09, the day after the 12-08 holiday.
+    initial = datetime(2026, 12, 2, 10, 0, tzinfo=SCL)
+    f1 = followup_due(strategy, lane="EXPLICIT_DEMAND", step="F1", initial_sent=initial)
+    f2 = followup_due(strategy, lane="EXPLICIT_DEMAND", step="F2", initial_sent=initial,
+                      f1_sent=f1)
+    assert 5 <= (f2.astimezone(SCL).date() - initial.date()).days <= 7
+
+
+def test_verification_runs_on_the_real_database_and_leaves_nothing(session, strategy):
+    from boro_gtm.engine import verify
+
+    before = session.scalar(select(func.count()).select_from(CeAccount))
+    result = verify.run(session, strategy)
+    assert result["ok"], result
+    assert session.scalar(select(func.count()).select_from(CeAccount)) == before
+    assert session.scalar(select(func.count()).select_from(CeSuppression)) == 0
+
+
+def test_the_cutover_report_cannot_pass_on_configuration_alone(session, strategy,
+                                                               monkeypatch, tmp_path):
+    from boro_gtm.engine.cutover import report
+
+    creds = tmp_path / "gmail.json"
+    creds.write_text("{}")
+    creds.chmod(0o600)
+    monkeypatch.setenv("GTM_ENGINE_GMAIL_CREDENTIALS", str(creds))
+    result = report(session)
+    assert result["ready_for_live"] is False
+    for check in ("gmail_oauth_connected", "gmail_history_backfill_complete",
+                  "shadow_ran_two_business_days_after_backfill", "ready_audit_precision",
+                  "shadow_parity_no_critical_mismatch", "worker_restart_tested",
+                  "database_backup_exists", "restore_test_passed", "off_host_backup"):
+        assert check in result["failing"], check
+
+
+def test_parity_flags_a_shadow_email_to_a_company_already_contacted(session, strategy):
+    from boro_gtm.engine import parity
+
+    target = _ready_target(session, strategy, domain="tierranube.cl", email="ana@tierranube.cl")
+    session.add(CeMailEvent(gmail_message_id="x1", gmail_thread_id="tx", direction="OUT",
+                            from_email="abourgeoisroa@somosboro.com",
+                            to_emails=["ventas@tierranube.cl"], headers={},
+                            sent_at=WED_10 - timedelta(days=3), ingested_at=datetime.now(UTC)))
+    session.flush()
+    # Planned as if Gmail had not been read yet (the risk parity exists to catch).
+    from boro_gtm.engine.outreach import _create_message
+
+    message = _create_message(session, strategy, target, session.get(CeContact, target.contact_id),
+                              "INITIAL", WED_10)
+    message.status = "SHADOW"
+    session.flush()
+    day = parity.day_report(session, strategy, WED_10.date())
+    assert day["critical_mismatches"] == 1
+    assert day["critical"][0]["critical"] == ["would_contact_already_contacted"]
+
+
+def _gmail_transport(mailbox="abourgeoisroa@somosboro.com"):
+    import httpx
+
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.host == "oauth2.googleapis.com":
+            assert b"grant_type=refresh_token" in request.content
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600})
+        assert request.headers["Authorization"] == "Bearer at"
+        if request.url.path.endswith("/profile"):
+            return httpx.Response(200, json={"emailAddress": mailbox})
+        return httpx.Response(200, json={"messages": [{"id": "m1"}]})
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), calls
+
+
+def _creds(tmp_path, mode=0o600):
+    path = tmp_path / "gmail.json"
+    path.write_text(json.dumps({"client_id": "c", "client_secret": "s", "refresh_token": "r"}))
+    path.chmod(mode)
+    return path
+
+
+def test_the_gmail_gateway_refreshes_its_token_once_and_reads_the_mailbox(tmp_path):
+    from boro_gtm.engine.gmail import GmailApiGateway
+
+    client, calls = _gmail_transport()
+    gateway = GmailApiGateway("abourgeoisroa@somosboro.com", str(_creds(tmp_path)), client)
+    assert gateway.mailbox() == "abourgeoisroa@somosboro.com"
+    assert gateway.list_ids("in:sent", None) == (["m1"], None)
+    assert calls.count("/token") == 1, "one refresh serves both calls"
+
+
+def test_gmail_credentials_readable_by_others_are_refused(tmp_path):
+    from boro_gtm.engine.gmail import GmailApiGateway, GmailUnavailableError
+
+    with pytest.raises(GmailUnavailableError, match="chmod 600"):
+        GmailApiGateway("abourgeoisroa@somosboro.com", str(_creds(tmp_path, 0o644)))
+
+
+def test_a_token_for_another_mailbox_is_never_used(tmp_path, monkeypatch):
+    from boro_gtm.engine import worker as w
+    from boro_gtm.engine.gmail import GmailApiGateway, GmailUnavailableError
+    from boro_gtm.engine.settings import engine_settings
+
+    client, _ = _gmail_transport(mailbox="amaru.personal@gmail.com")
+    creds = _creds(tmp_path)
+    monkeypatch.setenv("GTM_ENGINE_GMAIL_CREDENTIALS", str(creds))
+    monkeypatch.setattr(w, "GmailApiGateway",
+                        lambda sender, path: GmailApiGateway(sender, path, client))
+    engine = w.Engine(load_strategy(), engine_settings())
+    with pytest.raises(GmailUnavailableError, match="not the corporate sender"):
+        engine.gateway()
+
+
+def test_a_pool_row_is_resolved_on_reimport_once_the_directory_knows_it(
+        session, strategy, tmp_path):
+    rows = [[34, 2, "Partner Delivery", "IT GRUPO", "Peru", "Gold; 139 refs", None,
+             "https://www.odoo.com/partners/country/peru-168", "ENRICH", 82, "Queued"]]
+    path = _pool_xlsx(tmp_path, rows)
+    assert import_pool(session, strategy, path)["needs_enrichment_no_domain"] == 1
+    crawled = _signal(session, domain="itgrupo.net", source_key="odoo_partners_pe")
+    crawled.company_name = "IT Grupo"
+    session.flush()
+    target_from_signal(session, strategy, crawled)
+    again = import_pool(session, strategy, path)
+    assert again["resolved_on_reimport"] == 1
+    assert again["rows"][0]["outcome"] == "attached", "the crawled partner already has a target"
+    signal = session.scalar(select(CeSignal).where(CeSignal.source_key.like("import:%")))
+    assert signal.company_domain == "itgrupo.net"
+    assert signal.attributes["evidence_es"] == ("aparece como Gold Partner en el directorio "
+                                                "oficial de Odoo")
+
+
+def test_a_personal_mailbox_provider_is_never_a_company():
+    from boro_gtm.engine.pipeline import account_key, same_company_domain
+
+    assert account_key("gmail.com") is None
+    assert account_key("hotmail.com") is None
+    assert same_company_domain("info@opens.lat", "opens.cl")
+    assert not same_company_domain("contacto@odoosistema.com", "consulnet.io")
+    assert not same_company_domain("someone@gmail.com", "gmail.com")
+
+
+def test_a_partner_without_a_website_is_identified_by_its_published_address():
+    from boro_gtm.engine.sources.odoo_partners import OdooPartnerSource
+
+    page = ('<h1>Blue Minds SpA</h1> Ready Partner '
+            '<span itemprop="email">grobles@blueminds.cl</span>')
+    draft = OdooPartnerSource("CL")._draft("/partners/blue-minds-1", page)
+    assert (draft.company_domain, draft.reject_reason) == ("blueminds.cl", None)
+    assert draft.attributes["identity_from"] == "directory_email_domain"
+    freemail = OdooPartnerSource("CL")._draft(
+        "/partners/x-2", '<h1>X</h1><span itemprop="email">x@gmail.com</span>')
+    assert freemail.reject_reason == "no_company_website_on_listing"
+
+
+def test_a_directory_address_on_a_sister_domain_is_the_partners_own(session, strategy):
+    signal = _signal(session, domain="opens.cl")
+    signal.attributes = {**signal.attributes, "published_email": "info@opens.lat"}
+    target, _ = target_from_signal(session, strategy, signal)
+    enrich_target(session, strategy, target, SiteFetcher())
+    assert session.get(CeContact, target.contact_id).email == "info@opens.lat"
+
+
+def test_a_ready_target_on_a_support_mailbox_is_requalified(session, strategy):
+    from boro_gtm.engine.enrichment import enrich_batch
+
+    target = _ready_target(session, strategy, domain="elitesolutions.cl",
+                           email="soporte@elitesolutions.cl")
+    fetcher = SiteFetcher({"https://elitesolutions.cl/contacto":
+                           "Escríbenos: comercial@elitesolutions.cl"})
+    enrich_batch(session, strategy, fetcher)
+    assert target.state == S.READY
+    assert session.get(CeContact, target.contact_id).email == "comercial@elitesolutions.cl"
+    reasons = session.scalars(select(CeTargetEvent.reason).where(
+        CeTargetEvent.target_id == target.id))
+    assert "requalify:role_mailbox" in list(reasons)
+
+
+@pytest.mark.parametrize(("text", "delivery"), [
+    ("Somos una software factory chilena", True),
+    ("Desarrollamos aplicaciones web para nuestros clientes", True),
+    ("Agencia de marketing para nuestros clientes", False),
+    ("Reclutamiento de talento para nuestros clientes", False),
+    ("Nuestra app de delivery de comida", False),
+])
+def test_a_delivery_firm_is_one_that_builds_software_for_clients(text, delivery):
+    from boro_gtm.engine.sources.delivery import delivery_evidence
+
+    assert (delivery_evidence(text) is not None) is delivery
+
+
+def test_hn_rejects_non_software_contract_roles_and_cleans_company_names():
+    from boro_gtm.engine.sources.hn_hiring import HnHiringSource
+
+    source = HnHiringSource()
+    sales = source._draft({"objectID": "1", "created_at": "2026-11-02T16:00:00Z",
+                           "comment_text": "REVNODE | Founding Sales | Remote | Part-time "
+                                           "contract <a href=\"https://revnode.com\">x</a>"},
+                          "2026-11-02T15:00:00Z")
+    assert sales.reject_reason == "not_software_delivery"
+    named = source._draft({"objectID": "2", "created_at": "2026-11-02T16:00:00Z",
+                           "comment_text": "Sendery ( https://sendery.co ) | iOS Engineer | "
+                                           "Contract <a href=\"https://sendery.co\">x</a>"},
+                          "2026-11-02T15:00:00Z")
+    assert named.company_name == "Sendery"
+    assert named.company_domain == "sendery.co"
+
+
+def test_a_directory_title_badge_and_html_entities_never_reach_a_message():
+    from boro_gtm.engine.sources.odoo_partners import OdooPartnerSource, clean_partner_name
+
+    assert clean_partner_name("C&amp;M Consultoría Tecnológica SpA   Ready") == (
+        "C&M Consultoría Tecnológica SpA", "Ready")
+    assert clean_partner_name("Lumaki Silver") == ("Lumaki", "Silver")
+    draft = OdooPartnerSource("CL")._draft(
+        "/partners/iosbox-1", '<h1>IOSBOX Spa <span>Ready</span></h1>'
+        '<a href="https://iosbox.cl"><span itemprop="website">iosbox.cl</span></a>')
+    assert draft.company_name == "IOSBOX Spa"
+    assert draft.attributes["grade"] == "Ready Partner"
+
+
+@pytest.mark.parametrize("address", ["servicio@vite24.com", "cfo@andirent.co", "admon@argil.mx",
+                                     "finanzas@x.cl", "administracion@x.cl"])
+def test_service_and_finance_desks_are_not_sales_channels(address):
+    from boro_gtm.engine.pipeline import is_role_mailbox
+
+    assert is_role_mailbox(address)
+
+
+def test_a_pool_address_on_another_domain_does_not_split_a_known_company(
+        session, strategy, tmp_path):
+    known = _signal(session, domain="consulnet.io", source_key="odoo_partners_cl")
+    known.company_name = "Consulnet"
+    target_from_signal(session, strategy, known)
+    path = _pool_xlsx(tmp_path, [[4, 1, "Partner Delivery", "Consulnet", "Chile", "Silver",
+                                  "contacto@odoosistema.com",
+                                  "https://www.odoo.com/partners/country/chile-44", "READY",
+                                  93, "Queued"]])
+    row = import_pool(session, strategy, path)["rows"][0]
+    assert (row["domain"], row["outcome"]) == ("consulnet.io", "attached")
+    assert session.scalar(select(func.count()).select_from(CeAccount)) == 1

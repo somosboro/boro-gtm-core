@@ -75,7 +75,7 @@ def test_a_fresh_explicit_request_scores_high_priority(strategy):
 
     score = score_target(strategy, kind="EXPLICIT_DEMAND",
                          title="Buscamos proveedor freelance para integración Odoo y API",
-                         excerpt="proyecto urgente, presupuesto definido", 
+                         excerpt="proyecto urgente, presupuesto definido",
                          posted_at=datetime.now(UTC) - timedelta(days=2), expires_at=None,
                          has_verified_channel=True, channel_is_person=True)
     assert score.total >= strategy.high_priority
