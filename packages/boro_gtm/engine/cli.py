@@ -168,6 +168,124 @@ def import_pool(path: Path = typer.Argument(..., exists=True, readable=True)) ->
         _echo(run_import(s, active_strategy(), path))
 
 
+@app.command("import-status")
+def import_status(source_key: str = typer.Argument(..., help="e.g. import:BoRo_Week1_…")) -> None:
+    """Where every row of an import stands now: READY, ENRICH, BLOCKED, CONTACTED…"""
+    from boro_gtm.engine.importer import import_status as status
+
+    with session_scope() as s:
+        _echo(status(s, source_key))
+
+
+@app.command("manual")
+def manual() -> None:
+    """Platform applications a person must make (Upwork, LinkedIn, ATS), and manual sources."""
+    from sqlalchemy import select
+
+    from boro_gtm.engine.models import CeSignal
+    from boro_gtm.engine.sources.manual import MANUAL_SOURCES
+
+    with session_scope() as s:
+        rows = s.scalars(select(CeSignal).where(
+            CeSignal.attributes["channel"].astext == "PLATFORM_APPLICATION")
+            .order_by(CeSignal.observed_at.desc()).limit(200))
+        _echo({"applications": [{"lane": r.lane, "company": r.company_name, "url": r.url,
+                                 "channel": (r.attributes or {}).get("pool_channel"),
+                                 "signal": r.title, "observed_at": r.observed_at}
+                                for r in rows],
+               "manual_sources": MANUAL_SOURCES})
+
+
+@app.command("reconcile-history")
+def reconcile_history() -> None:
+    """Apply Gmail's outbound history to open targets: adopt running sequences, block the rest."""
+    from boro_gtm.engine import history
+    from boro_gtm.engine.strategy import active_strategy
+
+    with session_scope() as s:
+        _echo(history.reconcile(s, active_strategy()))
+
+
+@app.command("verify")
+def verify() -> None:
+    """Exercise bounce, opt-out and follow-up handling on the real database (rolled back)."""
+    from boro_gtm.engine import verify as v
+    from boro_gtm.engine.strategy import active_strategy
+
+    with session_scope() as s:
+        result = v.run(s, active_strategy())
+    _echo(result)
+    if not result["ok"]:
+        raise typer.Exit(code=2)
+
+
+@app.command("parity")
+def parity(day: str = typer.Option(None, help="YYYY-MM-DD (default: today, Chile)"),
+           record: bool = typer.Option(False, "--record")) -> None:
+    """Shadow decisions vs what Gmail shows was actually sent that day."""
+    from boro_gtm.engine import parity as p
+    from boro_gtm.engine.business_days import BusinessCalendar
+    from boro_gtm.engine.pipeline import now_utc
+    from boro_gtm.engine.strategy import active_strategy
+
+    strategy = active_strategy()
+    when = (date.fromisoformat(day) if day else
+            BusinessCalendar(strategy).business_day_of(now_utc()))
+    with session_scope() as s:
+        result = p.day_report(s, strategy, when)
+        if record:
+            result["recorded"] = p.record(s, result)
+    _echo(result)
+
+
+@app.command("audit-sample")
+def audit_sample(n: int = 30, seed: int = 11) -> None:
+    """A READY sample across lanes and sources, with what a reviewer must judge."""
+    from boro_gtm.engine import audit
+    from boro_gtm.engine.strategy import active_strategy
+
+    with session_scope() as s:
+        _echo(audit.sample(s, active_strategy(), n=n, seed=seed))
+
+
+@app.command("record-audit")
+def record_audit(path: Path = typer.Argument(..., exists=True, readable=True)) -> None:
+    """Record READY audit verdicts (JSON: sample, metrics, defects, by)."""
+    from boro_gtm.engine import audit
+
+    with session_scope() as s:
+        _echo(audit.record(s, json.loads(path.read_text())))
+
+
+@app.command("lookup")
+def lookup(domain: str = typer.Argument(..., help="company domain, e.g. cmcorp.cl")) -> None:
+    """Everything the engine knows about one company: pursuit, messages, Gmail history."""
+    from sqlalchemy import select
+
+    from boro_gtm.engine.models import CeAccount, CeMailEvent, CeMessage, CeTarget
+    from boro_gtm.engine.pipeline import account_key, same_company_domain
+
+    key = account_key(domain) or domain.lower()
+    with session_scope() as s:
+        account = s.scalar(select(CeAccount).where(CeAccount.domain == key))
+        targets = list(s.scalars(select(CeTarget).where(
+            CeTarget.account_id == account.id).order_by(CeTarget.created_at))) if account else []
+        messages = [m for t in targets for m in s.scalars(select(CeMessage).where(
+            CeMessage.target_id == t.id).order_by(CeMessage.due_at))]
+        gmail = [e for e in s.scalars(select(CeMailEvent).order_by(CeMailEvent.sent_at))
+                 if any(same_company_domain(a, key) for a in (e.to_emails or []))
+                 or (e.from_email and same_company_domain(e.from_email, key))]
+        _echo({"domain": key, "account": account.name if account else None,
+               "targets": [{"id": t.id, "lane": t.lane, "state": t.state,
+                            "reason": t.state_reason, "score": t.score} for t in targets],
+               "messages": [{"step": m.step, "status": m.status, "to": m.to_email,
+                             "due_at": m.due_at, "sent_at": m.sent_at, "variant": m.variant}
+                            for m in messages],
+               "gmail": [{"direction": e.direction, "sent_at": e.sent_at, "to": e.to_emails,
+                          "from": e.from_email, "subject": e.subject,
+                          "classification": e.classification} for e in gmail]})
+
+
 @app.command("ingest-history")
 def ingest_history(since: str = typer.Option(..., help="YYYY-MM-DD")) -> None:
     """Backfill Gmail history (sent and received) so past contacts are never re-contacted."""
@@ -178,8 +296,10 @@ def ingest_history(since: str = typer.Option(..., help="YYYY-MM-DD")) -> None:
     if gateway is None:
         raise typer.BadParameter("no Gmail credentials (GTM_ENGINE_GMAIL_CREDENTIALS)")
     with session_scope() as s:
+        # Effects apply: bounces and opt-outs in history become suppressions,
+        # and running sequences are adopted (engine.history).
         _echo(r.ingest(s, engine.strategy, gateway, since=date.fromisoformat(since),
-                       max_messages=20000, apply_effects=False))
+                       max_messages=20000, apply_effects=True, backfill=True))
 
 
 @app.command("advance")
@@ -267,7 +387,21 @@ def gmail_auth_exchange(code: str = typer.Option(..., prompt=True, hide_input=Tr
     if response.status_code != 200 or "refresh_token" not in response.json():
         raise typer.BadParameter(f"exchange failed (HTTP {response.status_code})")
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)  # also when the file already existed with a wider mode
     with os.fdopen(fd, "w") as handle:
         json.dump({"client_id": client["client_id"], "client_secret": client["client_secret"],
                    "refresh_token": response.json()["refresh_token"]}, handle)
-    _echo({"written": str(out), "mode": "600"})
+    granted = set(response.json().get("scope", "").split())
+    _echo({"written": str(out), "mode": "600", "scopes_granted": sorted(granted)})
+
+
+@app.command("gmail-check")
+def gmail_check() -> None:
+    """Refresh the token and confirm it opens the corporate mailbox. Prints no secret."""
+    engine = _engine()
+    gateway = engine.gateway()
+    if gateway is None:
+        raise typer.BadParameter("no usable Gmail credentials (GTM_ENGINE_GMAIL_CREDENTIALS)")
+    ids, _ = gateway.list_ids("in:sent", None)
+    _echo({"mailbox": gateway.mailbox(), "token_refresh": "ok",
+           "sent_messages_visible": len(ids) > 0})
