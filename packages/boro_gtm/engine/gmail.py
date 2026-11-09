@@ -14,6 +14,7 @@ import base64
 import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from email.utils import format_datetime, getaddresses, parsedate_to_datetime
@@ -95,8 +96,18 @@ def build_mime(*, sender: str, sender_name: str, to: str, subject: str, body: st
 class GmailApiGateway:
     """The real thing. Constructed only when credentials exist."""
 
+    #: Seconds between API calls. The per-user quota (6,000 units/min on the
+    #: corporate project, not adjustable) is enforced over short windows, so an
+    #: unpaced backfill is refused after ~100 messages.
+    MIN_INTERVAL = 0.25
+    #: Rate-limit refusals retried (reads only) before giving up.
+    MAX_RETRIES = 8
+    MAX_BACKOFF = 90.0
+
     def __init__(self, sender: str, credentials_path: str | None = None,
-                 client: httpx.Client | None = None) -> None:
+                 client: httpx.Client | None = None,
+                 sleep: Callable[[float], Any] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         path = credentials_path or os.environ.get(CREDENTIALS_ENV)
         if not path or not Path(path).exists():
             raise GmailUnavailableError(
@@ -114,6 +125,8 @@ class GmailApiGateway:
         self._client = client or httpx.Client(timeout=30)
         self._token: str | None = None
         self._token_expires = 0.0
+        self._sleep, self._clock = sleep, clock
+        self._last_call = float("-inf")
 
     def _auth(self) -> dict[str, str]:
         if self._token is None or time.time() > self._token_expires - 60:
@@ -132,10 +145,24 @@ class GmailApiGateway:
         return {"Authorization": f"Bearer {self._token}"}
 
     def _call(self, method: str, path: str, **kwargs) -> dict[str, Any]:
-        response = self._client.request(method, f"{API}{path}", headers=self._auth(), **kwargs)
+        # Only reads are retried: a refused send is retried by the sender's
+        # own reconciliation (find by Message-ID first), never blind here.
+        retries = self.MAX_RETRIES if method == "GET" else 0
+        for attempt in range(retries + 1):
+            wait = self._last_call + self.MIN_INTERVAL - self._clock()
+            if wait > 0:
+                self._sleep(wait)
+            self._last_call = self._clock()
+            response = self._client.request(method, f"{API}{path}", headers=self._auth(),
+                                            **kwargs)
+            if attempt < retries and _rate_limited(response):
+                self._sleep(_backoff(response, attempt, self.MAX_BACKOFF))
+                continue
+            break
         if response.status_code >= 400:
             raise GmailUnavailableError(f"Gmail {method} {path.split('?')[0]} -> "
-                                        f"HTTP {response.status_code}")
+                                        f"HTTP {response.status_code}"
+                                        + (" (rate limited)" if _rate_limited(response) else ""))
         return response.json()
 
     def mailbox(self) -> str:
@@ -174,6 +201,29 @@ class GmailApiGateway:
             internal_date=int(data.get("internalDate", "0")) / 1000,
             body_text=_plain_text(payload)[:20000],
         )
+
+
+_RATE_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+
+
+def _rate_limited(response: httpx.Response) -> bool:
+    """429, or Gmail's 403 whose reason is a quota (not a permission) refusal."""
+    if response.status_code == 429:
+        return True
+    if response.status_code != 403:
+        return False
+    try:
+        errors = (response.json().get("error") or {}).get("errors") or []
+    except ValueError:
+        return False
+    return any(isinstance(e, dict) and e.get("reason") in _RATE_REASONS for e in errors)
+
+
+def _backoff(response: httpx.Response, attempt: int, ceiling: float) -> float:
+    retry_after = response.headers.get("retry-after", "")
+    if retry_after.isdigit():
+        return min(float(retry_after), ceiling)
+    return min(2.0 ** (attempt + 1), ceiling)
 
 
 def _plain_text(part: dict[str, Any]) -> str:

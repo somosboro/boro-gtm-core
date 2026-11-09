@@ -211,6 +211,95 @@ def test_a_worker_crash_after_send_is_reconciled_not_resent(session, strategy):
     assert target.state == S.CONTACTED
 
 
+class _GmailApi:
+    """Gmail's REST surface for GmailApiGateway, over httpx.MockTransport.
+
+    `on_send` decides what a POST /messages/send does: "timeout_after_accept"
+    stores the message and then drops the connection (the ambiguous case), and
+    "quota" refuses it with Gmail's 403 rateLimitExceeded (nothing stored).
+    """
+
+    def __init__(self, on_send: str) -> None:
+        self.on_send = on_send
+        self.posts = 0
+        self.stored: dict[str, str] = {}  # rfc822 Message-ID -> gmail id
+
+    def handler(self, request):
+        import base64
+        import email as email_lib
+
+        import httpx
+
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600})
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/messages/send"):
+            self.posts += 1
+            raw = base64.urlsafe_b64decode(json.loads(request.content)["raw"])
+            rfc822 = email_lib.message_from_bytes(raw)["Message-ID"]
+            if self.on_send == "quota":
+                return httpx.Response(403, json={"error": {"code": 403, "errors": [
+                    {"reason": "rateLimitExceeded"}]}})
+            self.stored[rfc822] = f"g{self.posts}"
+            raise httpx.ReadTimeout("connection dropped after Gmail accepted", request=request)
+        if request.method == "GET" and path.endswith("/messages"):
+            wanted = request.url.params.get("q", "").removeprefix("rfc822msgid:")
+            ids = [g for r, g in self.stored.items() if r.strip("<>") == wanted]
+            return httpx.Response(200, json={"messages": [{"id": i} for i in ids]})
+        if request.method == "GET" and "/messages/" in path:
+            gid = path.rsplit("/", 1)[1]
+            return httpx.Response(200, json={"id": gid, "threadId": f"t-{gid}",
+                                             "labelIds": ["SENT"], "payload": {"headers": []}})
+        return httpx.Response(404, json={})
+
+    def gateway(self, tmp_path):
+        import httpx
+
+        from boro_gtm.engine.gmail import GmailApiGateway
+
+        creds = tmp_path / "gmail.json"
+        creds.write_text(json.dumps({"client_id": "c", "client_secret": "s",
+                                     "refresh_token": "r"}))
+        creds.chmod(0o600)
+        return GmailApiGateway("abourgeoisroa@somosboro.com", str(creds),
+                               httpx.Client(transport=httpx.MockTransport(self.handler)),
+                               sleep=lambda _s: None)
+
+
+def test_a_send_timeout_with_the_real_gateway_is_ambiguous_and_never_posted_twice(
+        session, strategy, tmp_path):
+    target = _ready_target(session, strategy)
+    api = _GmailApi("timeout_after_accept")
+    gateway = api.gateway(tmp_path)
+    plan_initials(session, strategy, now=WED_10)
+    result = send_due(session, strategy, gateway, shadow=False, now=WED_10 + timedelta(minutes=10))
+    message = session.scalar(select(CeMessage))
+    assert api.posts == 1
+    assert result[0]["status"] == "SENDING_UNCONFIRMED", "ambiguous: neither SENT nor retried"
+    assert message.status == "SENDING" and target.state == S.READY
+    message.claimed_at = datetime.now(UTC) - timedelta(minutes=30)
+    assert reconcile_sending(session, strategy, gateway)[0]["resolved"] == "SENT"
+    assert api.posts == 1, "the reconciler found it by Message-ID; it never posted again"
+    assert message.status == "SENT" and message.gmail_message_id == "g1"
+    assert target.state == S.CONTACTED
+
+
+def test_a_quota_refused_send_is_not_retried_by_the_gateway_and_is_rescheduled(
+        session, strategy, tmp_path):
+    _ready_target(session, strategy)
+    api = _GmailApi("quota")
+    gateway = api.gateway(tmp_path)
+    plan_initials(session, strategy, now=WED_10)
+    result = send_due(session, strategy, gateway, shadow=False, now=WED_10 + timedelta(minutes=10))
+    message = session.scalar(select(CeMessage))
+    assert api.posts == 1 and result[0]["status"] == "SENDING_UNCONFIRMED"
+    assert "rate limited" in message.last_error
+    message.claimed_at = datetime.now(UTC) - timedelta(minutes=30)
+    assert reconcile_sending(session, strategy, gateway)[0]["resolved"] == "RESCHEDULED"
+    assert api.posts == 1, "Gmail is asked first; nothing is posted blind"
+    assert message.status == "SCHEDULED"
+
+
 def test_a_send_retry_checks_gmail_before_sending(session, strategy):
     _ready_target(session, strategy)
     gateway = FakeGateway()
