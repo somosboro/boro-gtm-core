@@ -1241,6 +1241,58 @@ def test_verification_runs_on_the_real_database_and_leaves_nothing(session, stra
     assert session.scalar(select(func.count()).select_from(CeSuppression)) == 0
 
 
+@pytest.mark.parametrize(("stored", "reads_gmail"), [
+    ({"value": {"seen": 801, "new": 0, "complete": True}}, True),  # worker._jsonable
+    ({"seen": 801, "new": 0, "complete": True}, True),             # bare (CLI, older rows)
+    ({"value": {"skipped": "no_gmail_credentials"}}, False),       # ran, read nothing
+    ({"skipped": "no_gmail_credentials"}, False),
+    ({"value": None}, False),
+])
+def test_the_cutover_report_reads_the_last_ingest_result_wrapped_or_bare(
+        session, strategy, monkeypatch, tmp_path, stored, reads_gmail):
+    from boro_gtm.engine.cutover import report
+    from boro_gtm.engine.models import CeTaskRun
+    from boro_gtm.engine.pipeline import now_utc
+
+    creds = tmp_path / "gmail.json"
+    creds.write_text("{}")
+    creds.chmod(0o600)
+    monkeypatch.setenv("GTM_ENGINE_GMAIL_CREDENTIALS", str(creds))
+    session.add(CeTaskRun(task="ingest", worker="outreach", status="OK", started_at=now_utc(),
+                          finished_at=now_utc(), result=stored))
+    session.flush()
+    check = report(session)["checks"]["gmail_oauth_connected"]
+    assert check["ok"] is reads_gmail, check
+    assert (check["last_successful_read"] is not None) is reads_gmail
+
+
+def test_the_cutover_report_judges_only_the_latest_successful_ingest(session, strategy,
+                                                                     monkeypatch, tmp_path):
+    from boro_gtm.engine.cutover import report
+    from boro_gtm.engine.models import CeTaskRun
+    from boro_gtm.engine.pipeline import now_utc
+
+    creds = tmp_path / "gmail.json"
+    creds.write_text("{}")
+    creds.chmod(0o600)
+    monkeypatch.setenv("GTM_ENGINE_GMAIL_CREDENTIALS", str(creds))
+    moment = now_utc()
+    session.add_all([
+        CeTaskRun(task="ingest", worker="outreach", status="OK",
+                  started_at=moment - timedelta(minutes=30), result={"value": {"seen": 801}}),
+        # A later failure does not hide the last good read...
+        CeTaskRun(task="ingest", worker="outreach", status="FAILED",
+                  started_at=moment - timedelta(minutes=5), error="GmailUnavailableError"),
+    ])
+    session.flush()
+    assert report(session)["checks"]["gmail_oauth_connected"]["ok"] is True
+    # ...but a good read older than an hour is not "connected".
+    session.query(CeTaskRun).filter(CeTaskRun.status == "OK").update(
+        {"started_at": moment - timedelta(hours=2)})
+    session.flush()
+    assert report(session)["checks"]["gmail_oauth_connected"]["ok"] is False
+
+
 def test_the_cutover_report_cannot_pass_on_configuration_alone(session, strategy,
                                                                monkeypatch, tmp_path):
     from boro_gtm.engine.cutover import report

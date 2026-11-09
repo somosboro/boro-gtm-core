@@ -66,6 +66,14 @@ def _at(value: Any) -> datetime | None:
         return None
 
 
+def _task_result(run: CeTaskRun) -> dict[str, Any]:
+    """What a task returned. The worker stores it wrapped as {"value": ...}
+    (worker._jsonable); older or hand-written rows may hold it bare."""
+    result = run.result or {}
+    inner = result.get("value") if isinstance(result, dict) else None
+    return inner if isinstance(inner, dict) else (result if isinstance(result, dict) else {})
+
+
 def _strategy_problems(strategy: Strategy) -> list[str]:
     raw = strategy.raw
     problems = []
@@ -101,7 +109,7 @@ def report(session: Session) -> dict[str, Any]:
     last_ingest = session.scalar(select(CeTaskRun).where(
         CeTaskRun.task == "ingest", CeTaskRun.status == "OK").order_by(
         CeTaskRun.started_at.desc()).limit(1))
-    read_gmail = (last_ingest is not None and "seen" in (last_ingest.result or {})
+    read_gmail = (last_ingest is not None and "seen" in _task_result(last_ingest)
                   and moment - last_ingest.started_at < timedelta(hours=1))
     checks["gmail_oauth_connected"] = {
         "ok": exists and private and read_gmail, "credentials_file": exists,
