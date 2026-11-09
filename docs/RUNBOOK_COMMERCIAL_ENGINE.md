@@ -52,35 +52,54 @@ import `/tmp/file.xlsx`.
 ## Connecting the corporate Gmail (one-time, human step)
 
 Scopes: `gmail.send` and `gmail.readonly`, nothing else. The token file lives
-only in `/opt/boro_gtm/secrets/gmail.json` (mode 600, outside git). The engine
-refuses a file readable by others, and refuses any token that does not open
-`abourgeoisroa@somosboro.com`.
+only in `/opt/boro_gtm/secrets/gmail.json` (root, mode 600, outside git). The
+engine refuses a file readable by others, and refuses any token that does not
+open `abourgeoisroa@somosboro.com`.
+
+`gtm engine gmail-connect` runs OAuth for an installed app (RFC 8252) with PKCE
+S256 (RFC 7636): it opens the browser, a one-shot listener on `127.0.0.1` and an
+ephemeral port receives the redirect, `state` is checked before the code is
+read, and the code is exchanged with the verifier. The credentials file is
+written only if the grant carries exactly the two scopes and opens the
+corporate mailbox. No code, verifier, secret or token is ever printed, logged
+or typed on a command line; the command refuses to write inside a git
+repository.
 
 1. **Google Cloud** (signed in as a somosboro.com Workspace admin):
    * Create (or pick) a project → *APIs & Services → Library* → enable **Gmail API**.
    * *OAuth consent screen* → User type **Internal** (an External app in testing
      mode issues refresh tokens that expire after 7 days).
    * *Credentials → Create credentials → OAuth client ID* → type **Desktop app**
-     → download the JSON (`client_secret_….json`).
-2. **On the Mac**, in the repository:
-   ```bash
-   cd ~/Developer/boro-gtm-core
-   .venv/bin/gtm engine gmail-auth-url --client-id <client_id from the JSON>
+     → download the JSON (`client_secret_….json`). A *Web application* client is
+     refused.
+2. **On the Windows PC** (PowerShell), once, in the repository:
+   ```powershell
+   cd D:\BoRo\Projects\boro-gtm-core
+   python -m venv .venv
+   .venv\Scripts\python -m pip install -e .
    ```
-   Open the URL, sign in as `abourgeoisroa@somosboro.com`, approve. The browser
-   then fails to load `http://127.0.0.1:8765/?code=…`; that is expected. Copy the
-   `code` value from the address bar (up to `&scope`).
-3. ```bash
-   .venv/bin/gtm engine gmail-auth-exchange --client-secret-file ~/Downloads/client_secret_*.json --out ~/gmail.json
+3. Connect (the browser opens; sign in as `abourgeoisroa@somosboro.com` and approve):
+   ```powershell
+   $env:PYTHONIOENCODING = "utf-8"
+   .venv\Scripts\gtm engine gmail-connect --client-secret-file "$HOME\Downloads\client_secret_<id>.json"
    ```
-   Paste the code when prompted (hidden). It prints the granted scopes, never the token.
-4. ```bash
-   scp -i ~/.ssh/getboro_deploy ~/gmail.json boro-vps:/opt/boro_gtm/secrets/gmail.json
-   ssh -i ~/.ssh/getboro_deploy boro-vps 'chmod 600 /opt/boro_gtm/secrets/gmail.json && cd /opt/boro_gtm && docker compose restart worker'
-   rm ~/gmail.json
+   It prints the mailbox and the scopes and writes `%USERPROFILE%\.boro-gtm\gmail.json`.
+   Restrict that folder to your Windows user:
+   ```powershell
+   icacls "$HOME\.boro-gtm" /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F"
    ```
-5. On the VPS: `E gmail-check` (must show `abourgeoisroa@somosboro.com`), then
-   backfill and reconcile:
+4. Copy the file over SSH into the root-only `secrets` folder (mode 700, so the
+   file is never readable by anyone else, even before the `chmod`), then restart:
+   ```powershell
+   scp "$HOME\.boro-gtm\gmail.json" boro-vps:/opt/boro_gtm/secrets/gmail.json
+   ssh boro-vps "chown root:root /opt/boro_gtm/secrets/gmail.json && chmod 600 /opt/boro_gtm/secrets/gmail.json && cd /opt/boro_gtm && docker compose restart worker sourcer"
+   ssh boro-vps "cd /opt/boro_gtm && docker compose exec -T worker gtm engine gmail-check"
+   ```
+   `gmail-check` must show `abourgeoisroa@somosboro.com` and `"token_refresh": "ok"`.
+5. Remove the local copies: `Remove-Item "$HOME\.boro-gtm\gmail.json"`; keep
+   the `client_secret_….json` in BoRo's password manager and delete it from
+   Downloads.
+6. On the VPS, backfill and reconcile:
    ```bash
    E ingest-history --since 2026-06-01
    E parity --day 2026-11-03 --record
@@ -90,6 +109,9 @@ refuses a file readable by others, and refuses any token that does not open
    The backfill stores every sent and received message once (drafts never),
    turns past bounces and opt-outs into suppressions, and adopts any running
    ChatGPT sequence (CE-ADR-019). Re-running it is safe.
+
+To revoke: <https://myaccount.google.com/permissions> → remove the app, then
+delete `/opt/boro_gtm/secrets/gmail.json` and restart the worker.
 
 ## Imports
 

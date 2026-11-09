@@ -353,46 +353,33 @@ def cutover_report() -> None:
         raise typer.Exit(code=2)
 
 
-@app.command("gmail-auth-url")
-def gmail_auth_url(client_id: str = typer.Option(...),
-                   redirect_uri: str = typer.Option("http://127.0.0.1:8765/")) -> None:
-    """Print the consent URL for the corporate mailbox (one-time, human step)."""
-    from urllib.parse import urlencode
+@app.command("gmail-connect")
+def gmail_connect(
+        client_secret_file: Path = typer.Option(
+            ..., exists=True, dir_okay=False,
+            help="client_secret_….json of a Desktop-app OAuth client"),
+        out: Path = typer.Option(
+            Path.home() / ".boro-gtm" / "gmail.json", dir_okay=False,
+            help="where the credentials file is written (never inside a repository)"),
+        browser: bool = typer.Option(True, "--browser/--no-browser",
+                                     help="open the consent page in the default browser"),
+        timeout: int = typer.Option(300, help="seconds to wait for the sign-in")) -> None:
+    """Connect the corporate mailbox once: browser sign-in, PKCE, loopback redirect.
 
-    from boro_gtm.engine.gmail import SCOPES
+    Prints no code and no token; writes OUT only if the grant carries exactly
+    gmail.send + gmail.readonly and opens the corporate sender's mailbox.
+    """
+    from boro_gtm.engine.gmail_oauth import OAuthError, connect
+    from boro_gtm.engine.strategy import active_strategy
 
-    typer.echo("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
-        "client_id": client_id, "redirect_uri": redirect_uri, "response_type": "code",
-        "scope": SCOPES, "access_type": "offline", "prompt": "consent",
-        "login_hint": "abourgeoisroa@somosboro.com"}))
-
-
-@app.command("gmail-auth-exchange")
-def gmail_auth_exchange(code: str = typer.Option(..., prompt=True, hide_input=True),
-                        client_secret_file: Path = typer.Option(..., exists=True),
-                        out: Path = typer.Option(...),
-                        redirect_uri: str = typer.Option("http://127.0.0.1:8765/")) -> None:
-    """Exchange the consent code for a refresh token, written to OUT with mode 600."""
-    import os
-
-    import httpx
-
-    from boro_gtm.engine.gmail import TOKEN_URL
-
-    client = json.loads(client_secret_file.read_text())
-    client = client.get("installed") or client.get("web") or client
-    response = httpx.post(TOKEN_URL, data={
-        "code": code, "client_id": client["client_id"], "client_secret": client["client_secret"],
-        "redirect_uri": redirect_uri, "grant_type": "authorization_code"}, timeout=30)
-    if response.status_code != 200 or "refresh_token" not in response.json():
-        raise typer.BadParameter(f"exchange failed (HTTP {response.status_code})")
-    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(fd, 0o600)  # also when the file already existed with a wider mode
-    with os.fdopen(fd, "w") as handle:
-        json.dump({"client_id": client["client_id"], "client_secret": client["client_secret"],
-                   "refresh_token": response.json()["refresh_token"]}, handle)
-    granted = set(response.json().get("scope", "").split())
-    _echo({"written": str(out), "mode": "600", "scopes_granted": sorted(granted)})
+    try:
+        result = connect(client_secret_file, out, active_strategy().sender["email"],
+                         open_browser=None if browser else (lambda _url: None),
+                         echo=typer.echo, timeout=timeout)
+    except OAuthError as exc:
+        typer.echo(f"error: {exc.message}", err=True)
+        raise typer.Exit(code=1) from None
+    _echo(result)
 
 
 @app.command("gmail-check")
