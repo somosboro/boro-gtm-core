@@ -36,6 +36,7 @@ from boro_gtm.engine.models import (
 )
 from boro_gtm.engine.pipeline import (
     EngineError,
+    is_role_mailbox,
     now_utc,
     send_blockers,
     transition,
@@ -76,6 +77,65 @@ def first_name(contact: CeContact, language: str) -> str:
     return "equipo" if language == "es" else "there"
 
 
+# --- copy helpers (strategy "copy" section; absent in older strategies) ----------
+
+#: A personal mailbox written as name.surname or name_surname.
+_PERSON_LOCAL = re.compile(r"^([a-záéíóúñü]{3,})[._]([a-záéíóúñü]{2,})$")
+_GREETING = {"es": {"person": "Hola {name}", "team": "Hola, equipo de {company}"},
+             "en": {"person": "Hi {name}", "team": "Hi {company} team"}}
+
+
+def _copy(strategy: Strategy) -> dict[str, Any]:
+    return strategy.raw.get("copy") or {}
+
+
+def short_company(strategy: Strategy, name: str) -> str:
+    """The company name without a trailing legal form ("Blue Minds SpA" -> "Blue Minds")."""
+    cleaned = (name or "").strip()
+    for suffix in sorted(_copy(strategy).get("legal_suffixes", []), key=len, reverse=True):
+        if cleaned.lower().endswith(" " + suffix.lower()):
+            return cleaned[: -len(suffix)].rstrip(" ,.") or cleaned
+    return cleaned
+
+
+def person_name(contact: CeContact) -> str | None:
+    """A first name only when the contact is clearly one person; never a guess at a desk."""
+    if contact.is_generic or is_role_mailbox(contact.email, contact_role=contact.role):
+        return None
+    if contact.full_name:
+        return contact.full_name.split()[0]
+    match = _PERSON_LOCAL.match(contact.email.split("@")[0].lower())
+    return match.group(1).capitalize() if match else None
+
+
+def greeting(strategy: Strategy, contact: CeContact, company: str, language: str) -> str:
+    forms = _copy(strategy).get("greeting", {}).get(language) or _GREETING[language]
+    name = person_name(contact)
+    return forms["person"].format(name=name) if name else forms["team"].format(company=company)
+
+
+def loc_short(strategy: Strategy, country: str | None, language: str) -> str:
+    """The country's e-invoicing system in one word (DTE, SUNAT, CFDI, DIAN...)."""
+    table = _copy(strategy).get("localization_short", {}).get(language, {})
+    return table.get((country or "").upper()) or table.get("_default", "")
+
+
+def segment_text(strategy: Strategy, key: str, *, segment: str, evidence: str,
+                 country: str | None, language: str) -> str:
+    """Copy that depends on the kind of company: Odoo partners (from the directory, or an
+    import whose evidence names Odoo) or any other software firm."""
+    table = _copy(strategy).get(key, {})
+    odoo = segment == "odoo_partner" or "odoo" in evidence.lower()
+    forms = (table.get("odoo_partner") if odoo else None) or table.get("_default") or {}
+    return forms.get(language, "").format(loc_short=loc_short(strategy, country, language))
+
+
+def cta(strategy: Strategy, lane: str, contact: CeContact, language: str) -> str:
+    """The closing question, addressed to the person (usted) or to the team (ustedes)."""
+    forms = _copy(strategy).get("cta", {}).get(lane, {}).get(language, {})
+    return forms.get("person" if person_name(contact) else "team", "")
+
+
 def render(strategy: Strategy, *, target: CeTarget, account: CeAccount, contact: CeContact,
            signal: CeSignal | None, step: str) -> dict[str, str]:
     language = language_for(target.country)
@@ -84,9 +144,23 @@ def render(strategy: Strategy, *, target: CeTarget, account: CeAccount, contact:
     attrs = (signal.attributes if signal is not None else {}) or {}
     evidence = attrs.get(f"evidence_{language}") or attrs.get("evidence") or ""
     signal_title = (signal.title if signal is not None else "") or ""
+    company = account.name or account.domain
+    company_short = short_company(strategy, company)
+    by_segment = {"segment": str(attrs.get("segment") or ""), "evidence": evidence,
+                  "country": target.country, "language": language}
     values = {
         "first_name": first_name(contact, language),
-        "company": account.name or account.domain,
+        "greeting": greeting(strategy, contact, company_short, language),
+        "company": company,
+        "company_short": company_short,
+        "hook": segment_text(strategy, "hook", **by_segment),
+        "topic": segment_text(strategy, "topic", **by_segment),
+        "example_work": segment_text(strategy, "example_work", **by_segment),
+        # Optional: a second proof only some segments have (empty for the others).
+        "follow_up_proof": segment_text(strategy, "follow_up_proof", **by_segment),
+        "cta": cta(strategy, target.lane, contact, language),
+        "loc_short": loc_short(strategy, target.country, language),
+        "signature_short": _copy(strategy).get("signature_short") or strategy.sender["signature"],
         "evidence": evidence,
         "signal_title": signal_title[:90],
         "proof": choose_proof(strategy, f"{signal_title} {signal.excerpt if signal else ''}",
@@ -98,6 +172,10 @@ def render(strategy: Strategy, *, target: CeTarget, account: CeAccount, contact:
                           details={"target_id": str(target.id)})
     if "{signal_title}" in parts["body"] + parts["subject"] and not signal_title:
         raise EngineError("template needs the signal title", details={"target_id": str(target.id)})
+    for key in ("hook", "topic", "example_work", "cta"):
+        if "{" + key + "}" in parts["body"] + parts["subject"] and not values[key]:
+            raise EngineError(f"template uses {{{key}}} and the strategy's copy defines none",
+                              details={"target_id": str(target.id)})
     subject = parts["subject"].format(**values)
     body = parts["body"].format(**values)
     if _PLACEHOLDER.search(subject + body):

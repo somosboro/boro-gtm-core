@@ -1,0 +1,476 @@
+{
+  "strategy_version": "2026-11.2",
+  "effective_from": null,
+  "status": "DRAFT",
+  "supersedes": "2026-11.1",
+  "sender": {
+    "email": "abourgeoisroa@somosboro.com",
+    "name": "Amaru Bourgeois",
+    "signature": "Amaru Bourgeois\nFounder, BoRo Studio\nsomosboro.com",
+    "postal_address": null
+  },
+  "timezone": "America/Santiago",
+  "business_hours": {
+    "start": "09:15",
+    "end": "17:30"
+  },
+  "holidays": [
+    "2026-11-20",
+    "2026-12-08",
+    "2026-12-25",
+    "2027-01-01",
+    "2027-04-02",
+    "2027-04-03",
+    "2027-05-01",
+    "2027-05-21",
+    "2027-06-21",
+    "2027-06-29",
+    "2027-07-16",
+    "2027-08-15",
+    "2027-09-17",
+    "2027-09-18",
+    "2027-09-19",
+    "2027-10-11",
+    "2027-10-31",
+    "2027-11-01",
+    "2027-12-08",
+    "2027-12-25"
+  ],
+  "volume": {
+    "initial_contacts_per_business_day": 20,
+    "max_initial_contacts_per_business_day": 20,
+    "min_minutes_between_sends": 12,
+    "new_qualified_candidates_per_day": 20,
+    "lane_mix": {
+      "PARTNER_DELIVERY": 0.4,
+      "EXPLICIT_DEMAND": 0.4,
+      "TRIGGER_OVERFLOW": 0.2
+    },
+    "ramp_rule": "Stay at 20/day until at least 10 business days of delivery, bounce and reply data exist. Then 30, then 50, only while the bounce rate stays under deliverability.max_bounce_rate."
+  },
+  "qualification": {
+    "threshold": 70,
+    "high_priority": 85,
+    "weights": {
+      "signal": 25,
+      "urgency": 20,
+      "technical_fit": 20,
+      "vendor_suitability": 15,
+      "channel_access": 10,
+      "economic": 10
+    }
+  },
+  "deliverability": {
+    "max_bounce_rate": 0.05,
+    "bounce_window_sends": 40,
+    "min_sends_before_bounce_check": 10,
+    "pause_on_breach": true
+  },
+  "cadence": {
+    "PARTNER_DELIVERY": {
+      "f1_business_days": 4,
+      "f2_min_calendar_days": 14,
+      "f2_min_days_after_f1": 7
+    },
+    "TRIGGER_OVERFLOW": {
+      "f1_business_days": 4,
+      "f2_min_calendar_days": 14,
+      "f2_min_days_after_f1": 7
+    },
+    "EXPLICIT_DEMAND": {
+      "f1_business_days": 2,
+      "f2_min_calendar_days": 5,
+      "f2_max_calendar_days": 7,
+      "f2_min_days_after_f1": 2
+    }
+  },
+  "jurisdictions": {
+    "allowed": [
+      "CL",
+      "PE",
+      "CO",
+      "MX",
+      "AR",
+      "UY",
+      "EC",
+      "BO",
+      "PY",
+      "CR",
+      "PA",
+      "GT",
+      "DO"
+    ],
+    "review": [
+      "ES",
+      "PT",
+      "FR",
+      "DE",
+      "IT",
+      "NL",
+      "BE",
+      "IE",
+      "GB",
+      "CA"
+    ],
+    "requires_postal_address": [
+      "US"
+    ],
+    "note": "EU/UK/Canada consent rules for unsolicited commercial email are stricter than BoRo can verify automatically, so targets there wait in COMPLIANCE_REVIEW. US (CAN-SPAM) is allowed only once sender.postal_address is configured."
+  },
+  "contact_roles": [
+    "founder",
+    "co-founder",
+    "cofounder",
+    "ceo",
+    "cto",
+    "coo",
+    "director",
+    "head of delivery",
+    "delivery manager",
+    "partnerships",
+    "alianzas",
+    "operaciones",
+    "operations",
+    "gerente general",
+    "gerente de operaciones",
+    "socio",
+    "managing partner",
+    "implementation",
+    "proyectos"
+  ],
+  "technical_fit_terms": [
+    "odoo",
+    "erp",
+    "api",
+    "integración",
+    "integracion",
+    "integration",
+    "backend",
+    "nestjs",
+    "nest.js",
+    "next.js",
+    "nextjs",
+    "react",
+    "react native",
+    "expo",
+    "node",
+    "typescript",
+    "postgresql",
+    "postgres",
+    "supabase",
+    "python",
+    "fastapi",
+    "django",
+    "internal tool",
+    "herramienta interna",
+    "migración",
+    "migracion",
+    "migration",
+    "automatización",
+    "automatizacion",
+    "automation",
+    "mobile",
+    "app",
+    "webhook",
+    "plataforma",
+    "platform",
+    "sistema",
+    "software"
+  ],
+  "vendor_terms": [
+    "freelance",
+    "freelancer",
+    "contractor",
+    "contratista",
+    "proyecto",
+    "project-based",
+    "por proyecto",
+    "outsourcing",
+    "externo",
+    "external",
+    "partner",
+    "proveedor",
+    "vendor",
+    "agencia",
+    "agency",
+    "consultora",
+    "consultancy",
+    "staff augmentation",
+    "rfp",
+    "rfq",
+    "licitación",
+    "licitacion",
+    "cotización",
+    "cotizacion",
+    "implementation partner"
+  ],
+  "urgency_terms": [
+    "urgente",
+    "urgent",
+    "asap",
+    "inmediato",
+    "immediate",
+    "this week",
+    "esta semana",
+    "deadline",
+    "plazo",
+    "start now"
+  ],
+  "economic_terms": [
+    "budget",
+    "presupuesto",
+    "usd",
+    "us$",
+    "clp",
+    "eur",
+    "€",
+    "$",
+    "salary",
+    "sueldo",
+    "rate",
+    "tarifa",
+    "pago"
+  ],
+  "proof_points": {
+    "patient_ops": {
+      "es": "módulos Odoo 17 para una clínica de psicoterapia online: agenda con pagos, ficha clínica auditada y videoconsulta",
+      "en": "Odoo 17 modules for an online psychotherapy clinic: booking with payments, audited clinical records and video sessions"
+    },
+    "clinical_erp": {
+      "es": "la plataforma Odoo 17 de una clínica de psicoterapia online: agenda con pagos, ficha clínica auditada y videoconsulta",
+      "en": "an online psychotherapy clinic's Odoo 17 platform: booking with payments, audited clinical records and video sessions"
+    },
+    "viba": {
+      "es": "una app React sobre Odoo 16 para una consulta de nutrición, con agenda y pagos de Mercado Pago",
+      "en": "a React app on Odoo 16 for a nutrition practice, with booking and Mercado Pago payments"
+    },
+    "quecompro": {
+      "es": "Qué Compro, una app en Expo con API en Express que compara precios de supermercados y puntúa productos por nutrición",
+      "en": "Qué Compro, an Expo app with an Express API that compares supermarket prices and scores products on nutrition"
+    }
+  },
+  "templates": {
+    "PARTNER_DELIVERY": {
+      "variant": "partner-capacity-v3",
+      "offer": "delivery_capacity",
+      "es": {
+        "INITIAL": {
+          "subject": "{company_short}: {topic}",
+          "body": "{greeting},\n\n{hook}\n\nEn BoRo tomamos ese frente bajo su marca, en su horario y en español, con código documentado. Como referencia, construimos {proof}.\n\n{cta}\n\n{signature_short}\n\nSi no es relevante, responde \"no\" y no te vuelvo a escribir."
+        },
+        "F1": {
+          "subject": "Re: {company_short}: {topic}",
+          "body": "{greeting}, una idea más concreta: si tienen un proyecto con {example_work} esperando, puedo estimar ese frente por separado, sin compromiso.{follow_up_proof}\n\n{signature_short}"
+        },
+        "F2": {
+          "subject": "Re: {company_short}: {topic}",
+          "body": "{greeting}, no insisto más. Si en algún momento les falta capacidad para un proyecto, basta con responder este correo.\n\n{signature_short}"
+        }
+      },
+      "en": {
+        "INITIAL": {
+          "subject": "{company_short}: {topic}",
+          "body": "{greeting},\n\n{hook}\n\nBoRo takes that work on under your brand, from Chile in overlapping hours, with documented code. For reference, we built {proof}.\n\n{cta}\n\n{signature_short}\n\nIf this isn't relevant, reply \"no\" and I won't write again."
+        },
+        "F1": {
+          "subject": "Re: {company_short}: {topic}",
+          "body": "{greeting}, one concrete idea: if a project with {example_work} is waiting, I can estimate that workstream on its own, with no commitment.{follow_up_proof}\n\n{signature_short}"
+        },
+        "F2": {
+          "subject": "Re: {company_short}: {topic}",
+          "body": "{greeting}, I won't follow up again. If you're ever short of capacity for a project, just reply to this email.\n\n{signature_short}"
+        }
+      }
+    },
+    "TRIGGER_OVERFLOW": {
+      "variant": "trigger-overflow-v3",
+      "offer": "overflow_capacity",
+      "es": {
+        "INITIAL": {
+          "subject": "Mientras {company_short} contrata",
+          "body": "{greeting},\n\nVi que {company_short} {evidence}. Mientras cierran esa contratación, podemos tomar el frente que no puede esperar, por proyecto y en español, y dejarlo documentado para quien llegue. Como referencia, construimos {proof}.\n\n{cta}\n\n{signature_short}\n\nSi no es relevante, responde \"no\" y no te vuelvo a escribir."
+        },
+        "F1": {
+          "subject": "Re: Mientras {company_short} contrata",
+          "body": "{greeting}, retomo esto por si la búsqueda sigue abierta: podemos cubrir {example_work} mientras tanto, sin compromiso.\n\n{signature_short}"
+        },
+        "F2": {
+          "subject": "Re: Mientras {company_short} contrata",
+          "body": "{greeting}, no insisto más. Si más adelante necesitan capacidad puntual, basta con responder este correo.\n\n{signature_short}"
+        }
+      },
+      "en": {
+        "INITIAL": {
+          "subject": "While {company_short} is hiring",
+          "body": "{greeting},\n\nI saw that {company_short} {evidence}. While that hire closes, we can take on the workstream that can't wait, on a project basis, and leave it documented for whoever joins. For reference, we built {proof}.\n\n{cta}\n\n{signature_short}\n\nIf this isn't relevant, reply \"no\" and I won't write again."
+        },
+        "F1": {
+          "subject": "Re: While {company_short} is hiring",
+          "body": "{greeting}, following up in case the search is still open: we can cover {example_work} in the meantime, with no commitment.\n\n{signature_short}"
+        },
+        "F2": {
+          "subject": "Re: While {company_short} is hiring",
+          "body": "{greeting}, I won't follow up again. If you need short-term capacity later, just reply to this email.\n\n{signature_short}"
+        }
+      }
+    },
+    "EXPLICIT_DEMAND": {
+      "variant": "explicit-demand-v3",
+      "offer": "project_delivery",
+      "es": {
+        "INITIAL": {
+          "subject": "Sobre: {signal_title}",
+          "body": "{greeting},\n\nVi su publicación \"{signal_title}\". Podemos tomar el proyecto completo o la parte que más urge, en español y en su horario. Como referencia, construimos {proof}.\n\n{cta}\n\n{signature_short}\n\nSi no es relevante, responde \"no\" y no te vuelvo a escribir."
+        },
+        "F1": {
+          "subject": "Re: Sobre: {signal_title}",
+          "body": "{greeting}, retomo esto: si \"{signal_title}\" sigue abierto, podemos revisar el alcance esta semana.\n\n{signature_short}"
+        },
+        "F2": {
+          "subject": "Re: Sobre: {signal_title}",
+          "body": "{greeting}, último mensaje sobre \"{signal_title}\". Si ya lo resolvieron, perfecto; si no, aquí estamos.\n\n{signature_short}"
+        }
+      },
+      "en": {
+        "INITIAL": {
+          "subject": "Re your post: {signal_title}",
+          "body": "{greeting},\n\nI saw your post \"{signal_title}\". We can take the whole project or the most urgent part of it. For reference, we built {proof}.\n\n{cta}\n\n{signature_short}\n\nIf this isn't relevant, reply \"no\" and I won't write again."
+        },
+        "F1": {
+          "subject": "Re: Re your post: {signal_title}",
+          "body": "{greeting}, following up: if \"{signal_title}\" is still open, we can go over scope this week.\n\n{signature_short}"
+        },
+        "F2": {
+          "subject": "Re: Re your post: {signal_title}",
+          "body": "{greeting}, last note on \"{signal_title}\". If it's already covered, great; if not, we're here.\n\n{signature_short}"
+        }
+      }
+    }
+  },
+  "change_note": "Copy v3: short (under ~80 words before the signature), opens on the partner's situation in conditional terms (never asserts a need), one sentence about BoRo with the nearshore difference (their hours, Spanish, documented code under their brand), an interest question addressed to the person (usted) or the team (ustedes), short signature. The subject carries the company; hook and subject depend on the signal's segment and the country's e-invoicing localization. Proof points describe BoRo's own code on boro-vps and are anonymized: no client names (acos/specs/somosboro-web-b2b-casos.md: no written consent to publish clients). The Odoo partner follow-up adds BoRo OS (BoRo's own platform on Odoo: HR, collections, inventory and sales), approved by Amaru on 2026-11-11. Amaru confirmed on 2026-11-11 that BoRo does e-invoicing localization (DTE, SUNAT, CFDI, DIAN). Rules, cadence and volume are unchanged. PENDING before activation: Amaru confirms version-migration work (named in the Odoo follow-up).",
+  "copy": {
+    "legal_suffixes": [
+      "S. de R.L. de C.V.",
+      "S.A. de C.V.",
+      "S.A.P.I. de C.V.",
+      "SA de CV",
+      "S.A.S.",
+      "SAS",
+      "S.A.C.",
+      "SAC",
+      "S.R.L.",
+      "SRL",
+      "S.A.",
+      "SA",
+      "SpA",
+      "SPA",
+      "Ltda.",
+      "Ltda",
+      "LIMITADA",
+      "Limitada",
+      "EIRL",
+      "E.I.R.L.",
+      "LLC",
+      "Inc.",
+      "Inc",
+      "S.L.",
+      "SL"
+    ],
+    "localization_short": {
+      "es": {
+        "CL": "DTE",
+        "PE": "SUNAT",
+        "MX": "CFDI",
+        "CO": "DIAN",
+        "AR": "ARCA",
+        "_default": "localización"
+      },
+      "en": {
+        "_default": "localization"
+      }
+    },
+    "hook": {
+      "odoo_partner": {
+        "es": "Cuando un partner Odoo tiene más proyectos que equipo, lo técnico suele ser lo primero que se atrasa: un módulo, una integración, un ajuste de {loc_short}.",
+        "en": "When an Odoo partner has more projects than people, the technical work usually slips first: a module, an integration, a localization change."
+      },
+      "_default": {
+        "es": "Cuando una empresa de software tiene más proyectos que equipo, lo primero que se atrasa suele ser lo técnico: una API, una integración, una herramienta interna.",
+        "en": "When a software firm has more projects than people, the technical work usually slips first: an API, an integration, an internal tool."
+      }
+    },
+    "topic": {
+      "odoo_partner": {
+        "es": "¿un frente de {loc_short} sin quién lo tome?",
+        "en": "an Odoo workstream nobody has time for?"
+      },
+      "_default": {
+        "es": "¿un frente técnico sin quién lo tome?",
+        "en": "a technical workstream nobody has time for?"
+      }
+    },
+    "follow_up_proof": {
+      "odoo_partner": {
+        "es": " Es el mismo tipo de trabajo de BoRo OS, nuestra plataforma sobre Odoo para RRHH, cobranza, inventario y ventas.",
+        "en": " It's the same kind of work as BoRo OS, our platform on Odoo for HR, collections, inventory and sales."
+      },
+      "_default": {
+        "es": "",
+        "en": ""
+      }
+    },
+    "example_work": {
+      "odoo_partner": {
+        "es": "un ajuste de {loc_short} o una migración de versión",
+        "en": "a localization change or a version migration"
+      },
+      "_default": {
+        "es": "una API o una integración que no avanza",
+        "en": "an API or an integration that is stuck"
+      }
+    },
+    "cta": {
+      "PARTNER_DELIVERY": {
+        "es": {
+          "person": "¿Le interesaría ver cómo funcionaría con uno de sus proyectos?",
+          "team": "¿Les interesaría ver cómo funcionaría con uno de sus proyectos?"
+        },
+        "en": {
+          "person": "Would it be worth seeing how this would work on one of your projects?",
+          "team": "Would it be worth seeing how this would work on one of your projects?"
+        }
+      },
+      "TRIGGER_OVERFLOW": {
+        "es": {
+          "person": "¿Le interesaría que le cuente cómo lo haríamos?",
+          "team": "¿Les interesaría que les cuente cómo lo haríamos?"
+        },
+        "en": {
+          "person": "Would it help if I outlined how we'd approach it?",
+          "team": "Would it help if I outlined how we'd approach it?"
+        }
+      },
+      "EXPLICIT_DEMAND": {
+        "es": {
+          "person": "¿Le sirve una llamada corta para ver alcance y plazos?",
+          "team": "¿Les sirve una llamada corta para ver alcance y plazos?"
+        },
+        "en": {
+          "person": "Would a short call on scope and timing be useful?",
+          "team": "Would a short call on scope and timing be useful?"
+        }
+      }
+    },
+    "greeting": {
+      "es": {
+        "person": "Hola {name}",
+        "team": "Hola, equipo de {company}"
+      },
+      "en": {
+        "person": "Hi {name}",
+        "team": "Hi {company} team"
+      }
+    },
+    "signature_short": "Amaru\nBoRo Studio · somosboro.com"
+  }
+}
