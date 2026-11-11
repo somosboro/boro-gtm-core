@@ -233,7 +233,10 @@ def test_a_name_is_used_only_when_the_contact_is_clearly_one_person(email, gener
     ("BCN CONSULTORES LIMITADA", "BCN CONSULTORES"), ("Alwa Peru SA", "Alwa Peru"),
     ("ALABOOL TECHNOLOGIES S.A. de C.V.", "ALABOOL TECHNOLOGIES"),
     ("Ingeniosys Ingeniería de software SA de CV", "Ingeniosys Ingeniería de software"),
-    ("Giraffos", "Giraffos"), ("1-800CLOUD SAS", "1-800CLOUD"), ("Spa", "Spa")])
+    ("Giraffos", "Giraffos"), ("1-800CLOUD SAS", "1-800CLOUD"), ("Spa", "Spa"),
+    ("G&S GESTION Y SISTEMAS S.A.C", "G&S GESTION Y SISTEMAS"), ("NEXTPRO S.A.C", "NEXTPRO"),
+    ("I.A.S Ingeniería, Aplicaciones y Software S.A.S", "I.A.S Ingeniería, Aplicaciones y Software"),
+    ("OD.ONE. S.A.S.", "OD.ONE")])
 def test_legal_forms_are_dropped_from_the_short_name(draft, name, short):
     assert outreach.short_company(draft, name) == short
 

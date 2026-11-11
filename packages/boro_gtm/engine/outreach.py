@@ -92,7 +92,9 @@ def _copy(strategy: Strategy) -> dict[str, Any]:
 def short_company(strategy: Strategy, name: str) -> str:
     """The company name without a trailing legal form ("Blue Minds SpA" -> "Blue Minds")."""
     cleaned = (name or "").strip()
-    for suffix in sorted(_copy(strategy).get("legal_suffixes", []), key=len, reverse=True):
+    # Registries often drop the final period ("S.A.C", "S.A.S"), so accept both spellings.
+    suffixes = {form for s in _copy(strategy).get("legal_suffixes", []) for form in (s, s.rstrip("."))}
+    for suffix in sorted(suffixes, key=len, reverse=True):
         if cleaned.lower().endswith(" " + suffix.lower()):
             return cleaned[: -len(suffix)].rstrip(" ,.") or cleaned
     return cleaned
