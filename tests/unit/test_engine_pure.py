@@ -21,7 +21,7 @@ def strategy():
 
 
 def test_the_active_strategy_is_versioned_and_never_the_old_doctrine(strategy):
-    assert strategy.version == "2026-11.1"
+    assert strategy.version == "2026-11.2"
     text = strategy.path.read_text().lower()
     assert "architecture sprint" not in text.replace("architecture sprint entry offer", "")
     assert strategy.daily_cap == 20

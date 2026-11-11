@@ -151,8 +151,9 @@ anti-bot measures are respected.
 
 **Status:** accepted
 
-**Decision.** Runtime reads `commercial/strategies/active-2026-11.json`
-(version `2026-11.1`): sender, caps, lane mix, cadences, jurisdictions,
+**Decision.** Runtime reads `commercial/strategies/active-2026-11.2.json`
+(version `2026-11.2`, active since 2026-11-11; `2026-11.1` is kept as
+`superseded-2026-11.1.json`): sender, caps, lane mix, cadences, jurisdictions,
 templates, proof points. Every target and message records the strategy version.
 The 2026-09 doctrine is archived and never loaded.
 

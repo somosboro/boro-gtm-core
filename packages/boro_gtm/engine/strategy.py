@@ -16,7 +16,7 @@ from typing import Any
 
 from boro_gtm.core.config import REPO_ROOT
 
-DEFAULT_STRATEGY = REPO_ROOT / "commercial" / "strategies" / "active-2026-11.json"
+DEFAULT_STRATEGY = REPO_ROOT / "commercial" / "strategies" / "active-2026-11.2.json"
 
 
 @dataclass(frozen=True)

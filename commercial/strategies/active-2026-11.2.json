@@ -1,7 +1,7 @@
 {
   "strategy_version": "2026-11.2",
-  "effective_from": null,
-  "status": "DRAFT",
+  "effective_from": "2026-11-11",
+  "status": "ACTIVE",
   "supersedes": "2026-11.1",
   "sender": {
     "email": "abourgeoisroa@somosboro.com",

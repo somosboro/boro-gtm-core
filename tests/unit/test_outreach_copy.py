@@ -1,6 +1,6 @@
-"""Copy v3 (draft strategy 2026-11.2): short, partner-situation hook, nearshore pitch, interest CTA.
-
-The draft is never loaded by production (status DRAFT); these tests load it directly.
+"""Copy v3 (strategy 2026-11.2, active since 2026-11-11): short, partner-situation hook,
+nearshore pitch, interest CTA. The superseded 2026-11.1 (v1) is loaded directly, only to
+prove v3 changed copy and never rules.
 """
 
 from __future__ import annotations
@@ -20,16 +20,17 @@ from boro_gtm.engine.pipeline import EngineError
 from boro_gtm.engine.strategy import Strategy, load_strategy
 
 REPO = Path(__file__).resolve().parents[2]
-DRAFT_PATH = REPO / "commercial" / "strategies" / "draft-2026-11.2.json"
+DRAFT_PATH = REPO / "commercial" / "strategies" / "active-2026-11.2.json"
+V1_PATH = REPO / "commercial" / "strategies" / "superseded-2026-11.1.json"
 LEFTOVER = re.compile(r"\{[a-z_]+\}")
 SIGNATURE = "Amaru\nBoRo Studio · somosboro.com"
 ODOO_EVIDENCE = "aparece como Silver Partner en el directorio oficial de Odoo para Chile"
 FIRM_EVIDENCE = "desarrolla software para clientes, según su perfil en Get on Board"
 
 
-def _strategy(raw: dict) -> Strategy:
+def _strategy(raw: dict, path: Path = DRAFT_PATH) -> Strategy:
     data = json.dumps(raw).encode()
-    return Strategy(raw=raw, sha256=hashlib.sha256(data).hexdigest(), path=DRAFT_PATH)
+    return Strategy(raw=raw, sha256=hashlib.sha256(data).hexdigest(), path=path)
 
 
 @pytest.fixture(scope="module")
@@ -39,7 +40,8 @@ def draft() -> Strategy:
 
 @pytest.fixture(scope="module")
 def active() -> Strategy:
-    return load_strategy()
+    """The superseded v1 (2026-11.1), read directly: the engine no longer loads it."""
+    return _strategy(json.loads(V1_PATH.read_text(encoding="utf-8")), V1_PATH)
 
 
 def _objs(*, lane="PARTNER_DELIVERY", country="CL", name="Blue Minds SpA",
@@ -58,24 +60,26 @@ def _words_before_signature(body: str) -> int:
     return len(body.split(SIGNATURE)[0].split())
 
 
-# --- production is untouched --------------------------------------------------------
+# --- v1 is preserved as it was -----------------------------------------------------
 
-def test_the_active_strategy_still_renders_exactly_as_before(active):
+def test_the_superseded_v1_still_renders_exactly_as_before(active):
     out = outreach.render(active, step="INITIAL", **_objs())
     assert out["body"].startswith("Hola equipo,\n\nVi que Blue Minds SpA aparece como Silver")
     assert out["subject"] == "Capacidad de entrega para Blue Minds SpA"
     assert out["variant"] == "partner-capacity-v1"
 
 
-def test_the_draft_is_never_loadable_as_the_active_strategy():
+def test_the_engine_loads_v3_and_never_the_superseded_v1():
+    assert load_strategy().version == "2026-11.2"
+    assert load_strategy().path == DRAFT_PATH
     with pytest.raises(ValueError, match="not an ACTIVE strategy"):
-        load_strategy(DRAFT_PATH)
+        load_strategy(V1_PATH)
 
 
 def test_the_draft_changes_copy_only_never_rules(draft, active):
     changed = {k for k in set(draft.raw) | set(active.raw)
                if draft.raw.get(k) != active.raw.get(k)}
-    assert changed <= {"strategy_version", "status", "supersedes", "effective_from",
+    assert changed <= {"strategy_version", "status", "supersedes", "superseded_by", "effective_from",
                        "change_note", "copy", "templates", "proof_points"}
     assert draft.raw["proof_points"].keys() == active.raw["proof_points"].keys()
 
@@ -241,5 +245,5 @@ def test_legal_forms_are_dropped_from_the_short_name(draft, name, short):
     assert outreach.short_company(draft, name) == short
 
 
-def test_the_active_strategy_keeps_full_names(active):
+def test_the_superseded_v1_keeps_full_names(active):
     assert outreach.short_company(active, "Blue Minds SpA") == "Blue Minds SpA"
