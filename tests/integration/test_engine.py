@@ -403,7 +403,9 @@ def test_a_spanish_speaking_target_gets_a_spanish_message_built_on_real_evidence
     plan_initials(session, strategy, now=WED_10)
     message = session.scalar(select(CeMessage))
     assert message.language == "es"
-    assert "directorio oficial de Odoo" in message.body
+    # v3 (2026-11.2): the Odoo listing selects the Odoo-partner hook and the country's
+    # localization (CL -> DTE), never a claim the evidence does not support.
+    assert "partner Odoo" in message.body and "DTE" in message.body
     assert "no te vuelvo a escribir" in message.body
 
 
@@ -990,6 +992,7 @@ def test_a_chatgpt_send_today_is_adopted_not_sent_again(session, strategy):
     assert f1.due_at == followup_due(strategy, lane=target.lane, step="F1",
                                      initial_sent=initial.sent_at)
     assert f1.in_reply_to == "<cg1@mail.gmail.com>"
+    assert f1.subject == "Re: Capacidad de entrega", "the follow-up stays in the Gmail thread"
     event = session.scalar(select(CeTargetEvent).where(
         CeTargetEvent.reason == "gmail_history_initial"))
     assert event.details["replaced_engine_message"]["status"] == "SHADOW"

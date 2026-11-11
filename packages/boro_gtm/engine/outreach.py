@@ -41,6 +41,7 @@ from boro_gtm.engine.pipeline import (
     send_blockers,
     transition,
 )
+from boro_gtm.engine.history import EXTERNAL_VARIANT
 from boro_gtm.engine.strategy import Strategy
 
 SPANISH = frozenset({"CL", "PE", "CO", "MX", "AR", "ES", "UY", "EC", "BO", "PY", "CR", "PA",
@@ -335,6 +336,15 @@ def _create_message(session: Session, strategy: Strategy, target: CeTarget,
     signal = session.get(CeSignal, target.signal_id) if target.signal_id else None
     rendered = render(strategy, target=target, account=account, contact=contact,
                       signal=signal, step=step)
+    subject = rendered["subject"]
+    if in_reply_to:
+        # A follow-up to a thread Amaru started in Gmail keeps that thread's real subject;
+        # the template's "Re: ..." names an email that was never sent.
+        first = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id,
+                                                       CeMessage.step == "INITIAL"))
+        if first is not None and first.variant == EXTERNAL_VARIANT and first.subject:
+            subject = (first.subject if first.subject.lower().startswith("re:")
+                       else f"Re: {first.subject}")
     message = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id,
                                                      CeMessage.step == step))
     if message is not None and message.status not in ("SHADOW", "CANCELLED"):
@@ -350,7 +360,7 @@ def _create_message(session: Session, strategy: Strategy, target: CeTarget,
     message.language, message.variant = rendered["language"], rendered["variant"]
     message.offer, message.strategy_version = rendered["offer"], strategy.version
     message.to_email = contact.email.lower()
-    message.subject, message.body = rendered["subject"], rendered["body"]
+    message.subject, message.body = subject, rendered["body"]
     message.rfc822_message_id = rfc822_id(target.id, step, strategy.sender["email"])
     message.in_reply_to, message.status, message.due_at = in_reply_to, "SCHEDULED", due
     message.sent_at = message.claimed_at = message.last_error = None
