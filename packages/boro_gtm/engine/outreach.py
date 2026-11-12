@@ -385,16 +385,27 @@ def _create_message(session: Session, strategy: Strategy, target: CeTarget,
     return message
 
 
-def rearm_shadow_followups(session: Session) -> int:
-    """Live mode: follow-ups that were only rehearsed are owed for real."""
+def rearm_shadow_followups(session: Session, strategy: Strategy, *,
+                           now: datetime | None = None) -> int:
+    """Live mode: follow-ups that were only rehearsed are owed for real.
+
+    A rehearsal keeps the copy of the strategy it was rendered under and a due date
+    that may have passed while it was only rehearsed. Each is rendered again with the
+    active strategy (a Gmail-started thread keeps its real subject) and is due no
+    earlier than the next business moment, so going live never fires stale copy at once.
+    """
     expected = {"F1": S.CONTACTED, "F2": S.F1}
+    earliest = BusinessCalendar(strategy).next_open_moment(now or now_utc())
     count = 0
-    for message in session.scalars(select(CeMessage).where(
-            CeMessage.status == "SHADOW", CeMessage.step.in_(tuple(expected)))):
+    for message in list(session.scalars(select(CeMessage).where(
+            CeMessage.status == "SHADOW", CeMessage.step.in_(tuple(expected))))):
         target = session.get(CeTarget, message.target_id)
-        if target.state == expected[message.step]:
-            message.status, message.sent_at = "SCHEDULED", None
-            count += 1
+        if target.state != expected[message.step]:
+            continue
+        contact = session.get(CeContact, message.contact_id)
+        _create_message(session, strategy, target, contact, message.step,
+                        max(message.due_at, earliest), in_reply_to=message.in_reply_to)
+        count += 1
     session.flush()
     return count
 

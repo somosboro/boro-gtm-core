@@ -99,7 +99,7 @@ class Engine:
         shadow = self.settings.shadow_mode
         result = outreach.plan_initials(session, self.strategy, shadow=shadow)
         if not shadow:
-            result["rearmed_followups"] = outreach.rearm_shadow_followups(session)
+            result["rearmed_followups"] = outreach.rearm_shadow_followups(session, self.strategy)
         return result
 
     def send(self, session: Session) -> Any:

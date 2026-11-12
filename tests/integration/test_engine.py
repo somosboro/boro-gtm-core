@@ -1000,6 +1000,30 @@ def test_a_chatgpt_send_today_is_adopted_not_sent_again(session, strategy):
     assert event.details["replaced_engine_message"]["status"] == "SHADOW"
 
 
+def test_going_live_rerenders_a_rehearsed_follow_up_and_never_sends_it_late(session, strategy):
+    """2026-11-12: a rehearsed F1 (copy v1, due 6 Nov) was re-armed as-is at go-live and
+    sent within a minute. Re-armed follow-ups are rendered again and due from now on."""
+    from boro_gtm.engine.business_days import BusinessCalendar
+    from boro_gtm.engine.outreach import rearm_shadow_followups
+
+    target = _ready_target(session, strategy, domain="cmcorp.cl", email="gerencia@cmcorp.cl")
+    gateway = FakeGateway()
+    gateway.deliver(_sent("cg1", "thr1", "ventas@cmcorp.cl", datetime.now(UTC) - timedelta(hours=2)))
+    ingest(session, strategy, gateway, since=date(2026, 6, 1), backfill=True)
+    f1 = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id,
+                                                CeMessage.step == "F1"))
+    send_due(session, strategy, None, shadow=True, now=f1.due_at)
+    assert f1.status == "SHADOW"
+    f1.body, f1.subject = "copy of an older strategy", "Re: an older subject"
+    session.flush()
+    live_at = f1.due_at + timedelta(days=6)
+    assert rearm_shadow_followups(session, strategy, now=live_at) == 1
+    assert f1.status == "SCHEDULED" and f1.sent_at is None
+    assert f1.body != "copy of an older strategy" and f1.strategy_version == strategy.version
+    assert f1.subject == "Re: Capacidad de entrega", "stays in the real Gmail thread"
+    assert f1.due_at >= BusinessCalendar(strategy).next_open_moment(live_at)
+
+
 def test_a_failed_chatgpt_send_leaves_only_a_draft_and_no_contact(session, strategy):
     target = _ready_target(session, strategy, domain="konos.cl", email="ventas@konos.cl")
     gateway = FakeGateway()
