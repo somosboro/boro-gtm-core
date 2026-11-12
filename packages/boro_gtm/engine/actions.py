@@ -125,3 +125,66 @@ def sister_review(session: Session, target_id: uuid.UUID, decision: str, *, acto
         raise EngineError("decision must be 'same' or 'different'",
                           details={"decision": decision})
     return {"target_id": str(target.id), "decision": decision, "state": target.state}
+
+
+def adopted_review_list(session: Session) -> list[dict[str, Any]]:
+    """Adopted Gmail threads whose engine follow-ups wait for a person's confirmation."""
+    from boro_gtm.engine.history import PARKED, adoptions_awaiting_review
+
+    rows = []
+    for event in adoptions_awaiting_review(session):
+        target = session.get(CeTarget, event.target_id)
+        account = session.get(CeAccount, target.account_id)
+        parked = session.scalars(select(CeMessage).where(
+            CeMessage.target_id == target.id, CeMessage.status == "CANCELLED",
+            CeMessage.last_error == PARKED))
+        rows.append({"target_id": str(target.id), "company": account.name,
+                     "state": target.state, "thread_subject": event.details.get("subject"),
+                     "to": event.details.get("to"), "first_sent": event.details.get("first_sent"),
+                     "parked_follow_ups": [{"step": m.step, "due_at": m.due_at.isoformat()}
+                                           for m in parked]})
+    return rows
+
+
+def adopted_review(session: Session, target_id: uuid.UUID, decision: str, *, actor: str,
+                   strategy, note: str | None = None) -> dict[str, Any]:
+    """`continue`: the thread is BoRo outreach, release its follow-ups.
+    `stop`: it is not; close the pursuit (LOST) and never write in that thread."""
+    from boro_gtm.engine.business_days import BusinessCalendar
+    from boro_gtm.engine.history import (
+        ADOPTION_CONFIRMED,
+        ADOPTION_REJECTED,
+        PARKED,
+        adoption_state,
+    )
+    from boro_gtm.engine.outreach import _create_message
+
+    target = session.get(CeTarget, target_id)
+    if target is None:
+        raise EngineError("unknown target", details={"target_id": str(target_id)})
+    if adoption_state(session, target.id) != "held" or target.state not in S.IN_SEQUENCE:
+        raise EngineError("this target has no adopted thread awaiting review",
+                          details={"target_id": str(target_id), "state": target.state})
+    details = {"note": note} if note else {}
+    parked = list(session.scalars(select(CeMessage).where(
+        CeMessage.target_id == target.id, CeMessage.status == "CANCELLED",
+        CeMessage.last_error == PARKED)))
+    if decision == "stop":
+        cancel_pending(session, target.id, ADOPTION_REJECTED)
+        transition(session, target, S.LOST, reason=ADOPTION_REJECTED, actor=actor,
+                   details=details)
+    elif decision == "continue":
+        session.add(CeTargetEvent(target_id=target.id, from_state=target.state,
+                                  to_state=target.state, reason=ADOPTION_CONFIRMED,
+                                  actor=actor, details=details, at=now_utc()))
+        session.flush()
+        earliest = BusinessCalendar(strategy).next_open_moment(now_utc())
+        for message in parked:
+            contact = session.get(CeContact, message.contact_id)
+            _create_message(session, strategy, target, contact, message.step,
+                            max(message.due_at, earliest), in_reply_to=message.in_reply_to)
+    else:
+        raise EngineError("decision must be 'continue' or 'stop'",
+                          details={"decision": decision})
+    return {"target_id": str(target.id), "decision": decision, "state": target.state,
+            "released": [m.step for m in parked] if decision == "continue" else []}

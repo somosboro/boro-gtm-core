@@ -144,8 +144,15 @@ def report(session: Session) -> dict[str, Any]:
                        "pursuit for. The engine will never re-contact them; it will not "
                        "send their follow-ups either. Import them or accept that."}
 
-    from boro_gtm.engine.actions import sister_review_list
+    from boro_gtm.engine.actions import adopted_review_list, sister_review_list
 
+    adopted = adopted_review_list(session)
+    if adopted:
+        warnings["adopted_threads_awaiting_review"] = {
+            "targets": adopted,
+            "meaning": "Gmail threads the engine took over; their follow-ups are parked until "
+                       "you confirm them: gtm engine adopted-review <target_id> "
+                       "--decision continue|stop"}
     held = sister_review_list(session)
     if held:
         warnings["held_for_sister_domain_review"] = {

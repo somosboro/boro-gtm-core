@@ -27,6 +27,7 @@ from boro_gtm.engine.models import (
     CeMailEvent,
     CeMessage,
     CeTarget,
+    CeTargetEvent,
 )
 from boro_gtm.engine.pipeline import email_domain, now_utc, transition
 from boro_gtm.engine.strategy import Strategy
@@ -38,6 +39,46 @@ PRE_CONTACT = (S.DISCOVERED, S.ENRICH, S.COMPLIANCE_REVIEW, S.READY)
 STEP_STATE = {"INITIAL": S.CONTACTED, "F1": S.F1, "F2": S.F2}
 EXTERNAL_VARIANT = "external_gmail"
 RECONCILIATION_KEY = "gmail_history_reconciliation"
+
+#: An adopted Gmail thread may not be BoRo outreach at all (2026-11-12: a Qué Compro
+#: proposal to Cencosud got an engine F1). The engine's follow-ups in an adopted thread
+#: are parked until a person confirms it: `gtm engine adopted-review`.
+ADOPTION_HELD = "held:adopted_gmail_thread"
+ADOPTION_CONFIRMED = "confirmed:adopted_gmail_thread"
+ADOPTION_REJECTED = "adopted_gmail_thread_not_outreach"
+PARKED = "awaiting_adoption_confirmation"
+
+
+def adoption_state(session: Session, target_id) -> str | None:
+    """`held`, `confirmed` or None (never adopted)."""
+    reason = session.scalar(select(CeTargetEvent.reason).where(
+        CeTargetEvent.target_id == target_id,
+        CeTargetEvent.reason.in_((ADOPTION_HELD, ADOPTION_CONFIRMED)))
+        .order_by(CeTargetEvent.at.desc(), CeTargetEvent.id.desc()).limit(1))
+    return {ADOPTION_HELD: "held", ADOPTION_CONFIRMED: "confirmed"}.get(reason)
+
+
+def hold_adoption(session: Session, target: CeTarget, thread_out: list[CeMailEvent], *,
+                  actor: str) -> None:
+    if adoption_state(session, target.id) is not None:
+        return
+    first = thread_out[0]
+    session.add(CeTargetEvent(
+        target_id=target.id, from_state=target.state, to_state=target.state,
+        reason=ADOPTION_HELD, actor=actor, at=now_utc(),
+        details={"subject": first.subject, "to": first.to_emails,
+                 "first_sent": str(first.sent_at), "gmail_thread_id": first.gmail_thread_id}))
+    session.flush()
+
+
+def adoptions_awaiting_review(session: Session) -> list[CeTargetEvent]:
+    latest: dict = {}
+    for event in session.scalars(select(CeTargetEvent).where(
+            CeTargetEvent.reason.in_((ADOPTION_HELD, ADOPTION_CONFIRMED)))
+            .order_by(CeTargetEvent.at, CeTargetEvent.id)):
+        latest[event.target_id] = event
+    return [e for e in latest.values() if e.reason == ADOPTION_HELD
+            and session.get(CeTarget, e.target_id).state in S.IN_SEQUENCE]
 
 
 def _external_out(session: Session, domain: str, email: str | None = None) -> list[CeMailEvent]:
@@ -161,6 +202,7 @@ def adopt_target(session: Session, strategy: Strategy, target: CeTarget, *,
         apply_reply(session, strategy, event, actor=actor)
     if target.state in (S.CONTACTED, S.F1):
         cancel_pending(session, target.id, "adopted_gmail_sequence")
+        hold_adoption(session, target, thread_out, actor=actor)
         _schedule_next(session, strategy, target, last)
     session.flush()
     return "adopted"

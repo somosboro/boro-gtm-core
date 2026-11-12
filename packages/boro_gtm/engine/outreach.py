@@ -608,8 +608,15 @@ def _schedule_next(session: Session, strategy: Strategy, target: CeTarget,
         return
     if due is None:
         return
-    _create_message(session, strategy, target, contact, nxt, due,
-                    in_reply_to=initial.rfc822_message_id)
+    message = _create_message(session, strategy, target, contact, nxt, due,
+                              in_reply_to=initial.rfc822_message_id)
+    from boro_gtm.engine.history import PARKED, adoption_state
+
+    if adoption_state(session, target.id) == "held":
+        # An adopted Gmail thread nobody has confirmed as BoRo outreach: keep the
+        # follow-up ready but parked; `gtm engine adopted-review` releases it.
+        message.status, message.last_error = "CANCELLED", PARKED
+        session.flush()
 
 
 def reconcile_sending(session: Session, strategy: Strategy, gateway: MailGateway,

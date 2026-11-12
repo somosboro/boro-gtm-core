@@ -990,7 +990,8 @@ def test_a_chatgpt_send_today_is_adopted_not_sent_again(session, strategy):
                                                 CeMessage.step == "F1"))
     from boro_gtm.engine.outreach import followup_due
 
-    assert f1.status == "SCHEDULED"
+    # Parked until a person confirms the thread is BoRo outreach (adopted-review).
+    assert (f1.status, f1.last_error) == ("CANCELLED", "awaiting_adoption_confirmation")
     assert f1.due_at == followup_due(strategy, lane=target.lane, step="F1",
                                      initial_sent=initial.sent_at)
     assert f1.in_reply_to == "<cg1@mail.gmail.com>"
@@ -1010,6 +1011,9 @@ def test_going_live_rerenders_a_rehearsed_follow_up_and_never_sends_it_late(sess
     gateway = FakeGateway()
     gateway.deliver(_sent("cg1", "thr1", "ventas@cmcorp.cl", datetime.now(UTC) - timedelta(hours=2)))
     ingest(session, strategy, gateway, since=date(2026, 6, 1), backfill=True)
+    from boro_gtm.engine.actions import adopted_review
+
+    adopted_review(session, target.id, "continue", actor="test", strategy=strategy)
     f1 = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id,
                                                 CeMessage.step == "F1"))
     send_due(session, strategy, None, shadow=True, now=f1.due_at)
@@ -1022,6 +1026,36 @@ def test_going_live_rerenders_a_rehearsed_follow_up_and_never_sends_it_late(sess
     assert f1.body != "copy of an older strategy" and f1.strategy_version == strategy.version
     assert f1.subject == "Re: Capacidad de entrega", "stays in the real Gmail thread"
     assert f1.due_at >= BusinessCalendar(strategy).next_open_moment(live_at)
+
+
+def test_an_adopted_thread_sends_nothing_until_a_person_confirms_it(session, strategy):
+    """2026-11-12: a Qué Compro proposal to Cencosud was adopted and got an engine F1."""
+    from boro_gtm.engine.actions import adopted_review, adopted_review_list
+
+    keep = _ready_target(session, strategy, domain="cmcorp.cl", email="gerencia@cmcorp.cl")
+    drop = _ready_target(session, strategy, domain="cencosud.com", email="info@cencosud.com")
+    gateway = FakeGateway()
+    sent_at = datetime.now(UTC) - timedelta(hours=2)
+    gateway.deliver(_sent("k1", "tk", "ventas@cmcorp.cl", sent_at))
+    gateway.deliver(_sent("c1", "tc", "comunicaciones@cencosud.com", sent_at,
+                          subject="Propuesta para Jumbo | lanzamiento de Qué Compro"))
+    ingest(session, strategy, gateway, since=date(2026, 6, 1), backfill=True)
+    listed = {r["company"]: r for r in adopted_review_list(session)}
+    assert len(listed) == 2
+    assert any("Qué Compro" in (r["thread_subject"] or "") for r in listed.values())
+    far = datetime.now(UTC) + timedelta(days=30)
+    assert session.scalar(select(func.count()).select_from(CeMessage).where(
+        CeMessage.status == "SCHEDULED", CeMessage.due_at <= far)) == 0, "nothing is owed yet"
+
+    adopted_review(session, drop.id, "stop", actor="test", strategy=strategy)
+    assert drop.state == S.LOST
+    adopted_review(session, keep.id, "continue", actor="test", strategy=strategy)
+    f1 = session.scalar(select(CeMessage).where(CeMessage.target_id == keep.id,
+                                                CeMessage.step == "F1"))
+    assert f1.status == "SCHEDULED" and f1.subject == "Re: Capacidad de entrega"
+    assert adopted_review_list(session) == []
+    with pytest.raises(EngineError):
+        adopted_review(session, keep.id, "stop", actor="test", strategy=strategy)
 
 
 def test_a_failed_chatgpt_send_leaves_only_a_draft_and_no_contact(session, strategy):
@@ -1065,7 +1099,8 @@ def test_a_follow_up_chatgpt_sends_after_adoption_is_recorded(session, strategy)
     assert target.state == S.F1
     steps = dict(session.execute(select(CeMessage.step, CeMessage.status).where(
         CeMessage.target_id == target.id)).all())
-    assert steps == {"INITIAL": "SENT", "F1": "SENT", "F2": "SCHEDULED"}
+    # F2 is owed, but parked while nobody has confirmed the adopted thread.
+    assert steps == {"INITIAL": "SENT", "F1": "SENT", "F2": "CANCELLED"}
 
 
 def test_going_live_plans_a_target_that_was_only_rehearsed(session, strategy):

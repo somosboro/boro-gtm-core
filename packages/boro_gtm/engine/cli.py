@@ -332,6 +332,25 @@ def sister_review(target_id: str = typer.Argument(None, help="omit to list the h
                                         actor="cli", note=note))
 
 
+@app.command("adopted-review")
+def adopted_review(target_id: str = typer.Argument(None, help="omit to list the held threads"),
+                   decision: str = typer.Option(None, help="continue or stop"),
+                   note: str = typer.Option(None)) -> None:
+    """Gmail threads the engine adopted; their follow-ups wait for your confirmation.
+
+    `--decision continue` releases the follow-ups; `--decision stop` closes the pursuit.
+    """
+    from boro_gtm.engine import actions
+    from boro_gtm.engine.strategy import active_strategy
+
+    with session_scope() as s:
+        if target_id is None:
+            _echo(actions.adopted_review_list(s))
+        else:
+            _echo(actions.adopted_review(s, uuid.UUID(target_id), (decision or "").lower(),
+                                         actor="cli", strategy=active_strategy(), note=note))
+
+
 @app.command("suppress")
 def suppress(value: str) -> None:
     """Never write to this address (or @domain) again."""
