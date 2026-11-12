@@ -35,9 +35,13 @@ from boro_gtm.engine.models import (
     CeTarget,
 )
 from boro_gtm.engine.pipeline import (
+    SISTER_DOMAIN,
     EngineError,
+    held_for_sister_review,
+    hold_for_sister_review,
     is_role_mailbox,
     now_utc,
+    only_sister_history,
     send_blockers,
     transition,
 )
@@ -265,10 +269,11 @@ def plan_initials(session: Session, strategy: Strategy, *, now: datetime | None 
     has_initial = select(CeMessage.target_id).where(CeMessage.step == "INITIAL")
     if not shadow:
         has_initial = has_initial.where(CeMessage.status.not_in(("SHADOW", "CANCELLED")))
-    ready = list(session.scalars(
+    held = {e.target_id for e in held_for_sister_review(session)}
+    ready = [t for t in session.scalars(
         select(CeTarget).where(CeTarget.state == S.READY, CeTarget.id.not_in(has_initial))
         .order_by(CeTarget.score.desc().nulls_last(), CeTarget.created_at)
-    ).all())
+    ).all() if t.id not in held]
     quotas = _lane_quotas(strategy, slots)
     chosen: list[CeTarget] = []
     for lane, quota in quotas.items():
@@ -293,6 +298,17 @@ def plan_initials(session: Session, strategy: Strategy, *, now: datetime | None 
     for target in chosen:
         contact = session.get(CeContact, target.contact_id) if target.contact_id else None
         reasons = send_blockers(session, strategy, target, contact, step="INITIAL")
+        if only_sister_history(reasons):
+            # Same name, another TLD: maybe the same company, maybe not. A person
+            # decides (gtm engine sister-review); until then it stays READY, unplanned.
+            others = [r for r in reasons if r != SISTER_DOMAIN]
+            if others:
+                _route_blocked(session, target, others, actor)
+            else:
+                hold_for_sister_review(session, target, actor=actor)
+            blocked.append({"target_id": str(target.id), "reasons": reasons,
+                            "held_for_review": not others})
+            continue
         if any(r.startswith("gmail_history") for r in reasons):
             # Gmail shows BoRo already wrote here: take that sequence over if
             # it is still running, otherwise close the pursuit.
@@ -505,6 +521,9 @@ def _send_one(session: Session, strategy: Strategy, gateway: MailGateway | None,
     if shadow and message.step != "INITIAL":
         reasons = [r for r in reasons if not r.startswith("state_")]
     if reasons:
+        if message.step == "INITIAL" and reasons == [SISTER_DOMAIN]:
+            hold_for_sister_review(session, target, actor=actor,
+                                   details={"message_id": str(message.id)})
         message.status = "BLOCKED"
         message.last_error = ";".join(reasons)
         session.flush()

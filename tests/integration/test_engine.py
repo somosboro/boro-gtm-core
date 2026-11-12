@@ -942,6 +942,8 @@ def test_a_draft_is_never_history_and_a_trashed_send_still_is(session, strategy)
 
     assert prior_contact(session, "info@afgo.com", "afgo.com") is None
     assert prior_contact(session, "otra@cmcorp.cl", "cmcorp.cl") == "gmail_history_same_domain"
+    assert prior_contact(session, "info@cmcorp.com", "cmcorp.com") == (
+        "gmail_history_sister_domain"), "same name under another TLD is the same company"
     backfill = session.get(CeControl, "gmail_history_backfill").value
     assert backfill["complete"] is True and backfill["since"] == "2026-06-01"
 
@@ -1242,6 +1244,120 @@ def test_verification_runs_on_the_real_database_and_leaves_nothing(session, stra
     assert result["ok"], result
     assert session.scalar(select(func.count()).select_from(CeAccount)) == before
     assert session.scalar(select(func.count()).select_from(CeSuppression)) == 0
+
+
+_GMAIL_HISTORY = {"gmail_history_same_address", "gmail_history_same_domain",
+                  "gmail_history_sister_domain", "engine_initial_already_sent"}
+
+
+def _history_out(session, gid, to):
+    session.add(CeMailEvent(gmail_message_id=gid, gmail_thread_id=gid, direction="OUT",
+                            from_email="abourgeoisroa@somosboro.com", to_emails=[to],
+                            headers={}, sent_at=WED_10 - timedelta(days=3),
+                            ingested_at=datetime.now(UTC)))
+    session.flush()
+
+
+def _initial_blockers(session, strategy, domain, email):
+    """The production gate a first email passes before it is sent (send_blockers)."""
+    from boro_gtm.engine.pipeline import send_blockers
+
+    target = _ready_target(session, strategy, domain=domain, email=email)
+    contact = session.get(CeContact, target.contact_id)
+    return set(send_blockers(session, strategy, target, contact, step="INITIAL"))
+
+
+def test_a_send_to_a_sister_domain_blocks_the_same_companys_first_email(session, strategy):
+    _history_out(session, "o1", "info@opens.lat")  # the real 3 Nov send to Open Solutions
+    assert "gmail_history_sister_domain" in _initial_blockers(
+        session, strategy, "opens.cl", "ventas@opens.cl")
+    # A person at a subdomain of the contacted domain: caught via the account domain.
+    assert "gmail_history_same_domain" in _initial_blockers(
+        session, strategy, "opens.lat", "ana@mail.opens.lat")
+
+
+@pytest.mark.parametrize(("sent_to", "domain", "email", "why"), [
+    ("info@opens.lat", "opensource.cl", "ana@opensource.cl",
+     "a longer name that merely starts the same is another company"),
+    ("info@opens.lat", "opensolutions.cl", "ana@opensolutions.cl",
+     "a name containing the contacted name is another company"),
+    ("info@opens.lat", "myopens.cl", "ana@myopens.cl", "suffix match is not a match"),
+    ("contacto.hadriva@gmail.com", "hadriva.cl", "ana@hadriva.cl",
+     "a freemail address never turns its local part into a company domain"),
+    ("someone@gmail.com", "gmailtools.cl", "ana@gmailtools.cl",
+     "freemail providers are never a company's sister domain"),
+    ("hola@abc.io", "abc.cl", "ana@abc.cl", "names under 4 characters never match"),
+])
+def test_superficial_name_matches_do_not_block_a_first_email(session, strategy, sent_to, domain,
+                                                             email, why):
+    _history_out(session, "h1", sent_to)
+    assert not (_initial_blockers(session, strategy, domain, email) & _GMAIL_HISTORY), why
+
+
+def test_same_name_under_another_tld_is_treated_as_the_same_company(session, strategy):
+    """Known, deliberate over-match, identical to same_company_domain (used by parity and
+    the READY audit): it can only withhold a first email, never cause one. Accounts whose
+    sole link to Gmail history is a sister domain are listed for manual review."""
+    _history_out(session, "o1", "info@opens.lat")
+    assert "gmail_history_sister_domain" in _initial_blockers(
+        session, strategy, "opens.mx", "info@opens.mx")
+
+
+def _initials(session, target):
+    return list(session.scalars(select(CeMessage).where(CeMessage.target_id == target.id,
+                                                         CeMessage.step == "INITIAL")))
+
+
+def test_a_sister_only_match_is_held_for_review_not_blocked(session, strategy):
+    from boro_gtm.engine.actions import sister_review_list
+
+    _history_out(session, "o1", "info@opens.lat")
+    target = _ready_target(session, strategy, domain="opens.cl", email="ventas@opens.cl")
+    result = plan_initials(session, strategy, now=WED_10)
+    assert result["planned"] == 0 and result["blocked"][0]["held_for_review"] is True
+    assert target.state == S.READY and _initials(session, target) == []
+    held = sister_review_list(session)
+    assert [h["domain"] for h in held] == ["opens.cl"]
+    assert held[0]["gmail_sent_to"] == ["info@opens.lat"]
+    # Held targets are not picked again, so they never eat a day's slots.
+    again = plan_initials(session, strategy, now=WED_10 + timedelta(days=1))
+    assert again["blocked"] == [] and _initials(session, target) == []
+
+
+def test_a_person_decides_a_held_sister_match(session, strategy):
+    from boro_gtm.engine.actions import sister_review, sister_review_list
+    from boro_gtm.engine.pipeline import SISTER_CONFIRMED
+
+    _history_out(session, "o1", "info@opens.lat")
+    other = _ready_target(session, strategy, domain="opens.mx", email="ana@opens.mx")
+    same = _ready_target(session, strategy, domain="opens.cl", email="ventas@opens.cl")
+    plan_initials(session, strategy, now=WED_10)
+    sister_review(session, same.id, "same", actor="test")
+    assert same.state == S.BLOCKED
+    assert session.scalar(select(CeTargetEvent.reason).where(
+        CeTargetEvent.target_id == same.id, CeTargetEvent.to_state == S.BLOCKED)
+    ) == SISTER_CONFIRMED
+    sister_review(session, other.id, "different", actor="test")
+    assert sister_review_list(session) == []
+    plan_initials(session, strategy, now=WED_10 + timedelta(days=1), shadow=False)
+    assert [m.status for m in _initials(session, other)] == ["SCHEDULED"]
+    with pytest.raises(EngineError):
+        sister_review(session, other.id, "same", actor="test")  # no longer held
+
+
+def test_a_sister_send_seen_after_planning_holds_at_send_time(session, strategy):
+    from boro_gtm.engine.actions import sister_review
+
+    target = _ready_target(session, strategy, domain="opens.cl", email="ventas@opens.cl")
+    plan_initials(session, strategy, now=WED_10 - timedelta(hours=1))
+    [message] = _initials(session, target)
+    _history_out(session, "o1", "info@opens.lat")  # Gmail ingest finds it before the send
+    send_due(session, strategy, FakeGateway(), shadow=False, now=message.due_at)
+    assert (message.status, target.state) == ("BLOCKED", S.READY)
+    sister_review(session, target.id, "different", actor="test")
+    assert message.status == "CANCELLED"
+    plan_initials(session, strategy, now=WED_10 + timedelta(days=1), shadow=False)
+    assert message.status == "SCHEDULED", "the cleared target gets its first email after all"
 
 
 @pytest.mark.parametrize(("stored", "reads_gmail"), [

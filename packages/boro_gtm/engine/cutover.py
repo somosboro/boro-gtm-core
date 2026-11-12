@@ -144,6 +144,16 @@ def report(session: Session) -> dict[str, Any]:
                        "pursuit for. The engine will never re-contact them; it will not "
                        "send their follow-ups either. Import them or accept that."}
 
+    from boro_gtm.engine.actions import sister_review_list
+
+    held = sister_review_list(session)
+    if held:
+        warnings["held_for_sister_domain_review"] = {
+            "targets": held,
+            "meaning": "Gmail shows a send only to a same-name domain under another TLD. "
+                       "Decide with: gtm engine sister-review <target_id> "
+                       "--decision same|different"}
+
     # --- duplicate-send risk -----------------------------------------------
     risky = []
     planned = session.execute(select(CeTarget, CeContact, CeAccount).join(

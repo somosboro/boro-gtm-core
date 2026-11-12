@@ -10,12 +10,30 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from boro_gtm.engine import states as S
-from boro_gtm.engine.models import CeDeal, CeProblemSignal, CeTarget
+from boro_gtm.engine.models import (
+    CeAccount,
+    CeContact,
+    CeDeal,
+    CeMessage,
+    CeProblemSignal,
+    CeTarget,
+    CeTargetEvent,
+)
 from boro_gtm.engine.outreach import cancel_pending
-from boro_gtm.engine.pipeline import EngineError, now_utc, suppress, transition
+from boro_gtm.engine.pipeline import (
+    SISTER_CLEARED,
+    SISTER_CONFIRMED,
+    EngineError,
+    held_for_sister_review,
+    now_utc,
+    sister_review_state,
+    suppress,
+    transition,
+)
 
 HUMAN_STATES = (S.CONVERSATION, S.OPPORTUNITY, S.PROPOSAL, S.WON, S.LOST)
 
@@ -61,3 +79,49 @@ def record_problem(session: Session, *, account_id: uuid.UUID, problem_key: str,
 def manual_suppress(session: Session, value: str, *, reason: str = "MANUAL") -> bool:
     kind = "EMAIL" if "@" in value else "DOMAIN"
     return suppress(session, kind=kind, value=value, reason=reason, evidence_ref="manual")
+
+
+def sister_review_list(session: Session) -> list[dict[str, Any]]:
+    """Targets held because Gmail shows a send only to a same-name domain."""
+    rows = []
+    for event in held_for_sister_review(session):
+        target = session.get(CeTarget, event.target_id)
+        account = session.get(CeAccount, target.account_id)
+        contact = session.get(CeContact, target.contact_id) if target.contact_id else None
+        rows.append({"target_id": str(target.id), "company": account.name,
+                     "domain": account.domain, "contact": contact.email if contact else None,
+                     "lane": target.lane, "score": target.score, "held_at": event.at.isoformat(),
+                     "gmail_sent_to": event.details.get("sent_to", [])})
+    return rows
+
+
+def sister_review(session: Session, target_id: uuid.UUID, decision: str, *, actor: str,
+                  note: str | None = None) -> dict[str, Any]:
+    """`same`: the sister domain is this company, close the pursuit (BLOCKED).
+    `different`: another company; the target becomes plannable again."""
+    target = session.get(CeTarget, target_id)
+    if target is None:
+        raise EngineError("unknown target", details={"target_id": str(target_id)})
+    if sister_review_state(session, target.id) != "held" or target.state != S.READY:
+        raise EngineError("this target is not held for sister-domain review",
+                          details={"target_id": str(target_id), "state": target.state})
+    details = {"note": note} if note else {}
+    if decision == "same":
+        cancel_pending(session, target.id, SISTER_CONFIRMED)
+        transition(session, target, S.BLOCKED, reason=SISTER_CONFIRMED, actor=actor,
+                   details=details)
+    elif decision == "different":
+        session.add(CeTargetEvent(target_id=target.id, from_state=target.state,
+                                  to_state=target.state, reason=SISTER_CLEARED, actor=actor,
+                                  details=details, at=now_utc()))
+        # A first email the send-time check stopped is re-armed by the next plan.
+        for message in session.scalars(select(CeMessage).where(
+                CeMessage.target_id == target.id, CeMessage.step == "INITIAL",
+                CeMessage.status == "BLOCKED")):
+            message.status = "CANCELLED"
+            message.last_error = SISTER_CLEARED
+        session.flush()
+    else:
+        raise EngineError("decision must be 'same' or 'different'",
+                          details={"decision": decision})
+    return {"target_id": str(target.id), "decision": decision, "state": target.state}

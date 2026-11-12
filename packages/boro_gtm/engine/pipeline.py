@@ -266,7 +266,84 @@ def prior_contact(session: Session, email: str, domain: str,
             .limit(1))
         if domain_hit:
             return "gmail_history_same_domain"
+    # A sister domain under the same name may be the same company (`info@opens.lat`
+    # was written to, so `opens.cl` may be contacted too): see same_company_domain.
+    # It cannot prove it, so the planner holds such a target for a person to decide.
+    if sister_domain_sends(session, domain, *other_domains):
+        return SISTER_DOMAIN
     return None
+
+
+#: Gmail shows a send only to a same-name domain under another TLD. Not proof of the
+#: same company: the target is held in READY, unplanned, until `gtm engine sister-review`.
+SISTER_DOMAIN = "gmail_history_sister_domain"
+SISTER_HELD = "held:" + SISTER_DOMAIN
+SISTER_CLEARED = "cleared:" + SISTER_DOMAIN
+SISTER_CONFIRMED = SISTER_DOMAIN + ":confirmed_same_company"
+
+
+def sister_domain_sends(session: Session, domain: str, *other_domains: str | None) -> list[str]:
+    """Addresses BoRo wrote to at a sister domain of any of these domains."""
+    found: list[str] = []
+    for each in dict.fromkeys(d.lower() for d in (domain, *other_domains) if d):
+        label = each.split(".")[0]
+        if each in FREEMAIL or len(label) < 4:
+            continue
+        pattern = r"@" + re.escape(label) + r"\.[a-z0-9.-]+(,|$)"
+        for recipients in session.scalars(select(CeMailEvent.to_emails).where(
+                CeMailEvent.direction == "OUT",
+                func.lower(func.array_to_string(CeMailEvent.to_emails, ",")).op("~")(pattern))):
+            found += [a.lower() for a in recipients or [] if same_company_domain(a, each)
+                      and a.lower() not in found]
+    return found
+
+
+def only_sister_history(reasons: list[str]) -> bool:
+    """The only sign of prior contact is a sister domain."""
+    history = [r for r in reasons
+               if r.startswith("gmail_history") or r == "engine_initial_already_sent"]
+    return history == [SISTER_DOMAIN]
+
+
+def _sister_reviews(session: Session, target_ids: list[uuid.UUID] | None = None
+                    ) -> dict[uuid.UUID, CeTargetEvent]:
+    query = select(CeTargetEvent).where(CeTargetEvent.reason.in_((SISTER_HELD, SISTER_CLEARED)))
+    if target_ids is not None:
+        query = query.where(CeTargetEvent.target_id.in_(target_ids))
+    latest: dict[uuid.UUID, CeTargetEvent] = {}
+    for event in session.scalars(query.order_by(CeTargetEvent.at, CeTargetEvent.id)):
+        latest[event.target_id] = event
+    return latest
+
+
+def sister_review_state(session: Session, target_id: uuid.UUID) -> str | None:
+    """`held`, `cleared` (a person said: another company) or None."""
+    event = _sister_reviews(session, [target_id]).get(target_id)
+    return None if event is None else ("held" if event.reason == SISTER_HELD else "cleared")
+
+
+def held_for_sister_review(session: Session) -> list[CeTargetEvent]:
+    """The open holds: targets still READY whose latest sister review is a hold."""
+    held = [e for e in _sister_reviews(session).values() if e.reason == SISTER_HELD]
+    return [e for e in held if (t := session.get(CeTarget, e.target_id)) and t.state == S.READY]
+
+
+def hold_for_sister_review(session: Session, target: CeTarget, *, actor: str,
+                           details: dict[str, Any] | None = None) -> bool:
+    """Record a hold (append-only, state unchanged). False if already held."""
+    if sister_review_state(session, target.id) == "held":
+        return False
+    account = session.get(CeAccount, target.account_id)
+    contact = session.get(CeContact, target.contact_id) if target.contact_id else None
+    domains = [account.domain if account else None,
+               email_domain(contact.email) if contact else None]
+    session.add(CeTargetEvent(
+        target_id=target.id, from_state=target.state, to_state=target.state,
+        reason=SISTER_HELD, actor=actor, at=now_utc(),
+        details={"sent_to": sister_domain_sends(session, *[d for d in domains if d]),
+                 **(details or {})}))
+    session.flush()
+    return True
 
 
 def jurisdiction_status(strategy: Strategy, country: str | None) -> str:
@@ -308,6 +385,8 @@ def send_blockers(session: Session, strategy: Strategy, target: CeTarget,
         domain = email_domain(contact.email) or ""
         account = session.get(CeAccount, target.account_id)
         prior = prior_contact(session, contact.email, domain, account.domain if account else None)
+        if prior == SISTER_DOMAIN and sister_review_state(session, target.id) == "cleared":
+            prior = None  # a person decided the sister domain is another company
         if prior:
             reasons.append(prior)
         if jurisdiction_status(strategy, target.country) != "ALLOWED":

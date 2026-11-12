@@ -314,6 +314,24 @@ def advance(target_id: str, to_state: str, note: str = typer.Option(None),
                          currency=currency))
 
 
+@app.command("sister-review")
+def sister_review(target_id: str = typer.Argument(None, help="omit to list the held targets"),
+                  decision: str = typer.Option(None, help="same or different"),
+                  note: str = typer.Option(None)) -> None:
+    """Targets held because Gmail shows a send only to a same-name domain (other TLD).
+
+    `--decision same` closes the pursuit; `--decision different` makes it plannable again.
+    """
+    from boro_gtm.engine import actions
+
+    with session_scope() as s:
+        if target_id is None:
+            _echo(actions.sister_review_list(s))
+        else:
+            _echo(actions.sister_review(s, uuid.UUID(target_id), (decision or "").lower(),
+                                        actor="cli", note=note))
+
+
 @app.command("suppress")
 def suppress(value: str) -> None:
     """Never write to this address (or @domain) again."""
