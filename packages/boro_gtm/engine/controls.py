@@ -11,6 +11,7 @@ from boro_gtm.engine.pipeline import now_utc
 
 BACKUP_KEY = "last_backup"            # written by deploy/vps/backup.sh
 RESTORE_KEY = "last_restore_test"     # written by deploy/vps/restore-test.sh
+OFF_HOST_COPY_KEY = "last_off_host_copy"  # written by deploy/pc/pull-backup.ps1
 WORKER_STARTS_KEY = "worker_starts"
 VERIFY_KEY = "verification"
 READY_AUDIT_KEY = "ready_audit"

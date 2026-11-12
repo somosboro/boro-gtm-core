@@ -57,6 +57,8 @@ AUDIT_THRESHOLDS = {"account_identity": 0.95, "domain": 0.95, "signal": 0.95, "l
 #: holds what Gmail cannot rebuild (manual suppressions, lanes, scores, human
 #: pipeline moves). It does not block shadow operation.
 OFF_HOST_BACKUP_BLOCKS_LIVE = True
+#: A verified copy on the operator's PC counts when its dump is younger than this.
+PC_COPY_MAX_AGE_HOURS = 50
 
 
 def _at(value: Any) -> datetime | None:
@@ -253,9 +255,18 @@ def report(session: Session) -> dict[str, Any]:
     checks["restore_test_passed"] = {
         "ok": bool(restore.get("ok")) and restore_at is not None
         and moment - restore_at < timedelta(days=8), "last_restore_test": restore.get("at")}
-    off_host = bool(backup.get("remote_ok")) and backup_at is not None and (
+    remote_copy = bool(backup.get("remote_ok")) and backup_at is not None and (
         moment - backup_at < timedelta(hours=26))
+    # Or the operator's PC pulled a dump, verified it by SHA-256 and recorded it. The PC
+    # pulls when it is on, so the copied dump may be up to two nightly runs old.
+    pc = controls.get(session, controls.OFF_HOST_COPY_KEY) or {}
+    pc_backup_at = _at(pc.get("backup_at"))
+    pc_copy = bool(pc.get("verified")) and pc_backup_at is not None and (
+        moment - pc_backup_at < timedelta(hours=PC_COPY_MAX_AGE_HOURS))
+    off_host = remote_copy or pc_copy
     off_host_check = {"ok": off_host, "remote": backup.get("remote"),
+                      "pc_copy": {"ok": pc_copy, "backup_at": pc.get("backup_at"),
+                                  "copied_at": pc.get("at")},
                       "decision": "blocks real sending, not shadow (CE-ADR-018)"}
     if OFF_HOST_BACKUP_BLOCKS_LIVE:
         checks["off_host_backup"] = off_host_check

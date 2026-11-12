@@ -172,6 +172,14 @@ Migrations run automatically (`migrate` service) before the API and worker start
   Alternatives that work the same way: Backblaze B2 (10 GB free) or any
   S3-compatible bucket. Point a crypt remote at it.
 
+  **Chosen on 2026-11-12: the operator's PC.** `deploy/pc/pull-backup.ps1` pulls the
+  newest dump over SSH (`boro-vps`), checks its SHA-256 against the VPS, keeps 30
+  days in `D:\BoRo\Backups\boro-gtm` (only the operator and SYSTEM can read it) and
+  records `last_off_host_copy`. The cutover check accepts a verified copy of a dump
+  younger than 50 hours, so the PC must be on at least every other day. A Windows
+  scheduled task runs it daily at 09:00 and at logon (missed runs start when the PC
+  is next on). Log: `D:\BoRo\Backups\boro-gtm\pull.log`.
+
 ## If something is wrong
 
 | Symptom | Do |

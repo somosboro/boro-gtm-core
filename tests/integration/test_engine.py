@@ -1313,6 +1313,22 @@ def test_the_cutover_report_cannot_pass_on_configuration_alone(session, strategy
         assert check in result["failing"], check
 
 
+def test_a_verified_pc_copy_counts_as_off_host_only_while_fresh(session, strategy):
+    from boro_gtm.engine import controls
+    from boro_gtm.engine.cutover import report
+
+    def off_host(**copy):
+        controls.put(session, controls.OFF_HOST_COPY_KEY, copy)
+        session.flush()
+        return report(session)["checks"]["off_host_backup"]["ok"]
+
+    now = datetime.now(UTC)
+    assert off_host(verified=True, backup_at=(now - timedelta(hours=30)).isoformat()) is True
+    assert off_host(verified=False, backup_at=(now - timedelta(hours=1)).isoformat()) is False
+    assert off_host(verified=True, backup_at=(now - timedelta(hours=60)).isoformat()) is False
+    assert off_host(verified=True) is False
+
+
 def test_parity_flags_a_shadow_email_to_a_company_already_contacted(session, strategy):
     from boro_gtm.engine import parity
 
