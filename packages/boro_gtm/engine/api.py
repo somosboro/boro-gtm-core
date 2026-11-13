@@ -56,6 +56,14 @@ def get_today(db: Session = Depends(get_db)) -> dict[str, Any]:
     return reports.today(db, active_strategy())
 
 
+@router.get("/scoreboard")
+def get_scoreboard(weeks: int = 8, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Weekly scoreboard and the decision gates of CE-ADR-022."""
+    from boro_gtm.engine import research
+
+    return research.scoreboard(db, active_strategy(), weeks=max(1, min(weeks, 52)))
+
+
 @router.get("/funnel")
 def get_funnel(by: str = "lane", db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     if by not in ("lane", "country", "variant", "segment"):

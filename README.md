@@ -264,6 +264,29 @@ uvicorn boro_gtm.api.main:app --reload --port 8000
 The import command is idempotent and transactional: re-running it returns the
 existing snapshot and writes nothing.
 
+### Commercial engine: personalization gate (CE-ADR-022)
+
+Since strategy `2026-11.3` a first email needs an approved research brief. The
+flow is research → gate → draft → approval → send, at 5 first emails per business
+day, in one lane (`es_odoo_partners`) until 2027-02-06.
+
+| Step | Command (`gtm engine …`) |
+| --- | --- |
+| Record research (JSON list with `target_id` and the brief fields) | `brief-import briefs.json` |
+| See what still needs research and why | `brief-list --status NEEDS_RESEARCH` |
+| Re-run the gate after a config change | `brief-check` |
+| Draft from READY_TO_DRAFT briefs (`GTM_ENGINE_LLM=anthropic`) | `brief-draft --limit 5` |
+| Review a brief and its draft | `brief-show <brief_id>` |
+| Approve (first 20 of a batch, or any draft with warnings) | `brief-approve <brief_id>` |
+| ES/EU/UK/CA tasks to do by hand, as CSV | `manual-outreach --out tasks.csv` |
+| Mark a manual task | `manual-outreach --mark <brief_id> --what sent` |
+| Record a conversation, a named need or a proposal | `score-mark NAMED_NEED --target <id>` |
+| Weekly scoreboard and decision gates | `scoreboard` (or `GET /engine/scoreboard`) |
+
+What may be claimed lives in `config/capabilities.yaml`; which cases may be
+cited, in `config/proof_cases.yaml`. A separate sender mailbox is documented but
+not active: `docs/SENDER_ACCOUNT.md`.
+
 ## API
 
 All endpoints under `/api/v1`; OpenAPI at `/api/v1/openapi.json`. 46 paths, 47 operations.

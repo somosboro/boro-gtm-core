@@ -59,7 +59,25 @@ WED_10 = datetime(2026, 11, 4, 10, 0, tzinfo=SCL)
 
 @pytest.fixture
 def strategy():
-    return load_strategy()
+    """The template-path strategy 2026-11.2, read directly. These tests cover the planner,
+    sender and follow-ups underneath the personalization gate; the gate itself (2026-11.3,
+    CE-ADR-022) is covered in test_personalization.py."""
+    import hashlib
+    from pathlib import Path
+
+    from boro_gtm.engine.strategy import Strategy
+
+    path = (Path(__file__).resolve().parents[2] / "commercial" / "strategies"
+            / "superseded-2026-11.2.json")
+    data = path.read_bytes()
+    raw = json.loads(data)
+    # Since CE-ADR-022 every message is checked at send time against the citable cases
+    # and claims; the template path is exercised with 2026-11.3's allowed proof points.
+    current = json.loads((path.parent / "active-2026-11.3.json").read_bytes())
+    raw["proof_points"] = current["proof_points"]
+    raw["copy"]["follow_up_proof"] = current["copy"]["follow_up_proof"]
+    raw["copy"]["example_work"] = current["copy"]["example_work"]
+    return Strategy(raw=raw, sha256=hashlib.sha256(data).hexdigest(), path=path)
 
 
 class SiteFetcher:

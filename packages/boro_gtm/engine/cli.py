@@ -351,6 +351,154 @@ def adopted_review(target_id: str = typer.Argument(None, help="omit to list the 
                                          actor="cli", strategy=active_strategy(), note=note))
 
 
+# --- research briefs and the personalization gate (CE-ADR-022) -------------------
+
+
+@app.command("brief-import")
+def brief_import(path: Path = typer.Argument(..., exists=True, readable=True),
+                 by: str = typer.Option("cli", help="who researched these")) -> None:
+    """Record research: a JSON list of {"target_id", recipient_*, fact_*, hypothesis, ...}.
+
+    Each brief is checked by the gate at once: it becomes READY_TO_DRAFT or stays
+    NEEDS_RESEARCH with the reasons.
+    """
+    from boro_gtm.engine import research
+    from boro_gtm.engine.strategy import active_strategy
+
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    out = []
+    with session_scope() as s:
+        for row in rows:
+            fields = {k: v for k, v in row.items() if k != "target_id"}
+            brief = research.upsert_brief(s, uuid.UUID(row["target_id"]), fields, actor=by)
+            verdict = research.evaluate(s, active_strategy(), brief, actor=by)
+            out.append({"brief_id": str(brief.id), "status": brief.status,
+                        "reasons": verdict.errors})
+    _echo(out)
+
+
+@app.command("brief-check")
+def brief_check() -> None:
+    """Run the gate again on every NEEDS_RESEARCH brief (e.g. after a config change)."""
+    from sqlalchemy import select
+
+    from boro_gtm.engine import research
+    from boro_gtm.engine.models import CeResearchBrief
+    from boro_gtm.engine.strategy import active_strategy
+
+    with session_scope() as s:
+        briefs = list(s.scalars(select(CeResearchBrief).where(
+            CeResearchBrief.status == "NEEDS_RESEARCH")))
+        results = [research.evaluate(s, active_strategy(), b).ok for b in briefs]
+        _echo({"checked": len(briefs), "ready_to_draft": sum(results)})
+
+
+@app.command("brief-list")
+def brief_list(status: str = typer.Option(None), limit: int = 50) -> None:
+    from sqlalchemy import select
+
+    from boro_gtm.engine.models import CeAccount, CeResearchBrief
+
+    with session_scope() as s:
+        query = select(CeResearchBrief, CeAccount.name).join(
+            CeAccount, CeAccount.id == CeResearchBrief.account_id)
+        if status:
+            query = query.where(CeResearchBrief.status == status.upper())
+        rows = s.execute(query.order_by(CeResearchBrief.updated_at.desc()).limit(limit)).all()
+        _echo([{"brief_id": str(b.id), "target_id": str(b.target_id), "company": name,
+                "recipient": b.recipient_email, "status": b.status, "batch": b.batch,
+                "reasons": b.reasons, "warnings": b.warnings} for b, name in rows])
+
+
+@app.command("brief-draft")
+def brief_draft(limit: int = 5) -> None:
+    """Ask the model for drafts of READY_TO_DRAFT briefs (GTM_ENGINE_LLM=anthropic)."""
+    from sqlalchemy import select
+
+    from boro_gtm.engine import research
+    from boro_gtm.engine.llm import provider_from_env
+    from boro_gtm.engine.models import CeResearchBrief
+    from boro_gtm.engine.strategy import active_strategy
+
+    provider = provider_from_env()
+    with session_scope() as s:
+        briefs = list(s.scalars(select(CeResearchBrief).where(
+            CeResearchBrief.status == "READY_TO_DRAFT").limit(limit)))
+        _echo([research.draft(s, active_strategy(), b, provider) for b in briefs])
+
+
+@app.command("brief-show")
+def brief_show(brief_id: str) -> None:
+    """The brief, its latest passing draft and the gate's verdict, to review before approving."""
+    from boro_gtm.engine import research
+    from boro_gtm.engine.models import CeResearchBrief
+
+    with session_scope() as s:
+        brief = s.get(CeResearchBrief, uuid.UUID(brief_id))
+        if brief is None:
+            raise typer.BadParameter("unknown brief")
+        drafted = research.latest_ok_draft(s, brief.id)
+        _echo({"brief": {k: getattr(brief, k) for k in research.BRIEF_FIELDS},
+               "status": brief.status, "reasons": brief.reasons, "warnings": brief.warnings,
+               "draft": {"subject": drafted.subject, "body": drafted.body,
+                         "model": drafted.model, "validator": drafted.validator}
+               if drafted else None})
+
+
+@app.command("brief-approve")
+def brief_approve(brief_id: str, by: str = typer.Option("amaru")) -> None:
+    """Approve a DRAFTED brief: its draft may become a first email."""
+    from boro_gtm.engine import research
+
+    with session_scope() as s:
+        brief = research.approve(s, uuid.UUID(brief_id), actor=f"cli:{by}")
+        _echo({"brief_id": str(brief.id), "status": brief.status})
+
+
+@app.command("manual-outreach")
+def manual_outreach(out: Path = typer.Option(None, help="write the tasks as CSV here"),
+                    mark: str = typer.Option(None, help="brief id to mark"),
+                    what: str = typer.Option(None, help="sent, accepted or replied"),
+                    note: str = typer.Option(None)) -> None:
+    """ES/EU/UK/CA: tasks to do by hand (LinkedIn or a published form), or mark one done."""
+    from boro_gtm.engine import research
+
+    with session_scope() as s:
+        if mark:
+            _echo(research.mark_manual(s, uuid.UUID(mark), (what or "").lower(), actor="cli",
+                                       note=note))
+            return
+        rows = research.manual_tasks(s)
+        if out:
+            out.write_text(research.manual_csv(rows), encoding="utf-8")
+            _echo({"tasks": len(rows), "csv": str(out)})
+        else:
+            _echo(rows)
+
+
+@app.command("score-mark")
+def score_mark(kind: str = typer.Argument(..., help="CONVERSATION, NAMED_NEED or PROPOSAL"),
+               target: str = typer.Option(None), brief: str = typer.Option(None),
+               note: str = typer.Option(None)) -> None:
+    """Record what only a person can see: a conversation, a named project or capacity gap."""
+    from boro_gtm.engine import research
+
+    with session_scope() as s:
+        _echo(research.mark(s, kind.upper(), actor="cli",
+                            target_id=uuid.UUID(target) if target else None,
+                            brief_id=uuid.UUID(brief) if brief else None, note=note))
+
+
+@app.command("scoreboard")
+def scoreboard(weeks: int = 8) -> None:
+    """Weekly counts and the decision gates (12-dic-2026 conversations, 150 delivered)."""
+    from boro_gtm.engine import research
+    from boro_gtm.engine.strategy import active_strategy
+
+    with session_scope() as s:
+        _echo(research.scoreboard(s, active_strategy(), weeks=weeks))
+
+
 @app.command("suppress")
 def suppress(value: str) -> None:
     """Never write to this address (or @domain) again."""

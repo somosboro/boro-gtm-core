@@ -49,6 +49,12 @@ class Engine:
         self._fetcher_factory = fetcher_factory or TransportFetcher
 
     def gateway(self) -> MailGateway | None:
+        if self.settings.sender_account_enabled:
+            # CE-ADR-022: the separate sender is configuration only for now. Turning it
+            # on must not silently keep sending from the client mailbox, nor switch.
+            raise GmailUnavailableError(
+                "GTM_ENGINE_SENDER_ACCOUNT_ENABLED is set, but sending from a separate "
+                "mailbox is not wired yet: complete docs/SENDER_ACCOUNT.md first")
         if self._gateway is None and self.settings.gmail_credentials:
             try:
                 gateway = GmailApiGateway(self.strategy.sender["email"],

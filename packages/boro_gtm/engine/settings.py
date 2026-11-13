@@ -25,6 +25,10 @@ class EngineSettings:
     gmail_credentials: str | None
     api_token: str | None
     worker_name: str
+    #: A mailbox on a domain separate from client mail (CE-ADR-022). Configured,
+    #: never used until docs/SENDER_ACCOUNT.md is complete and Amaru enables it.
+    sender_account: str | None = None
+    sender_account_enabled: bool = False
 
 
 def engine_settings() -> EngineSettings:
@@ -34,4 +38,6 @@ def engine_settings() -> EngineSettings:
         gmail_credentials=os.environ.get("GTM_ENGINE_GMAIL_CREDENTIALS") or None,
         api_token=os.environ.get("GTM_ENGINE_API_TOKEN") or None,
         worker_name=os.environ.get("GTM_ENGINE_WORKER_NAME") or socket.gethostname()[:64],
+        sender_account=os.environ.get("GTM_ENGINE_SENDER_ACCOUNT") or None,
+        sender_account_enabled=_flag("GTM_ENGINE_SENDER_ACCOUNT_ENABLED", False),
     )

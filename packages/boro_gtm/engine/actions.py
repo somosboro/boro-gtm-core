@@ -51,6 +51,11 @@ def advance(session: Session, target_id: uuid.UUID, to_state: str, *, actor: str
         cancel_pending(session, target.id, "lost")
     transition(session, target, to_state, reason=note or f"manual:{to_state.lower()}",
                actor=actor)
+    if to_state in (S.CONVERSATION, S.PROPOSAL):
+        from boro_gtm.engine import research
+
+        research.score(session, to_state, actor=actor, target_id=target.id,
+                       details={"note": note} if note else {})
     if amount is not None or to_state in (S.PROPOSAL, S.WON, S.LOST):
         deal = session.get(CeDeal, target.id) or CeDeal(target_id=target.id, updated_at=now_utc())
         if amount is not None:

@@ -64,6 +64,17 @@ MESSAGE_STATUSES = ("SCHEDULED", "SENDING", "SENT", "SHADOW", "CANCELLED", "FAIL
 SUPPRESSION_KINDS = ("EMAIL", "DOMAIN")
 SUPPRESSION_REASONS = ("BOUNCE", "OPT_OUT", "REJECTION", "MANUAL", "COMPLIANCE")
 
+#: A research brief (CE-ADR-022): one per company and recipient. Only an APPROVED
+#: brief can become a first email; MANUAL_OUTREACH is for jurisdictions where the
+#: engine never sends (a person connects by LinkedIn or a published form).
+BRIEF_STATUSES = ("NEEDS_RESEARCH", "READY_TO_DRAFT", "DRAFTED", "APPROVED", "SENT",
+                  "MANUAL_OUTREACH")
+#: The weekly scoreboard counts these. CONVERSATION, NAMED_NEED and PROPOSAL are
+#: marked by a person; the rest are recorded by the engine as they happen.
+SCORE_EVENTS = ("RESEARCHED", "DRAFTED", "APPROVED", "SENT", "BOUNCED", "REPLIED",
+                "POSITIVE_REPLY", "CONVERSATION", "NAMED_NEED", "PROPOSAL",
+                "MANUAL_SENT", "MANUAL_ACCEPTED", "MANUAL_REPLIED")
+
 
 class IllegalTransitionError(GtmError):
     code = "ILLEGAL_TRANSITION"

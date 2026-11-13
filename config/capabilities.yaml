@@ -1,0 +1,34 @@
+# What BoRo may claim in a first email (CE-ADR-022). A claim that is not here,
+# or that is listed under `blocked`, fails the personalization gate.
+# Owner: Amaru. Change only when work has actually been delivered.
+version: 2026-11-13
+
+allowed:
+  - id: odoo_custom_modules
+    label: "Odoo 16/17: módulos a medida"
+  - id: odoo_version_migration
+    label: "Odoo 16/17: migraciones de versión"
+  - id: dte_chile
+    label: "Facturación electrónica DTE (Chile)"
+  - id: react_expo
+    label: "React y Expo (web y móvil)"
+  - id: backend
+    label: "NestJS, Express y Python"
+  - id: integrations
+    label: "Integraciones entre sistemas y APIs"
+
+# Localizations BoRo has NOT delivered: never claimed as implemented. Each entry
+# lists the words that count as the claim (matched case-insensitively, whole words).
+blocked:
+  - id: cfdi_mexico
+    reason: "CFDI (México) no entregado"
+    terms: ["CFDI", "SAT México"]
+  - id: sunat_peru
+    reason: "SUNAT (Perú) no entregado"
+    terms: ["SUNAT"]
+  - id: dian_colombia
+    reason: "DIAN (Colombia) no entregado"
+    terms: ["DIAN"]
+  - id: verifactu_spain
+    reason: "Verifactu (España) no entregado"
+    terms: ["Verifactu", "VeriFactu", "TicketBAI"]

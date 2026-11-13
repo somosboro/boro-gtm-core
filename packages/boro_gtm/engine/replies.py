@@ -25,6 +25,7 @@ from boro_gtm.engine.llm import LlmProvider, NullProvider
 from boro_gtm.engine.models import CeContact, CeControl, CeMailEvent, CeMessage, CeTarget
 from boro_gtm.engine.outreach import cancel_pending, postpone_followups
 from boro_gtm.engine.pipeline import (
+    FREEMAIL,
     email_domain,
     normalize_email,
     now_utc,
@@ -49,7 +50,9 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
         r"(unsubscribe|remove me|take me off|stop (emailing|writing)|do not (email|contact)"
         r"|no me (escrib|contact)|da(r|me|rme)? de baja|d[eé]nme de baja"
         r"|no (m[aá]s|vuelvan a) (correo|escrib)"
-        r"|elimin(a|en)(me)? de (su|tu|la) lista)", re.I)),
+        r"|elimin(a|en)(me)? de (su|tu|la) lista"
+        # CE-ADR-022: "no contactar", "no contacten" and a bare "baja" are opt-outs too.
+        r"|no (me |nos )?contact(ar|en|es)|\bbaja\b)", re.I)),
     ("rejection", re.compile(
         r"(not interested|no (estamos|estoy) interesad|no nos interesa|no me interesa|no,? gracias"
         r"|no thanks|we('re| are) (all )?set|ya (tenemos|contamos)|we already (have|work)"
@@ -333,6 +336,9 @@ def apply_reply(session: Session, strategy: Strategy, event: CeMailEvent,
     event.processed_at = now_utc()
     label = event.classification
     target = session.get(CeTarget, event.target_id) if event.target_id else None
+    from boro_gtm.engine import research
+
+    research.record_reply(session, event.message_id, label or "human_other", actor=actor)
     if label == "bounce":
         failed = event.headers.get("failed_recipient")
         if failed:
@@ -355,6 +361,11 @@ def apply_reply(session: Session, strategy: Strategy, event: CeMailEvent,
         if event.from_email:
             suppress(session, kind="EMAIL", value=event.from_email, reason="OPT_OUT",
                      evidence_ref=f"gmail:{event.gmail_message_id}")
+            # The whole company asked not to be written to (CE-ADR-022), never a freemail host.
+            domain = email_domain(event.from_email)
+            if domain and domain not in FREEMAIL:
+                suppress(session, kind="DOMAIN", value=domain, reason="OPT_OUT",
+                         evidence_ref=f"gmail:{event.gmail_message_id}")
         if target is not None and target.state in S.IN_SEQUENCE + (S.REPLIED,):
             cancel_pending(session, target.id, "opt_out")
             transition(session, target, S.SUPPRESSED, reason="opt_out", actor=actor)

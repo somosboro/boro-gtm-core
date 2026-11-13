@@ -1,0 +1,20 @@
+# Cases a first email may cite: only those with written permission (CE-ADR-022).
+# A brief's proof_case_id must be one of these ids. Anything listed under
+# `not_citable` must never appear in a draft.
+version: 2026-11-13
+
+cases:
+  - id: nutrition_practice
+    es: "una app React sobre Odoo 16 para una consulta de nutrición, con agenda y pagos"
+    en: "a React app on Odoo 16 for a nutrition practice, with booking and payments"
+    permission: "escrita, confirmada por Amaru el 2026-11-13"
+  - id: quecompro
+    es: "Qué Compro, una app en Expo con API en Express que compara precios de supermercados"
+    en: "Qué Compro, an Expo app with an Express API that compares supermarket prices"
+    permission: "producto propio (sociedad con Vanessa), confirmado por Amaru el 2026-11-13"
+
+not_citable:
+  - id: psychotherapy_clinic
+    terms: ["psicoterapia", "psychotherapy", "clínica de psicoterapia"]
+  - id: boro_os
+    terms: ["BoRo OS"]

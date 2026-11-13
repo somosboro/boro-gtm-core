@@ -13,6 +13,7 @@ RUN pip install --upgrade pip && pip install -e .
 COPY migrations ./migrations
 COPY data ./data
 COPY commercial ./commercial
+COPY config ./config
 
 EXPOSE 8000
 CMD ["uvicorn", "boro_gtm.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

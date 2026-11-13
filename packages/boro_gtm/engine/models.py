@@ -15,7 +15,7 @@ truth (CE-ADR-002).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -23,6 +23,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -38,9 +39,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from boro_gtm.core.db import Base, new_uuid, utcnow
 from boro_gtm.engine.states import (
+    BRIEF_STATUSES,
     LANES,
     MESSAGE_STATUSES,
     OPEN_STATES,
+    SCORE_EVENTS,
     STATES,
     STEPS,
     SUPPRESSION_KINDS,
@@ -277,6 +280,89 @@ class CeMessage(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The research brief a personalized first email was drafted from (CE-ADR-022).
+    brief_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("ce_research_briefs.id", ondelete="RESTRICT"))
+
+
+class CeResearchBrief(Base):
+    """What a person verified about one company and one recipient before writing.
+
+    Nothing is drafted or sent from a brief that fails the personalization gate
+    (engine/personalization_gate.py); its `reasons` say why (CE-ADR-022).
+    """
+
+    __tablename__ = "ce_research_briefs"
+    __table_args__ = (
+        UniqueConstraint("target_id", "recipient_email", name="uq_brief_target_recipient"),
+        CheckConstraint(_vocab("status", BRIEF_STATUSES), name="status_vocabulary"),
+        Index("ix_briefs_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    target_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ce_targets.id", ondelete="RESTRICT"), nullable=False)
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ce_accounts.id", ondelete="RESTRICT"), nullable=False)
+    recipient_name: Mapped[str | None] = mapped_column(Text)
+    recipient_role: Mapped[str | None] = mapped_column(Text)
+    recipient_email: Mapped[str | None] = mapped_column(String(320))
+    email_source_url: Mapped[str | None] = mapped_column(Text)
+    fact_text: Mapped[str | None] = mapped_column(Text)
+    fact_source_url: Mapped[str | None] = mapped_column(Text)
+    fact_date: Mapped[date | None] = mapped_column(Date)
+    hypothesis: Mapped[str | None] = mapped_column(Text)
+    question: Mapped[str | None] = mapped_column(Text)
+    why_now: Mapped[str | None] = mapped_column(Text)
+    proof_case_id: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    #: A send batch ("2026-11-a"): the first N drafts of every batch need approval.
+    batch: Mapped[str | None] = mapped_column(String(64))
+    reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    warnings: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    approved_by: Mapped[str | None] = mapped_column(String(64))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CeDraftGeneration(Base):
+    """Every draft the model wrote from a brief, with exactly what it was given."""
+
+    __tablename__ = "ce_draft_generations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    brief_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ce_research_briefs.id", ondelete="RESTRICT"), nullable=False, index=True)
+    brief_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    validator: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    ok: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CeScoreEvent(Base):
+    """One countable step for the weekly scoreboard and its decision gates."""
+
+    __tablename__ = "ce_score_events"
+    __table_args__ = (
+        CheckConstraint(_vocab("kind", SCORE_EVENTS), name="kind_vocabulary"),
+        Index("ix_score_events_kind_at", "kind", "at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    brief_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("ce_research_briefs.id", ondelete="RESTRICT"))
+    target_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("ce_targets.id", ondelete="RESTRICT"))
+    batch: Mapped[str | None] = mapped_column(String(64))
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class CeMailEvent(Base):

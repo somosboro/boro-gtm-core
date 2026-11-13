@@ -1,4 +1,4 @@
-"""Copy v3 (strategy 2026-11.2, active since 2026-11-11): short, partner-situation hook,
+"""Copy v3 (strategy 2026-11.2, active 2026-11-11 to 2026-11-13, now superseded by 2026-11.3): short, partner-situation hook,
 nearshore pitch, interest CTA. The superseded 2026-11.1 (v1) is loaded directly, only to
 prove v3 changed copy and never rules.
 """
@@ -20,7 +20,8 @@ from boro_gtm.engine.pipeline import EngineError
 from boro_gtm.engine.strategy import Strategy, load_strategy
 
 REPO = Path(__file__).resolve().parents[2]
-DRAFT_PATH = REPO / "commercial" / "strategies" / "active-2026-11.2.json"
+DRAFT_PATH = REPO / "commercial" / "strategies" / "superseded-2026-11.2.json"
+ACTIVE_PATH = REPO / "commercial" / "strategies" / "active-2026-11.3.json"
 V1_PATH = REPO / "commercial" / "strategies" / "superseded-2026-11.1.json"
 LEFTOVER = re.compile(r"\{[a-z_]+\}")
 SIGNATURE = "Amaru\nBoRo Studio · somosboro.com"
@@ -69,11 +70,12 @@ def test_the_superseded_v1_still_renders_exactly_as_before(active):
     assert out["variant"] == "partner-capacity-v1"
 
 
-def test_the_engine_loads_v3_and_never_the_superseded_v1():
-    assert load_strategy().version == "2026-11.2"
-    assert load_strategy().path == DRAFT_PATH
-    with pytest.raises(ValueError, match="not an ACTIVE strategy"):
-        load_strategy(V1_PATH)
+def test_the_engine_loads_2026_11_3_and_never_a_superseded_version():
+    assert load_strategy().version == "2026-11.3"
+    assert load_strategy().path == ACTIVE_PATH
+    for path in (V1_PATH, DRAFT_PATH):
+        with pytest.raises(ValueError, match="not an ACTIVE strategy"):
+            load_strategy(path)
 
 
 def test_the_draft_changes_copy_only_never_rules(draft, active):

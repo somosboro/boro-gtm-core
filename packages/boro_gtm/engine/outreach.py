@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from boro_gtm.engine import states as S
 from boro_gtm.engine.business_days import BusinessCalendar
 from boro_gtm.engine.gmail import MailGateway, build_mime
+from boro_gtm.engine.history import EXTERNAL_VARIANT
 from boro_gtm.engine.models import (
     CeAccount,
     CeContact,
@@ -45,7 +46,6 @@ from boro_gtm.engine.pipeline import (
     send_blockers,
     transition,
 )
-from boro_gtm.engine.history import EXTERNAL_VARIANT
 from boro_gtm.engine.strategy import Strategy
 
 SPANISH = frozenset({"CL", "PE", "CO", "MX", "AR", "ES", "UY", "EC", "BO", "PY", "CR", "PA",
@@ -98,7 +98,8 @@ def short_company(strategy: Strategy, name: str) -> str:
     """The company name without a trailing legal form ("Blue Minds SpA" -> "Blue Minds")."""
     cleaned = (name or "").strip()
     # Registries often drop the final period ("S.A.C", "S.A.S"), so accept both spellings.
-    suffixes = {form for s in _copy(strategy).get("legal_suffixes", []) for form in (s, s.rstrip("."))}
+    suffixes = {form for s in _copy(strategy).get("legal_suffixes", [])
+                for form in (s, s.rstrip("."))}
     for suffix in sorted(suffixes, key=len, reverse=True):
         if cleaned.lower().endswith(" " + suffix.lower()):
             return cleaned[: -len(suffix)].rstrip(" ,.") or cleaned
@@ -251,6 +252,11 @@ def plan_initials(session: Session, strategy: Strategy, *, now: datetime | None 
     In shadow mode a target is rehearsed once. Live, a target whose first
     email was only ever rehearsed (SHADOW) is plannable for real.
     """
+    from boro_gtm.engine import research
+
+    if research.required(strategy):
+        # CE-ADR-022: first emails come only from APPROVED research briefs.
+        return research.plan_personalized(session, strategy, now=now, actor=actor)
     if shadow is None:
         from boro_gtm.engine.settings import engine_settings
 
@@ -358,7 +364,8 @@ def _create_message(session: Session, strategy: Strategy, target: CeTarget,
         # the template's "Re: ..." names an email that was never sent.
         first = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id,
                                                        CeMessage.step == "INITIAL"))
-        if first is not None and first.variant == EXTERNAL_VARIANT and first.subject:
+        if first is not None and first.subject and (
+                first.variant == EXTERNAL_VARIANT or first.brief_id is not None):
             subject = (first.subject if first.subject.lower().startswith("re:")
                        else f"Re: {first.subject}")
     message = session.scalar(select(CeMessage).where(CeMessage.target_id == target.id,
@@ -527,6 +534,7 @@ def _send_one(session: Session, strategy: Strategy, gateway: MailGateway | None,
     target = session.get(CeTarget, message.target_id)
     contact = session.get(CeContact, message.contact_id)
     reasons = send_blockers(session, strategy, target, contact, step=message.step)
+    reasons += _personalization_blockers(session, strategy, target, message)
     # In shadow mode the target never advances, so a follow-up would always
     # look "out of state". That is the only check shadow mode relaxes.
     if shadow and message.step != "INITIAL":
@@ -588,6 +596,31 @@ def _mark_sent(session: Session, strategy: Strategy, message: CeMessage, target:
                reason=f"{message.step.lower()}_sent", actor=actor,
                details={"message_id": str(message.id)}, at=message.sent_at)
     _schedule_next(session, strategy, target, message)
+    from boro_gtm.engine import research
+
+    research.mark_sent(session, message, actor=actor)
+
+
+def _personalization_blockers(session: Session, strategy: Strategy, target: CeTarget,
+                              message: CeMessage) -> list[str]:
+    """CE-ADR-022, checked again at send time whatever planned the message."""
+    from boro_gtm.engine import research
+    from boro_gtm.engine.models import CeResearchBrief
+    from boro_gtm.engine.personalization_gate import claim_problems
+
+    reasons = [f"claims_not_allowed: {p}" for p in
+               claim_problems(message.subject + "\n" + message.body)]
+    if not research.required(strategy):
+        return reasons
+    if research.lane_paused(strategy, target.lane):
+        reasons.append(f"lane_paused:{target.lane}")
+    if (target.country or "").upper() in research.manual_jurisdictions(strategy):
+        reasons.append("manual_outreach_only")
+    if message.step == "INITIAL":
+        brief = session.get(CeResearchBrief, message.brief_id) if message.brief_id else None
+        if brief is None or brief.status not in ("APPROVED", "SENT"):
+            reasons.append("no_approved_research_brief")
+    return reasons
 
 
 def _schedule_next(session: Session, strategy: Strategy, target: CeTarget,

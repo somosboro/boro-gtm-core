@@ -1,7 +1,8 @@
 {
   "strategy_version": "2026-11.2",
   "effective_from": "2026-11-11",
-  "status": "ACTIVE",
+  "status": "SUPERSEDED",
+  "superseded_by": "2026-11.3 (commercial/strategies/active-2026-11.3.json), 2026-11-13",
   "supersedes": "2026-11.1",
   "sender": {
     "email": "abourgeoisroa@somosboro.com",

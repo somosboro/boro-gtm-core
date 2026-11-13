@@ -151,9 +151,9 @@ anti-bot measures are respected.
 
 **Status:** accepted
 
-**Decision.** Runtime reads `commercial/strategies/active-2026-11.2.json`
-(version `2026-11.2`, active since 2026-11-11; `2026-11.1` is kept as
-`superseded-2026-11.1.json`): sender, caps, lane mix, cadences, jurisdictions,
+**Decision.** Runtime reads `commercial/strategies/active-2026-11.3.json`
+(version `2026-11.3`, from 2026-11-13; `2026-11.1` and `2026-11.2` are kept as
+`superseded-*.json`): sender, caps, lane mix, cadences, jurisdictions,
 templates, proof points. Every target and message records the strategy version.
 The 2026-09 doctrine is archived and never loaded.
 
@@ -325,3 +325,49 @@ workflow (`engine/sources/manual.py`), listed in every ladder report.
 Platform-only channels (Upwork, LinkedIn, ATS forms) are kept as MANUAL
 applications, never turned into guessed email addresses. Historic contractor
 usage is labelled `HISTORIC_SIGNAL`, never current explicit demand.
+
+---
+
+## CE-ADR-022 — A first email needs a researched, approved brief; one lane until February
+
+**Status:** accepted (2026-11-13, Amaru). Supersedes the 40/40/20 mix of CE-ADR-020
+and the template first email of CE-ADR-010 while `personalization.required` is on.
+
+**Context.** In the mailbox, the emails that got replies named a person, cited a
+checkable fact and asked a specific question. The campaign to info@/contacto@
+produced at least 10 bounces and no reply, and emails to Mexico promised CFDI,
+which BoRo has not delivered.
+
+**Decision.**
+
+* A first email exists only for an APPROVED `ce_research_briefs` row: a named
+  person and role, an address on the company's own domain whose source page is on
+  that domain (never a generic mailbox, MX checked), a fact under 90 days old with
+  its source, a hypothesis phrased as a doubt, one question about past behaviour
+  (never "¿le interesaría…?"), and why now. `engine/personalization_gate.py` checks
+  all of it deterministically; a failing brief stays NEEDS_RESEARCH with reasons.
+* The model drafts only from the brief (`research.build_prompt`); prompt, model,
+  text and the gate's verdict are kept in `ce_draft_generations`. A draft has at
+  most 120 words, an opt-out and no attachment, and claims only what
+  `config/capabilities.yaml` allows and cites only `config/proof_cases.yaml`
+  (written permission). CFDI, SUNAT, DIAN and Verifactu are never claimed. Every
+  message is checked again for these claims at send time.
+* Amaru approves the first 20 drafts of each batch and any draft with warnings.
+* 5 first emails per business day, limited by approved briefs. One active lane,
+  `es_odoo_partners` (Spanish-speaking Odoo partners in Latin America, from the
+  Odoo directory), until 2027-02-06; the other lanes are paused.
+* ES, the EU, the UK and Canada never get automatic email: their briefs become
+  MANUAL_OUTREACH tasks exported to CSV; a person records sent/accepted/replied.
+* "No contactar", "no contacten", "baja" and "unsubscribe" are opt-outs and
+  suppress the sender and, unless it is a freemail host, the domain.
+* `ce_score_events` feeds a weekly scoreboard (`gtm engine scoreboard`,
+  `GET /engine/scoreboard`) with three gates: by 2026-12-12 at least 10
+  conversations and 3 named projects or capacity gaps, or the predefined exit is
+  option E (a system for clinics on Odoo), which Amaru decides; 150 delivered with
+  no positive reply raises "abandonar canal"; reply rate per batch.
+* A separate sender mailbox is configuration only (`docs/SENDER_ACCOUNT.md`).
+
+**Consequences.** Volume drops to what research supports. Migration 0012 seeds a
+NEEDS_RESEARCH brief for every READY target (their state stays READY; the planner
+needs an approved brief). Claims the gate cannot recognise as a blocked term are
+caught by the approval step, not by code.

@@ -10,6 +10,7 @@
     "0008_m3_review_candidates.py": "5d20cbfd0ae9de9580a48087ac7fda84246d482e93a62ee40b933dd41f183ca9",
     "0009_m3_observation_identity.py": "58e607c1d54fd708514d15a577c4a80431f363eb37ea937d828e19520b4dc0b8",
     "0010_m3_review_resolution.py": "f25b56c5877a97dad0a187f69fdc9efd7b27b7ff181a05f78008e94050864ce4",
-    "0011_commercial_engine.py": "feb42f26921eadd3a554266ddb9c2aad0e7499e73425f8a72237e7d12cb9a690"
+    "0011_commercial_engine.py": "feb42f26921eadd3a554266ddb9c2aad0e7499e73425f8a72237e7d12cb9a690",
+    "0012_personalization_gate.py": "74b4d4dbbb02e42fb75adccb40d81dcdcde6558de76c7f50883395cc90dedc43"
   }
 }

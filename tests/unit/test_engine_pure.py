@@ -21,11 +21,13 @@ def strategy():
 
 
 def test_the_active_strategy_is_versioned_and_never_the_old_doctrine(strategy):
-    assert strategy.version == "2026-11.2"
+    assert strategy.version == "2026-11.3"
     text = strategy.path.read_text().lower()
     assert "architecture sprint" not in text.replace("architecture sprint entry offer", "")
-    assert strategy.daily_cap == 20
-    assert set(strategy.lane_mix) == set(S.LANES)
+    assert strategy.daily_cap == 5
+    # CE-ADR-022: one active lane; the others are paused, not removed.
+    assert set(strategy.lane_mix) == {"PARTNER_DELIVERY"}
+    assert set(strategy.lane_mix) | set(strategy.raw["focus"]["paused_lanes"]) == set(S.LANES)
 
 
 def test_shadow_mode_is_on_unless_explicitly_disabled(monkeypatch):

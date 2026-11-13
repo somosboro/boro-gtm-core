@@ -22,6 +22,9 @@ class LlmProvider(Protocol):
 
     def classify_reply(self, text: str) -> str | None: ...
 
+    def draft(self, prompt: str) -> tuple[str, str] | None:
+        """(model id, raw text) for a first-email draft, or None when unavailable."""
+
 
 class NullProvider:
     """The default. Rules decide everything; nothing is guessed."""
@@ -29,6 +32,9 @@ class NullProvider:
     name = "none"
 
     def classify_reply(self, text: str) -> str | None:
+        return None
+
+    def draft(self, prompt: str) -> tuple[str, str] | None:
         return None
 
 
@@ -58,6 +64,29 @@ class AnthropicProvider:
         except Exception:  # noqa: BLE001 - advisory only; rules already decided the safe path
             return None
         return answer if answer in REPLY_LABELS else None
+
+
+    #: Drafting writes from a research brief only (CE-ADR-022); the gate checks the result.
+    DRAFT_MODEL_DEFAULT = "claude-opus-5-5"
+
+    def draft(self, prompt: str) -> tuple[str, str] | None:
+        model = os.environ.get("GTM_ENGINE_DRAFT_MODEL", self.DRAFT_MODEL_DEFAULT)
+        try:
+            response = self._client.post(self.URL, timeout=120, headers={
+                "x-api-key": self._key, "anthropic-version": "2023-06-01",
+                "anthropic-beta": "server-side-fallback-2026-07-01",
+                "content-type": "application/json",
+            }, json={"model": model, "max_tokens": 16000, "fallbacks": "default",
+                     "messages": [{"role": "user", "content": prompt}]})
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:  # noqa: BLE001 - no draft is the safe outcome
+            return None
+        if payload.get("stop_reason") == "refusal":
+            return None
+        text = "".join(block.get("text", "") for block in payload.get("content", [])
+                       if block.get("type") == "text").strip()
+        return (payload.get("model") or model, text) if text else None
 
 
 def provider_from_env() -> LlmProvider:
